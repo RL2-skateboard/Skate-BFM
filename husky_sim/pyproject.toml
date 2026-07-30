@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skate-bfm-husky"
+version = "0.1.0"
+license = "CC-BY-NC-4.0"
+description = "HUSKY simulator runtime boundary for Skate-BFM"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mujoco>=3.3,<4",
+    "numpy>=1.26,<3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
