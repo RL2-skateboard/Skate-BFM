@@ -204,6 +204,25 @@ def _safe_key(value: str) -> str:
     return "".join(character if character.isalnum() else "_" for character in value)
 
 
+def _video_target_label(target: ExpertTarget) -> str:
+    if target.name == "push_start_pose":
+        return "push_pose"
+    if target.name == "steer_start_pose":
+        return "steer_pose"
+    return _safe_key(target.name)
+
+
+def _slerp_video_label(index: int, count: int) -> str:
+    labels = {
+        0: "push_steer_push_anchor",
+        count // 4: "push_steer_quarter_blend",
+        count // 2: "push_steer_midpoint_blend",
+        3 * count // 4: "push_steer_three_quarter_blend",
+        count - 1: "push_steer_steer_anchor",
+    }
+    return labels[index]
+
+
 def _save_latents(path: Path, records: list[dict[str, Any]]) -> None:
     np.savez_compressed(
         path,
@@ -593,7 +612,7 @@ def _save_representative_videos(
         try:
             rollout = runner.rollout(latent, seed=seed, capture_frames=True)
             _write_video(
-                video_dir / f"{_safe_key(name)}_seed_{seed}.mp4",
+                video_dir / f"{_safe_key(name)}.mp4",
                 rollout.frames,
                 1.0 / runner.control_dt,
             )
@@ -917,7 +936,7 @@ def _run_experiment(
             global_best_latent = global_latents[global_best_index]
             trajectories[f"{target.name}_global_best"] = global_best
             if target.kind == "static_pose":
-                selected_videos[f"{target.name}_global_best"] = (
+                selected_videos[f"{_video_target_label(target)}_global_best"] = (
                     global_best_latent,
                     target,
                 )
@@ -970,7 +989,10 @@ def _run_experiment(
             _, cem = max(cem_results, key=lambda item: item[1].best.score)
             anchors[target.name] = cem.best_latent
             trajectories[f"{target.name}_cem_best"] = cem.best
-            selected_videos[f"{target.name}_cem_best"] = (cem.best_latent, target)
+            selected_videos[f"{_video_target_label(target)}_cem_best"] = (
+                cem.best_latent,
+                target,
+            )
             anchor_source = (
                 "human_push_anchor" if target.kind == "human_push_window" else "searched_anchor"
             )
@@ -1098,7 +1120,7 @@ def _run_experiment(
                     )
                 )
                 if index in representative:
-                    selected_videos[f"push_steer_slerp_t{int(100 * fraction):03d}"] = (
+                    selected_videos[_slerp_video_label(index, len(fractions))] = (
                         latent,
                         push_target,
                     )

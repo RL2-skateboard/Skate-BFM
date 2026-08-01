@@ -13,6 +13,7 @@ import torch
 import yaml
 
 from skate_bfm.bfm0 import Bfm0Model
+from skate_bfm.exp.h1_bfm_coverage import _slerp_video_label, _video_target_label
 from skate_bfm.exp.h1_bfm_coverage.core import (
     CheckpointCompatibilityError,
     ExpertTarget,
@@ -119,6 +120,23 @@ def test_quaternion_rotation_error_handles_sign() -> None:
     quaternion = np.array([0.5, 0.5, 0.5, 0.5])
     assert quaternion_rotation_error(quaternion, quaternion) == pytest.approx(0.0)
     assert quaternion_rotation_error(quaternion, -quaternion) == pytest.approx(0.0)
+
+
+def test_video_names_use_behavior_content() -> None:
+    push = ExpertTarget("push_start_pose", "static_pose", np.empty((0, 7)), "test")
+    steer = ExpertTarget("steer_start_pose", "static_pose", np.empty((0, 7)), "test")
+    motion = ExpertTarget(
+        "human_push_1_window_02",
+        "human_push_window",
+        np.empty((0, 23)),
+        "test",
+    )
+    assert _video_target_label(push) == "push_pose"
+    assert _video_target_label(steer) == "steer_pose"
+    assert _video_target_label(motion) == "human_push_1_window_02"
+    assert _slerp_video_label(0, 11) == "push_steer_push_anchor"
+    assert _slerp_video_label(5, 11) == "push_steer_midpoint_blend"
+    assert _slerp_video_label(10, 11) == "push_steer_steer_anchor"
 
 
 def test_static_pose_score_is_finite() -> None:
