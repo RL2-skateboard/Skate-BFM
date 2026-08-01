@@ -1,16 +1,16 @@
-2026-08-01 20:27:40,161 INFO Experiment h1_bfm_coverage_bfmzero_official started
-2026-08-01 20:27:40,161 INFO Run type=formal device=cuda checkpoint=/home/hm/workspace/skate-bfm/model/bfm-zero-official
-2026-08-01 20:27:40,495 INFO Confirmed expert schema; enabled targets: ['push_start_pose', 'steer_start_pose', 'human_push_1_window_00', 'human_push_1_window_01', 'human_push_1_window_02', 'human_push_2_window_00', 'human_push_2_window_01', 'human_push_2_window_02']
-2026-08-01 20:27:43,227 INFO Checkpoint loaded strictly and model frozen
-2026-08-01 20:27:43,397 INFO Encoded 8 expert anchors with the official backward map
-2026-08-01 20:27:55,681 INFO Completed global scan with 256 latents from push_start_pose initial pose
-2026-08-01 20:28:08,800 INFO Completed global scan with 256 latents from steer_start_pose initial pose
-2026-08-01 20:29:09,805 INFO Target push_start_pose: encoded=-1.138241 global=-1.030625 CEM=-1.045835 robust=0.000 type=not_covered
-2026-08-01 20:30:16,402 INFO Target steer_start_pose: encoded=-1.098281 global=-0.847677 CEM=-0.998107 robust=0.000 type=not_covered
-2026-08-01 20:31:14,776 INFO Target human_push_1_window_00: encoded=-0.601383 global=-0.604842 CEM=-0.553971 robust=0.000 type=not_covered
-2026-08-01 20:32:11,770 INFO Target human_push_1_window_01: encoded=-0.592272 global=-0.592723 CEM=-0.552415 robust=0.000 type=not_covered
-2026-08-01 20:33:09,177 INFO Target human_push_1_window_02: encoded=-0.565941 global=-0.584074 CEM=-0.531432 robust=0.000 type=not_covered
-2026-08-01 20:34:06,075 INFO Target human_push_2_window_00: encoded=-0.574201 global=-0.575069 CEM=-0.549567 robust=0.000 type=not_covered
-2026-08-01 20:35:02,840 INFO Target human_push_2_window_01: encoded=-0.584426 global=-0.615353 CEM=-0.557333 robust=0.000 type=not_covered
-2026-08-01 20:36:00,419 INFO Target human_push_2_window_02: encoded=-0.566790 global=-0.572806 CEM=-0.533452 robust=0.000 type=not_covered
-2026-08-01 20:36:15,310 INFO Experiment ended status=completed duration=515.100s output=docs/res/h1_bfm_coverage_bfmzero_official
+2026-08-01 20:50:24,502 INFO Experiment h1_bfm_coverage_bfmzero_official started
+2026-08-01 20:50:24,502 INFO Run type=formal device=cuda checkpoint=/home/hm/workspace/skate-bfm/model/bfm-zero-official
+2026-08-01 20:50:24,846 INFO Confirmed expert schema; enabled targets: ['push_start_pose', 'steer_start_pose', 'human_push_1_window_00', 'human_push_1_window_01', 'human_push_1_window_02', 'human_push_2_window_00', 'human_push_2_window_01', 'human_push_2_window_02']
+2026-08-01 20:50:27,544 INFO Checkpoint loaded strictly and model frozen
+2026-08-01 20:50:27,713 INFO Encoded 8 expert anchors with the official backward map
+2026-08-01 20:50:39,496 INFO Completed global scan with 256 latents from push_start_pose initial pose
+2026-08-01 20:50:52,247 INFO Completed global scan with 256 latents from steer_start_pose initial pose
+2026-08-01 20:51:51,667 INFO Target push_start_pose: encoded=-1.138241 global=-1.030625 CEM=-1.045835 robust=0.000 type=not_covered
+2026-08-01 20:52:57,719 INFO Target steer_start_pose: encoded=-1.098281 global=-0.847677 CEM=-0.998107 robust=0.000 type=not_covered
+2026-08-01 20:53:55,947 INFO Target human_push_1_window_00: encoded=-0.601383 global=-0.604842 CEM=-0.553971 robust=0.000 type=not_covered
+2026-08-01 20:54:52,792 INFO Target human_push_1_window_01: encoded=-0.592272 global=-0.592723 CEM=-0.552415 robust=0.000 type=not_covered
+2026-08-01 20:55:50,180 INFO Target human_push_1_window_02: encoded=-0.565941 global=-0.584074 CEM=-0.531432 robust=0.000 type=not_covered
+2026-08-01 20:56:47,266 INFO Target human_push_2_window_00: encoded=-0.574201 global=-0.575069 CEM=-0.549567 robust=0.000 type=not_covered
+2026-08-01 20:57:44,204 INFO Target human_push_2_window_01: encoded=-0.584426 global=-0.615353 CEM=-0.557333 robust=0.000 type=not_covered
+2026-08-01 20:58:42,009 INFO Target human_push_2_window_02: encoded=-0.566790 global=-0.572806 CEM=-0.533452 robust=0.000 type=not_covered
+2026-08-01 20:58:57,120 INFO Experiment ended status=completed duration=512.568s output=docs/res/h1_bfm_coverage_bfmzero_official

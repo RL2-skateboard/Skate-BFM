@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1420,7 +1421,18 @@ def main(argv: list[str] | None = None) -> int:
         output_root = _resolve_path(config["experiment"]["output_root"])
     docs_root = Path(os.environ.get("SKATE_BFM_H1_DOCS_ROOT", REPO_ROOT / "docs"))
     docs_root.mkdir(parents=True, exist_ok=True)
-    result_dir = output_root / experiment_name
+    published_result_dir = output_root / experiment_name
+    formal_workspace = None
+    if (
+        config["experiment"]["run_type"] == "formal"
+        and published_result_dir.exists()
+    ):
+        formal_workspace = tempfile.TemporaryDirectory(
+            prefix="skate_bfm_h1_formal_"
+        )
+        result_dir = Path(formal_workspace.name) / experiment_name
+    else:
+        result_dir = published_result_dir
     result_dir.mkdir(parents=True, exist_ok=False)
     (result_dir / "plots").mkdir()
     (result_dir / "videos").mkdir()
@@ -1439,7 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
         "git_dirty": git_dirty,
         "checkpoint": _display_path(checkpoint),
         "device": device,
-        "result_directory": _display_path(result_dir),
+        "result_directory": _display_path(published_result_dir),
     }
     _json_dump(result_dir / "metadata.json", metadata)
     (result_dir / "config.yaml").write_text(
@@ -1554,6 +1566,19 @@ def main(argv: list[str] | None = None) -> int:
             metadata["duration_seconds"],
             metadata["result_directory"],
         )
+        if formal_workspace is not None:
+            for handler in logger.handlers:
+                handler.close()
+            logger.handlers.clear()
+            if status == "completed":
+                previous_result_dir = Path(formal_workspace.name) / "previous_result"
+                shutil.move(published_result_dir, previous_result_dir)
+                try:
+                    shutil.move(result_dir, published_result_dir)
+                except Exception:
+                    shutil.move(previous_result_dir, published_result_dir)
+                    raise
+            formal_workspace.cleanup()
         if smoke_workspace is not None:
             for handler in logger.handlers:
                 handler.close()

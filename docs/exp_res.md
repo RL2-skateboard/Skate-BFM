@@ -8,10 +8,10 @@
 
 - Experiment name: h1_bfm_coverage_bfmzero_official
 - Experiment type: H1 Expert-Guided BFM0 Behavior Coverage
-- Start time: 2026-08-01T20:27:40.142853+08:00
-- End time: 2026-08-01T20:36:15.261255+08:00
-- Duration: 515.100 seconds
-- Git commit: `b90a331d6a096667cc88423f6e1d136ae1e0f01c`
+- Start time: 2026-08-01T20:50:24.477436+08:00
+- End time: 2026-08-01T20:58:57.070986+08:00
+- Duration: 512.568 seconds
+- Git commit: `103ac1900e35dbb15f840b7d736aad3ea7b3aa30`
 - Checkpoint: `model/bfm-zero-official`
 - Device: `cuda`
 - Result directory: `docs/res/h1_bfm_coverage_bfmzero_official`
@@ -65,11 +65,13 @@
 
 Encoded anchors are produced by the frozen official backward map from reconstructed expert observations. No unknown observation field is zero-filled.
 
-Random global sampling is retained only as a baseline. CEM starts from each encoded expert anchor; every selected CEM latent remained 11.39-12.83 degrees from its expert anchor, well inside the 40-degree cap.
+Local CEM improved the encoded-anchor score for 8/8 targets. Selected CEM latents remained 11.39-12.83 degrees from their encoded expert anchors.
 
-CEM improved the encoded-anchor score for all eight targets, but none met the formal success threshold and every robustness success rate remained zero. This result does not show a failure to encode the experts. It shows that the resulting BFM0 semantics are not maintained by the adapted actor in the coupled HUSKY skateboard rollout under the current short horizon and scoring thresholds.
+0/8 targets met the formal coverage criteria. A failed rollout does not imply failed expert encoding; it means the encoded behavior was not maintained under the adapted actor, coupled skateboard physics, and current thresholds.
 
 The per-target classifications above require the final static pose or full dynamic window to meet its threshold; a transient intermediate pose is not counted as success.
+
+Random global sampling is reported only as a baseline. CEM starts at the encoded expert anchor and is constrained by the configured angular cap.
 
 ### Latent-space visualizations
 
