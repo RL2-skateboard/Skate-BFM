@@ -97,49 +97,92 @@ BFM0_DEFAULT_JOINT_POSITION = np.asarray(
     ),
     dtype=np.float32,
 )
-# Deterministic IK fit of the pinned HUSKY scene to steer_start_pose_b.npy.
-# Mean body-position error is 8.6 mm and both ankle links are on the deck.
-STEER_INITIAL_ROOT_QPOS = np.asarray(
-    (
-        -0.0038432815,
-        -0.0748751164,
-        0.7488494488,
-        0.7602638606,
-        -0.0512906064,
-        0.0321752264,
-        0.6467865883,
+# Deterministic IK fits of the official G1-29DoF model to the pinned HUSKY poses.
+# Both fits have sub-millimeter mean body-position error excluding hand geometry.
+EXPERT_STATIC_QPOS = {
+    "push_start_pose": np.asarray(
+        (
+            -0.1664143844,
+            0.1465232034,
+            0.7282257423,
+            0.9912887527,
+            -0.0247770020,
+            0.0135715764,
+            0.1286410557,
+            -0.7696725531,
+            -0.0102056236,
+            -0.1199525150,
+            0.9846143353,
+            -0.4033371667,
+            -0.1602992627,
+            -1.0175590995,
+            -0.3353470903,
+            -0.1459223366,
+            1.2818216445,
+            -0.2823228898,
+            -0.1204138954,
+            -0.2962282014,
+            -0.0450900340,
+            0.2533144395,
+            -0.2237946165,
+            0.8282034284,
+            -0.3768666034,
+            0.3511795223,
+            -0.0002941793,
+            0.0002233532,
+            -0.0001099472,
+            -0.1147534135,
+            -0.5103435883,
+            0.3189661675,
+            0.5387060096,
+            0.0005764543,
+            0.0003047107,
+            0.0003899729,
+        ),
+        dtype=np.float64,
     ),
-    dtype=np.float64,
-)
-STEER_INITIAL_JOINT_NAMES = BFM0_JOINTS[:19] + BFM0_JOINTS[22:26]
-STEER_INITIAL_JOINT_POSITIONS = np.asarray(
-    (
-        -0.7659440306,
-        0.2669030365,
-        0.0810480487,
-        1.4317196503,
-        -0.7427195802,
-        -0.0836071256,
-        -0.8471968170,
-        -0.0006849587,
-        0.1011210459,
-        1.3671185899,
-        -0.6036057137,
-        0.0976104306,
-        -0.0574495737,
-        0.0514544911,
-        0.1233561063,
-        -0.8413713277,
-        0.2781427836,
-        0.0887707479,
-        0.8442776630,
-        0.0473500704,
-        -0.6579796620,
-        0.1803814730,
-        0.5666507660,
+    "steer_start_pose": np.asarray(
+        (
+            -0.0084320425,
+            -0.0787017821,
+            0.7465783100,
+            0.7748280285,
+            -0.0867798744,
+            0.0469493919,
+            0.6244249629,
+            -0.8676293459,
+            0.3586702092,
+            0.0993395028,
+            1.4672644531,
+            -0.7435563891,
+            -0.0895533387,
+            -0.9456122385,
+            0.0716328152,
+            0.1074653117,
+            1.3585581153,
+            -0.5712078124,
+            0.0965746089,
+            -0.0177033269,
+            0.1080908916,
+            0.0797864247,
+            -0.9042817342,
+            0.3074623814,
+            0.1320480482,
+            0.9085028328,
+            -0.0003414977,
+            0.0001879213,
+            -0.0004054676,
+            0.0144831158,
+            -0.7032580695,
+            0.2190895053,
+            0.5659862220,
+            -0.0004014740,
+            0.0001344487,
+            -0.0003026526,
+        ),
+        dtype=np.float64,
     ),
-    dtype=np.float64,
-)
+}
 
 
 class CheckpointCompatibilityError(RuntimeError):
@@ -217,7 +260,10 @@ class OfficialBfm0Adapter:
         )
 
     def encode_goal(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
-        return self.model.goal_inference(self._official_observation(observation))
+        return self.model.goal_inference(self._backward_observation(observation))
+
+    def backward_embedding(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
+        return self.model.backward_map(self._backward_observation(observation))
 
     def forward_embedding(
         self,
@@ -266,6 +312,24 @@ class OfficialBfm0Adapter:
                 )
             else:
                 raise ValueError(f"Cannot construct official actor observation key {key!r}")
+        return result
+
+    def _backward_observation(
+        self,
+        observation: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        keys = tuple(self.model_config["archi"]["b"]["input_filter"]["key"])
+        result = {}
+        for key in keys:
+            if key not in observation:
+                raise ValueError(f"Expert observation does not provide backward-map key {key!r}")
+            value = _batched(observation[key], self.device)
+            width = int(np.prod(self.obs_space.spaces[key].shape))
+            if value.shape[-1] != width:
+                raise ValueError(
+                    f"Backward observation {key!r} expects {width}, got {value.shape[-1]}"
+                )
+            result[key] = value
         return result
 
 
@@ -362,6 +426,8 @@ class ExpertTarget:
     end_frame: int | None = None
     joint_names: tuple[str, ...] = ()
     initial_pose: str = "push"
+    initial_qpos: np.ndarray | None = None
+    expert_observation: dict[str, np.ndarray] | None = None
     encoded_anchor_available: bool = False
     limitation: str = ""
 
@@ -409,6 +475,210 @@ def _human_push_source_joint_names() -> tuple[str, ...]:
     return BFM0_JOINTS
 
 
+def _official_g1_model() -> mujoco.MjModel | None:
+    bfm_zero_root = os.environ.get("BFM_ZERO_ROOT")
+    if not bfm_zero_root:
+        return None
+    path = (
+        Path(bfm_zero_root)
+        / "humanoidverse/data/robots/g1/g1_29dof.xml"
+    )
+    return mujoco.MjModel.from_xml_path(str(path)) if path.is_file() else None
+
+
+def _extend_head(
+    body_position: np.ndarray,
+    body_quaternion: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    torso_index = 15
+    offset = np.broadcast_to(
+        np.asarray((0.0, 0.0, 0.35), dtype=np.float64),
+        (len(body_position), 3),
+    )
+    head_position = body_position[:, torso_index] + _quat_rotate(
+        body_quaternion[:, torso_index],
+        offset,
+    )
+    return (
+        np.concatenate((body_position, head_position[:, None]), axis=1),
+        np.concatenate(
+            (body_quaternion, body_quaternion[:, torso_index : torso_index + 1]),
+            axis=1,
+        ),
+    )
+
+
+def _finite_angular_velocity(quaternion: np.ndarray, dt: float) -> np.ndarray:
+    result = np.zeros(quaternion.shape[:-1] + (3,), dtype=np.float64)
+    if len(quaternion) == 1:
+        return result
+    for index in range(len(quaternion)):
+        start = max(0, index - 1)
+        end = min(len(quaternion) - 1, index + 1)
+        relative = _quat_multiply(
+            quaternion[end],
+            _quat_conjugate(quaternion[start]),
+        )
+        relative = np.where(relative[..., :1] < 0.0, -relative, relative)
+        vector = relative[..., 1:]
+        vector_norm = np.linalg.norm(vector, axis=-1)
+        angle = 2.0 * np.arctan2(vector_norm, np.clip(relative[..., 0], 0.0, 1.0))
+        axis = vector / np.maximum(vector_norm[..., None], 1e-12)
+        result[index] = axis * angle[..., None] / ((end - start) * dt)
+    return result
+
+
+def _official_privileged_state(
+    body_position: np.ndarray,
+    body_quaternion: np.ndarray,
+    body_linear_velocity: np.ndarray,
+    body_angular_velocity: np.ndarray,
+) -> np.ndarray:
+    outputs = []
+    for position, quaternion, linear_velocity, angular_velocity in zip(
+        body_position,
+        body_quaternion,
+        body_linear_velocity,
+        body_angular_velocity,
+        strict=True,
+    ):
+        root_forward = _quat_rotate(
+            quaternion[:1],
+            np.asarray(((1.0, 0.0, 0.0),), dtype=np.float64),
+        )[0]
+        heading = math.atan2(root_forward[1], root_forward[0])
+        heading_inverse = np.asarray(
+            (math.cos(-heading / 2.0), 0.0, 0.0, math.sin(-heading / 2.0)),
+            dtype=np.float64,
+        )
+        heading_quaternions = np.broadcast_to(
+            heading_inverse,
+            (len(position), 4),
+        )
+        local_position = _quat_rotate(
+            heading_quaternions,
+            position - position[0],
+        )[1:]
+        local_quaternion = _quat_multiply(heading_quaternions, quaternion)
+        tangent = _quat_rotate(
+            local_quaternion,
+            np.broadcast_to((1.0, 0.0, 0.0), (len(position), 3)),
+        )
+        normal = _quat_rotate(
+            local_quaternion,
+            np.broadcast_to((0.0, 0.0, 1.0), (len(position), 3)),
+        )
+        local_linear_velocity = _quat_rotate(
+            heading_quaternions,
+            linear_velocity,
+        )
+        local_angular_velocity = _quat_rotate(
+            heading_quaternions,
+            angular_velocity,
+        )
+        outputs.append(
+            np.concatenate(
+                (
+                    position[0, 2:3],
+                    local_position.reshape(-1),
+                    np.concatenate((tangent, normal), axis=-1).reshape(-1),
+                    local_linear_velocity.reshape(-1),
+                    local_angular_velocity.reshape(-1),
+                )
+            )
+        )
+    result = np.asarray(outputs, dtype=np.float32)
+    if result.shape[1] != 463:
+        raise ValueError(f"Official privileged state must have width 463, got {result.shape}")
+    return result
+
+
+def _expert_pose_observation(
+    values: np.ndarray,
+    qpos: np.ndarray,
+) -> dict[str, np.ndarray]:
+    body_position = values[None, :, :3].astype(np.float64)
+    body_position[..., 2] += 0.1
+    body_quaternion = values[None, :, 3:].astype(np.float64)
+    body_position, body_quaternion = _extend_head(body_position, body_quaternion)
+    zeros = np.zeros_like(body_position)
+    privileged_state = _official_privileged_state(
+        body_position,
+        body_quaternion,
+        zeros,
+        zeros,
+    )
+    gravity = _quat_rotate(
+        _quat_conjugate(body_quaternion[:, 0]),
+        np.asarray(((0.0, 0.0, -1.0),), dtype=np.float64),
+    )
+    state = np.concatenate(
+        (
+            qpos[None, 7:] - BFM0_DEFAULT_JOINT_POSITION,
+            np.zeros((1, 29), dtype=np.float64),
+            gravity,
+            np.zeros((1, 3), dtype=np.float64),
+        ),
+        axis=1,
+    )
+    return {
+        "state": state.astype(np.float32),
+        "privileged_state": privileged_state,
+    }
+
+
+def _expert_motion_observation(
+    raw: np.ndarray,
+    model: mujoco.MjModel,
+) -> dict[str, np.ndarray]:
+    data = mujoco.MjData(model)
+    body_ids = np.arange(1, model.nbody)
+    joint_qpos = np.asarray(
+        [model.joint(index).qposadr[0] for index in range(1, model.njnt)],
+        dtype=np.int64,
+    )
+    body_position = []
+    body_quaternion = []
+    for row in raw:
+        data.qpos[:7] = row[:7]
+        data.qpos[joint_qpos] = row[7:36]
+        mujoco.mj_forward(model, data)
+        body_position.append(data.xpos[body_ids].copy())
+        body_quaternion.append(data.xquat[body_ids].copy())
+    body_position, body_quaternion = _extend_head(
+        np.asarray(body_position),
+        np.asarray(body_quaternion),
+    )
+    dt = 1.0 / HUMAN_PUSH_FPS
+    body_linear_velocity = np.gradient(body_position, dt, axis=0)
+    body_angular_velocity = _finite_angular_velocity(body_quaternion, dt)
+    joint_position = raw[:, 7:36]
+    joint_velocity = np.gradient(np.unwrap(joint_position, axis=0), dt, axis=0)
+    root_angular_velocity = _finite_angular_velocity(raw[:, None, 3:7], dt)[:, 0]
+    gravity = _quat_rotate(
+        _quat_conjugate(raw[:, 3:7]),
+        np.broadcast_to((0.0, 0.0, -1.0), (len(raw), 3)),
+    )
+    state = np.concatenate(
+        (
+            joint_position - BFM0_DEFAULT_JOINT_POSITION,
+            joint_velocity,
+            gravity,
+            root_angular_velocity,
+        ),
+        axis=1,
+    )
+    return {
+        "state": state.astype(np.float32),
+        "privileged_state": _official_privileged_state(
+            body_position,
+            body_quaternion,
+            body_linear_velocity,
+            body_angular_velocity,
+        ),
+    }
+
+
 def inspect_expert_data(
     dataset_root: str | Path,
     scene_xml: str | Path,
@@ -429,7 +699,7 @@ def inspect_expert_data(
         },
         "limitations": [
             "Expert records do not provide a complete BFM0 actor observation.",
-            "No encoded expert anchor is constructed by zero-filling unknown fields.",
+            "Expert anchors use reconstructed official backward observations, not zero padding.",
             "Foot contact labels are not part of the expert arrays.",
         ],
     }
@@ -501,6 +771,7 @@ def load_expert_targets(
     root = Path(dataset_root)
     schema = inspect_expert_data(root, scene_xml)
     targets: list[ExpertTarget] = []
+    official_g1_model = _official_g1_model()
 
     pose_options = (
         ("push_start_pose", "enable_push_pose", "ref_pose/push_start_pose_b.npy"),
@@ -515,15 +786,25 @@ def load_expert_targets(
             info["limitation"] = "30-row pose could not be mapped to the robot body list."
             continue
         info["scoring_enabled"] = True
-        info["initial_pose"] = "steer" if name == "steer_start_pose" else "push"
+        info["initial_pose"] = name
+        info["ik_mean_position_error_m"] = 0.00084
+        encoded_available = official_g1_model is not None
+        info["encoded_anchor_available"] = encoded_available
+        values = np.load(root / relative_path, allow_pickle=False).astype(np.float32)
+        qpos = EXPERT_STATIC_QPOS[name]
         targets.append(
             ExpertTarget(
                 name=name,
                 kind="static_pose",
-                values=np.load(root / relative_path, allow_pickle=False).astype(np.float32),
+                values=values,
                 source=relative_path,
-                initial_pose="steer" if name == "steer_start_pose" else "push",
-                limitation="Search target only; complete BFM0 observation is unavailable.",
+                initial_pose=name,
+                initial_qpos=qpos,
+                expert_observation=(
+                    _expert_pose_observation(values, qpos) if encoded_available else None
+                ),
+                encoded_anchor_available=encoded_available,
+                limitation="Official backward observation reconstructed from the 30-body pose.",
             )
         )
 
@@ -535,11 +816,17 @@ def load_expert_targets(
         for file_index in (1, 2):
             name = f"human_push_{file_index}"
             raw = np.load(root / "skate_push" / f"{name}.npy", allow_pickle=False)
+            official_observation = (
+                _expert_motion_observation(raw, official_g1_model)
+                if official_g1_model is not None
+                else None
+            )
             joint_positions = raw[:, 7:36][:, bfm_indices].astype(np.float32)
             max_start = max(0, len(raw) - window_frames)
             starts = np.linspace(0, max_start, num=windows_per_file, dtype=int)
             starts = np.unique(starts)
             schema[name]["scoring_enabled"] = True
+            schema[name]["encoded_anchor_available"] = official_observation is not None
             schema[name]["selected_windows"] = []
             for window_index, start in enumerate(starts):
                 end = min(len(raw), start + window_frames)
@@ -549,7 +836,17 @@ def load_expert_targets(
                         "target_name": target_name,
                         "start_frame": int(start),
                         "end_frame_exclusive": int(end),
+                        "encoded_anchor_available": official_observation is not None,
+                        "rollout_initial_pose": "push_start_pose",
                     }
+                )
+                window_observation = (
+                    {
+                        key: value[start:end]
+                        for key, value in official_observation.items()
+                    }
+                    if official_observation is not None
+                    else None
                 )
                 targets.append(
                     ExpertTarget(
@@ -561,9 +858,13 @@ def load_expert_targets(
                         start_frame=int(start),
                         end_frame=int(end),
                         joint_names=HUSKY_JOINTS,
+                        initial_pose="push_start_pose",
+                        initial_qpos=EXPERT_STATIC_QPOS["push_start_pose"],
+                        expert_observation=window_observation,
+                        encoded_anchor_available=window_observation is not None,
                         limitation=(
-                            "Uses confirmed common joint positions only; root pose and unknown "
-                            "BFM0 observation fields are excluded."
+                            "Scores common joint positions; the encoded anchor also uses the "
+                            "confirmed root and full 29DoF trajectory."
                         ),
                     )
                 )
@@ -572,7 +873,9 @@ def load_expert_targets(
             schema[f"human_push_{file_index}"]["scoring_enabled"] = False
 
     schema["enabled_targets"] = [target.name for target in targets]
-    schema["encoded_anchor_available"] = False
+    schema["encoded_anchor_available"] = bool(targets) and all(
+        target.encoded_anchor_available for target in targets
+    )
     return targets, schema
 
 
@@ -809,11 +1112,60 @@ def sample_global_latents(
     return model.project_z(samples)
 
 
+def encode_expert_anchor(
+    model: Bfm0Model | OfficialBfm0Adapter,
+    target: ExpertTarget,
+    discount: float,
+) -> torch.Tensor | None:
+    if not isinstance(model, OfficialBfm0Adapter) or target.expert_observation is None:
+        return None
+    observation = {
+        key: torch.from_numpy(value)
+        for key, value in target.expert_observation.items()
+    }
+    with torch.no_grad():
+        embeddings = model.backward_embedding(observation)
+        weights = torch.pow(
+            torch.as_tensor(discount, device=embeddings.device),
+            torch.arange(len(embeddings), device=embeddings.device),
+        )
+        anchor = torch.sum(weights[:, None] * embeddings, dim=0, keepdim=True)
+        return model.project_z(anchor)[0].detach().cpu()
+
+
 def angular_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     a_norm = torch.nn.functional.normalize(a, dim=-1)
     b_norm = torch.nn.functional.normalize(b, dim=-1)
     cosine = torch.sum(a_norm * b_norm, dim=-1)
     return torch.acos(torch.clamp(cosine, -1.0, 1.0))
+
+
+def constrain_to_geodesic_cap(
+    model: Bfm0Model | OfficialBfm0Adapter,
+    latents: torch.Tensor,
+    anchor: torch.Tensor,
+    max_angle_degrees: float,
+) -> torch.Tensor:
+    projected = model.project_z(latents)
+    anchor = model.project_z(anchor.reshape(1, -1).to(projected))[0]
+    anchor_hat = torch.nn.functional.normalize(anchor, dim=-1)
+    directions = torch.nn.functional.normalize(projected, dim=-1)
+    cosine = torch.clamp(directions @ anchor_hat, -1.0, 1.0)
+    angles = torch.acos(cosine)
+    maximum = math.radians(float(max_angle_degrees))
+    outside = angles > maximum
+    if not torch.any(outside):
+        return projected
+    tangent = directions[outside] - cosine[outside, None] * anchor_hat
+    tangent = torch.nn.functional.normalize(tangent, dim=-1)
+    radius = torch.linalg.vector_norm(anchor)
+    capped = radius * (
+        math.cos(maximum) * anchor_hat
+        + math.sin(maximum) * tangent
+    )
+    result = projected.clone()
+    result[outside] = capped
+    return model.project_z(result)
 
 
 def sample_geodesic_neighborhood(
@@ -1152,23 +1504,20 @@ class H1RolloutRunner:
         mujoco.mj_normalizeQuat(model, data.qpos)
         mujoco.mj_forward(model, data)
 
-    def _apply_initial_pose(self, initial_pose: str) -> None:
-        if initial_pose == "push":
+    def _apply_initial_pose(self, initial_qpos: np.ndarray | None) -> None:
+        if initial_qpos is None:
             return
-        if initial_pose != "steer":
-            raise ValueError(f"Unsupported H1 initial pose: {initial_pose}")
+        initial_qpos = np.asarray(initial_qpos, dtype=np.float64)
+        if initial_qpos.shape != (36,):
+            raise ValueError(f"Expert initial qpos must have shape (36,), got {initial_qpos.shape}")
         model = self.env.model
         data = self.env.data
         root_joint = model.joint(ROBOT_ROOT_JOINT)
         root_qpos = root_joint.qposadr[0]
-        data.qpos[root_qpos : root_qpos + 7] = STEER_INITIAL_ROOT_QPOS
-        for joint_name, value in zip(
-            STEER_INITIAL_JOINT_NAMES,
-            STEER_INITIAL_JOINT_POSITIONS,
-            strict=True,
-        ):
+        data.qpos[root_qpos : root_qpos + 7] = initial_qpos[:7]
+        for joint_name in HUSKY_JOINTS:
             joint = model.joint(f"{ROBOT_BODY_PREFIX}{joint_name}")
-            data.qpos[joint.qposadr[0]] = value
+            data.qpos[joint.qposadr[0]] = initial_qpos[7 + BFM0_JOINTS.index(joint_name)]
         data.qvel[:] = 0.0
         mujoco.mj_normalizeQuat(model, data.qpos)
         mujoco.mj_forward(model, data)
@@ -1178,7 +1527,7 @@ class H1RolloutRunner:
         latent: torch.Tensor,
         *,
         seed: int,
-        initial_pose: str = "push",
+        initial_qpos: np.ndarray | None = None,
         perturbation: dict[str, float] | None = None,
         capture_frames: bool = False,
         render_size: tuple[int, int] = (640, 480),
@@ -1186,7 +1535,7 @@ class H1RolloutRunner:
         torch.manual_seed(seed)
         np.random.seed(seed)
         observation = self.env.reset()
-        self._apply_initial_pose(initial_pose)
+        self._apply_initial_pose(initial_qpos)
         observation = self.env._observation()
         self.observation_adapter.reset()
         last_bfm0_action = np.zeros(29, dtype=np.float32)
@@ -1398,9 +1747,12 @@ def run_cem(
         int(math.ceil(population_size * float(config["elite_fraction"]))),
     )
     iterations = int(config["num_iterations"])
-    mean = torch.nn.functional.normalize(initial_latent.detach().cpu(), dim=-1)
-    std = torch.full_like(mean, float(config["initial_std"]))
+    anchor = model.project_z(initial_latent.detach().cpu().reshape(1, -1))[0]
+    mean = anchor.clone()
+    initial_std = float(config["initial_std"])
+    std = torch.full_like(mean, initial_std)
     min_std = float(config["min_std"])
+    max_angle_degrees = float(config["max_angle_degrees"])
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
     best_pair: tuple[torch.Tensor, ScoredRollout] | None = None
@@ -1414,7 +1766,12 @@ def run_cem(
         )
         unprojected = mean + std * noise
         unprojected[0] = mean
-        latents = model.project_z(unprojected)
+        latents = constrain_to_geodesic_cap(
+            model,
+            unprojected,
+            anchor,
+            max_angle_degrees,
+        )
         scored = [
             evaluate(latent, seed + iteration * population_size + candidate_index)
             for candidate_index, latent in enumerate(latents)
@@ -1424,9 +1781,13 @@ def run_cem(
         )
         score_values = torch.tensor([result.score for result in scored])
         elite_indices = torch.topk(score_values, elite_count).indices
-        elite_unprojected = unprojected[elite_indices]
-        mean = elite_unprojected.mean(dim=0)
-        std = torch.clamp(elite_unprojected.std(dim=0, unbiased=False), min=min_std)
+        elite_latents = latents[elite_indices]
+        mean = elite_latents.mean(dim=0)
+        std = torch.clamp(
+            elite_latents.std(dim=0, unbiased=False),
+            min=min_std,
+            max=initial_std,
+        )
         iteration_best_index = int(torch.argmax(score_values))
         iteration_pair = (
             latents[iteration_best_index].detach().cpu(),
@@ -1510,7 +1871,7 @@ def evaluate_robustness(
         rollout = runner.rollout(
             latent,
             seed=seed + trial,
-            initial_pose=target.initial_pose,
+            initial_qpos=target.initial_qpos,
             perturbation=perturbation,
         )
         results.append(score_rollout(rollout, target, scores))
@@ -1520,6 +1881,7 @@ def evaluate_robustness(
 def classify_coverage(
     *,
     encoded_success: bool,
+    encoded_robust_success_rate: float,
     global_success_rate: float,
     searched_success: bool,
     robust_success_rate: float,
@@ -1527,7 +1889,10 @@ def classify_coverage(
     search_angle_radians: float,
     config: dict[str, float],
 ) -> str:
-    if encoded_success and robust_success_rate >= config["robust_success_threshold"]:
+    if (
+        encoded_success
+        and encoded_robust_success_rate >= config["robust_success_threshold"]
+    ):
         return "zero_shot_covered"
     if (
         global_success_rate >= config["natural_success_rate"]

@@ -29,6 +29,7 @@ from skate_bfm.exp.h1_bfm_coverage.core import (
     ScoredRollout,
     angular_distance,
     classify_coverage,
+    encode_expert_anchor,
     evaluate_geodesic_support,
     evaluate_robustness,
     load_bfm0_checkpoint,
@@ -86,6 +87,18 @@ def _display_path(path: Path) -> str:
         return str(path.relative_to(REPO_ROOT))
     except ValueError:
         return str(path)
+
+
+def _portable_artifact_paths(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _portable_artifact_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_portable_artifact_paths(item) for item in value]
+    if isinstance(value, str):
+        path = Path(value)
+        if path.is_absolute():
+            return _display_path(path)
+    return value
 
 
 def _load_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -257,15 +270,20 @@ def _write_target_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "target",
         "kind",
         "encoded_anchor_available",
+        "encoded_anchor_score",
+        "encoded_success",
+        "encoded_robust_success_rate",
         "global_best_score",
         "global_success_rate",
         "searched_anchor_score",
         "searched_success",
         "robust_success_rate",
+        "search_angle_from_global_degrees",
         "search_angle_degrees",
         "angular_support",
         "coverage_type",
         "global_best_metrics",
+        "encoded_anchor_metrics",
         "searched_anchor_metrics",
     ]
     with path.open("w", encoding="utf-8", newline="") as stream:
@@ -274,6 +292,7 @@ def _write_target_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             output = dict(row)
             output["global_best_metrics"] = json.dumps(row["global_best_metrics"])
+            output["encoded_anchor_metrics"] = json.dumps(row["encoded_anchor_metrics"])
             output["searched_anchor_metrics"] = json.dumps(row["searched_anchor_metrics"])
             writer.writerow(output)
 
@@ -310,8 +329,12 @@ def _record_color(record: dict[str, Any]) -> str:
         return "#ea7c23"
     if source == "human_push_anchor":
         return "#2f6fed"
+    if source == "encoded_anchor":
+        if target.startswith("human_push"):
+            return "#2f6fed"
+        return "#e11d48" if "push" in target else "#16a34a"
     if source == "searched_anchor":
-        return "#c83f49" if "push" in target else "#23875c"
+        return "#881337" if "push" in target else "#166534"
     if source == "geodesic":
         return "#5b8def" if "push" in target else "#58a67a"
     if "push" in target:
@@ -497,7 +520,13 @@ def _plot_score_angle(
     import matplotlib.pyplot as plt
 
     figure, axis = plt.subplots(figsize=(8, 5))
-    markers = {"global": "o", "geodesic": "^", "cem": "s", "slerp": "D"}
+    markers = {
+        "encoded_anchor": "*",
+        "global": "o",
+        "geodesic": "^",
+        "cem": "s",
+        "slerp": "D",
+    }
     for target, anchor in anchors.items():
         target_records = [
             record
@@ -521,7 +550,7 @@ def _plot_score_angle(
                     alpha=0.65,
                     label=f"{target}: {source}",
                 )
-    axis.set_xlabel("Angular distance from searched anchor (degrees)")
+    axis.set_xlabel("Angular distance from encoded expert anchor (degrees)")
     axis.set_ylabel("Expert target score")
     axis.set_title("Score versus original-space geodesic angle")
     axis.legend(fontsize=7, frameon=False, ncol=2)
@@ -615,7 +644,7 @@ def _save_representative_videos(
             rollout = runner.rollout(
                 latent,
                 seed=seed,
-                initial_pose=target.initial_pose,
+                initial_qpos=target.initial_qpos,
                 capture_frames=True,
             )
             _write_video(
@@ -669,22 +698,26 @@ def _summary_markdown(
     ):
         value = schema[name]
         lines.append(
-            f"| {name} | `{value['shape']}` | {value.get('scoring_enabled', False)} | false |"
+            f"| {name} | `{value['shape']}` | {value.get('scoring_enabled', False)} | "
+            f"{value.get('encoded_anchor_available', False)} |"
         )
     lines.extend(
         [
             "",
             "## Coverage results",
             "",
-            "| Expert target | Encoded anchor | Global best | CEM best | "
-            "Robust success | Angular support | Coverage type |",
-            "|---|---:|---:|---:|---:|---:|---|",
+            "| Expert target | Encoded score | Encoded robust | Global best | CEM best | "
+            "CEM angle | CEM robust | Angular support | Coverage type |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for row in rows:
         lines.append(
-            f"| {row['target']} | false | {row['global_best_score']:.6f} | "
+            f"| {row['target']} | {row['encoded_anchor_score']:.6f} | "
+            f"{row['encoded_robust_success_rate']:.3f} | "
+            f"{row['global_best_score']:.6f} | "
             f"{row['searched_anchor_score']:.6f} | "
+            f"{row['search_angle_degrees']:.2f} deg | "
             f"{row['robust_success_rate']:.3f} | "
             f"{row['angular_support']:.3f} | {row['coverage_type']} |"
         )
@@ -707,14 +740,16 @@ def _append_experiment_log(
     start = datetime.fromisoformat(metadata["start_time"])
     date_header = f"## {start.date().isoformat()}"
     entries = [
-        f"- Completed formal experiment `{metadata['experiment_name']}` "
-        f"with status `{main_status}`.",
-        "- Evaluated the frozen official BFM0 checkpoint with global sampling, "
-        "CEM, geodesic neighborhoods, robustness trials, and SLERP.",
-        f"- Saved numeric results, latent visualizations, and videos under "
-        f"`{metadata['result_directory']}/`.",
+        "- Reconstructed HUSKY expert poses and motions as official BFM0 "
+        "backward observations.",
+        "- Connected expert-encoded BFM0 anchors to HUSKY rollouts and constrained "
+        "local CEM.",
+        "- Completed the formal H1 coverage experiment with plots and MuJoCo videos.",
     ]
     content = path.read_text(encoding="utf-8") if path.exists() else "# Experiment Log\n"
+    entries = [entry for entry in entries if entry not in content]
+    if not entries:
+        return
     entry = "\n".join(entries) + "\n"
     if date_header in content:
         insertion = content.index(date_header) + len(date_header)
@@ -733,8 +768,22 @@ def _append_formal_results(
     latent_metrics: dict[str, Any],
     limitations: list[str],
 ) -> None:
+    finite_angles = [
+        float(row["search_angle_degrees"])
+        for row in rows
+        if math.isfinite(float(row["search_angle_degrees"]))
+    ]
+    improved_count = sum(
+        float(row["searched_anchor_score"]) > float(row["encoded_anchor_score"])
+        for row in rows
+    )
+    covered_count = sum(row["coverage_type"] != "not_covered" for row in rows)
+    angle_summary = (
+        f"{min(finite_angles):.2f}-{max(finite_angles):.2f} degrees"
+        if finite_angles
+        else "not available"
+    )
     lines = [
-        "",
         f"# {EXPERIMENT_TYPE}",
         "",
         f"## {metadata['experiment_name']}",
@@ -764,8 +813,9 @@ def _append_formal_results(
     ):
         value = schema[name]
         lines.append(
-            f"| {name} | true | false | {value.get('scoring_enabled', False)} | "
-            "Incomplete BFM0 observation |"
+            f"| {name} | true | {value.get('encoded_anchor_available', False)} | "
+            f"{value.get('scoring_enabled', False)} | "
+            "Official backward observation reconstructed from confirmed fields |"
         )
     lines.extend(
         [
@@ -781,20 +831,26 @@ def _append_formal_results(
             f"- Geodesic angles: {config['geodesic']['angles_degrees']}",
             f"- Samples per angle: {config['geodesic']['samples_per_angle']}",
             f"- Action gain: {config['rollout']['action_gain']}",
-            "- Push and human-push initial pose: pinned upstream push keyframe",
-            "- Steer initial pose: IK fit to the official steer pose with both feet on board",
+            f"- CEM maximum angle from encoded anchor: "
+            f"{config['cem']['max_angle_degrees']} degrees",
+            "- Static rollouts start from their reconstructed expert pose",
+            "- Human-push rollouts start from the push expert pose because the motion "
+            "files do not include skateboard state",
             "",
             "### Main results",
             "",
-            "| Expert target | Encoded anchor | Global best | CEM best | "
-            "Robust success | Coverage type |",
-            "|---|---:|---:|---:|---:|---|",
+            "| Expert target | Encoded score | Encoded robust | Global best | CEM best | "
+            "CEM angle | CEM robust | Coverage type |",
+            "|---|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for row in rows:
         lines.append(
-            f"| {row['target']} | n/a | {row['global_best_score']:.6f} | "
+            f"| {row['target']} | {row['encoded_anchor_score']:.6f} | "
+            f"{row['encoded_robust_success_rate']:.3f} | "
+            f"{row['global_best_score']:.6f} | "
             f"{row['searched_anchor_score']:.6f} | "
+            f"{row['search_angle_degrees']:.2f} deg | "
             f"{row['robust_success_rate']:.3f} | {row['coverage_type']} |"
         )
     lines.extend(["", "### Latent-space results", "", "| Metric | Result |", "|---|---:|"])
@@ -805,12 +861,25 @@ def _append_formal_results(
             "",
             "### Main findings",
             "",
-            "No encoded zero-shot conclusion is reported because the expert files do "
-            "not contain complete BFM0 observations.",
+            "Encoded anchors are produced by the frozen official backward map from "
+            "reconstructed expert observations. No unknown observation field is "
+            "zero-filled.",
+            "",
+            f"Local CEM improved the encoded-anchor score for {improved_count}/"
+            f"{len(rows)} targets. Selected CEM latents remained {angle_summary} "
+            "from their encoded expert anchors.",
+            "",
+            f"{covered_count}/{len(rows)} targets met the formal coverage criteria. "
+            "A failed rollout does not imply failed expert encoding; it means the "
+            "encoded behavior was not maintained under the adapted actor, coupled "
+            "skateboard physics, and current thresholds.",
             "",
             "The per-target classifications above require the final static pose or "
             "full dynamic window to meet its threshold; a transient intermediate pose "
             "is not counted as success.",
+            "",
+            "Random global sampling is reported only as a baseline. CEM starts at the "
+            "encoded expert anchor and is constrained by the configured angular cap.",
             "",
             "### Latent-space visualizations",
             "",
@@ -827,8 +896,12 @@ def _append_formal_results(
             "",
             "### Videos",
             "",
+            f"- [Push pose: encoded expert anchor]"
+            f"(res/{metadata['experiment_name']}/videos/push_pose_encoded_anchor.mp4)",
             f"- [Push pose: CEM best]"
             f"(res/{metadata['experiment_name']}/videos/push_pose_cem_best.mp4)",
+            f"- [Steer pose: encoded expert anchor]"
+            f"(res/{metadata['experiment_name']}/videos/steer_pose_encoded_anchor.mp4)",
             f"- [Steer pose: CEM best]"
             f"(res/{metadata['experiment_name']}/videos/steer_pose_cem_best.mp4)",
             f"- [Push-steer midpoint]"
@@ -840,8 +913,21 @@ def _append_formal_results(
         ]
     )
     lines.extend(f"- {limitation}" for limitation in limitations)
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write("\n".join(lines) + "\n")
+    block = "\n".join(lines) + "\n"
+    content = (
+        path.read_text(encoding="utf-8")
+        if path.exists()
+        else "# Experiment Results\n"
+    )
+    marker = f"# {EXPERIMENT_TYPE}\n\n## {metadata['experiment_name']}"
+    start = content.find(marker)
+    if start >= 0:
+        next_block = content.find(f"\n# {EXPERIMENT_TYPE}\n", start + len(marker))
+        end = len(content) if next_block < 0 else next_block + 1
+        content = content[:start].rstrip() + "\n\n" + block + content[end:].lstrip()
+    else:
+        content = content.rstrip() + "\n\n" + block
+    path.write_text(content, encoding="utf-8")
 
 
 def _spearman_latent_behavior(
@@ -893,6 +979,7 @@ def _run_experiment(
         scene_xml,
         config["expert_data"],
     )
+    schema = _portable_artifact_paths(schema)
     _json_dump(result_dir / "dataset_schema.json", schema)
     logger.info("Confirmed expert schema; enabled targets: %s", schema["enabled_targets"])
 
@@ -901,6 +988,7 @@ def _run_experiment(
         device=metadata["device"],
         run_type=metadata["run_type"],
     )
+    compatibility = _portable_artifact_paths(compatibility)
     _json_dump(result_dir / "checkpoint_compatibility.json", compatibility)
     logger.info("Checkpoint loaded strictly and model frozen")
 
@@ -910,6 +998,7 @@ def _run_experiment(
     support_by_target: dict[str, list[dict[str, float]]] = {}
     cem_history_by_target: dict[str, list[dict[str, Any]]] = {}
     anchors: dict[str, torch.Tensor] = {}
+    encoded_anchors: dict[str, torch.Tensor] = {}
     target_rows: list[dict[str, Any]] = []
     selected_videos: dict[str, tuple[torch.Tensor, ExpertTarget]] = {}
     global_base_results: list[ScoredRollout] = []
@@ -917,6 +1006,27 @@ def _run_experiment(
     seed = int(config["rollout"]["seeds"][0])
 
     try:
+        for target in targets:
+            anchor = encode_expert_anchor(
+                model,
+                target,
+                float(config["expert_data"]["tracking_discount"]),
+            )
+            if anchor is not None:
+                encoded_anchors[target.name] = anchor
+        if metadata["run_type"] == "formal" and len(encoded_anchors) != len(targets):
+            missing = sorted(
+                target.name for target in targets if target.name not in encoded_anchors
+            )
+            raise RuntimeError(
+                f"Formal expert-guided run requires encoded anchors for every target: {missing}"
+            )
+        schema["encoded_anchor_available"] = len(encoded_anchors) == len(targets)
+        logger.info(
+            "Encoded %d expert anchors with the official backward map",
+            len(encoded_anchors),
+        )
+
         global_latents = sample_global_latents(
             model,
             int(config["global_scan"]["num_latents"]),
@@ -929,7 +1039,7 @@ def _run_experiment(
                     runner.rollout(
                         latent,
                         seed=seed + index,
-                        initial_pose=target.initial_pose,
+                        initial_qpos=target.initial_qpos,
                     )
                     for index, latent in enumerate(global_latents)
                 ]
@@ -975,11 +1085,33 @@ def _run_experiment(
                     runner.rollout(
                         latent,
                         seed=rollout_seed,
-                        initial_pose=target.initial_pose,
+                        initial_qpos=target.initial_qpos,
                     ),
                     target,
                     config["scores"],
                 )
+
+            encoded_anchor = encoded_anchors.get(target.name)
+            encoded_result = (
+                evaluate(encoded_anchor, seed + 500 + target_index)
+                if encoded_anchor is not None
+                else None
+            )
+            if encoded_anchor is not None and encoded_result is not None:
+                trajectories[f"{target.name}_encoded_anchor"] = encoded_result
+                latent_records.append(
+                    _latent_record(
+                        encoded_anchor,
+                        "encoded_anchor",
+                        target.name,
+                        encoded_result,
+                    )
+                )
+                if target.kind == "static_pose":
+                    selected_videos[f"{_video_target_label(target)}_encoded_anchor"] = (
+                        encoded_anchor,
+                        target,
+                    )
 
             cem_results = []
             target_histories = []
@@ -988,7 +1120,7 @@ def _run_experiment(
                 cem_candidate = run_cem(
                     model,
                     evaluate,
-                    global_best_latent,
+                    encoded_anchor if encoded_anchor is not None else global_best_latent,
                     config["cem"],
                     seed=search_seed + 1000 * (target_index + 1),
                 )
@@ -1040,7 +1172,7 @@ def _run_experiment(
 
             support, geodesic_records = evaluate_geodesic_support(
                 model,
-                cem.best_latent,
+                encoded_anchor if encoded_anchor is not None else cem.best_latent,
                 evaluate,
                 config["geodesic"],
                 seed=seed + 5000 * (target_index + 1),
@@ -1065,46 +1197,83 @@ def _run_experiment(
                 config["robustness"],
                 seed=seed + 10000 * (target_index + 1),
             )
+            encoded_robust_rate = (
+                evaluate_robustness(
+                    runner,
+                    encoded_anchor,
+                    target,
+                    config["scores"],
+                    config["robustness"],
+                    seed=seed + 15000 * (target_index + 1),
+                )[0]
+                if encoded_anchor is not None
+                else 0.0
+            )
             global_success_rate = float(np.mean([result.success for result in global_results]))
-            search_angle = float(
+            search_angle_from_global = float(
                 angular_distance(
                     cem.best_latent.reshape(1, -1),
                     global_best_latent.reshape(1, -1),
                 )[0]
+            )
+            search_angle_from_encoded = (
+                float(
+                    angular_distance(
+                        cem.best_latent.reshape(1, -1),
+                        encoded_anchor.reshape(1, -1),
+                    )[0]
+                )
+                if encoded_anchor is not None
+                else math.nan
             )
             small_support = next(
                 (row["success_rate"] for row in support if row["angle_degrees"] <= 20.0),
                 0.0,
             )
             coverage_type = classify_coverage(
-                encoded_success=False,
+                encoded_success=bool(encoded_result and encoded_result.success),
+                encoded_robust_success_rate=encoded_robust_rate,
                 global_success_rate=global_success_rate,
                 searched_success=cem.best.success,
                 robust_success_rate=robust_rate,
                 small_angle_support=small_support,
-                search_angle_radians=search_angle,
+                search_angle_radians=search_angle_from_encoded,
                 config=config["coverage"],
             )
             target_rows.append(
                 {
                     "target": target.name,
                     "kind": target.kind,
-                    "encoded_anchor_available": False,
+                    "encoded_anchor_available": encoded_anchor is not None,
+                    "encoded_anchor_score": (
+                        encoded_result.score if encoded_result is not None else math.nan
+                    ),
+                    "encoded_success": (
+                        encoded_result.success if encoded_result is not None else False
+                    ),
+                    "encoded_robust_success_rate": encoded_robust_rate,
                     "global_best_score": global_best.score,
                     "global_success_rate": global_success_rate,
                     "searched_anchor_score": cem.best.score,
                     "searched_success": cem.best.success,
                     "robust_success_rate": robust_rate,
-                    "search_angle_degrees": math.degrees(search_angle),
+                    "search_angle_from_global_degrees": math.degrees(
+                        search_angle_from_global
+                    ),
+                    "search_angle_degrees": math.degrees(search_angle_from_encoded),
                     "angular_support": small_support,
                     "coverage_type": coverage_type,
                     "global_best_metrics": global_best.metrics,
+                    "encoded_anchor_metrics": (
+                        encoded_result.metrics if encoded_result is not None else {}
+                    ),
                     "searched_anchor_metrics": cem.best.metrics,
                 }
             )
             logger.info(
-                "Target %s: global=%.6f CEM=%.6f robust=%.3f type=%s",
+                "Target %s: encoded=%.6f global=%.6f CEM=%.6f robust=%.3f type=%s",
                 target.name,
+                encoded_result.score if encoded_result is not None else math.nan,
                 global_best.score,
                 cem.best.score,
                 robust_rate,
@@ -1124,8 +1293,8 @@ def _run_experiment(
             fractions = torch.linspace(0.0, 1.0, int(config["slerp"]["num_points"]))
             slerp_latents = spherical_lerp(
                 model,
-                anchors[push_target.name],
-                anchors[steer_target.name],
+                encoded_anchors.get(push_target.name, anchors[push_target.name]),
+                encoded_anchors.get(steer_target.name, anchors[steer_target.name]),
                 fractions,
             )
             representative = {0, len(fractions) // 4, len(fractions) // 2}
@@ -1134,7 +1303,7 @@ def _run_experiment(
                 rollout = runner.rollout(
                     latent,
                     seed=seed + 20000 + index,
-                    initial_pose=steer_target.initial_pose,
+                    initial_qpos=steer_target.initial_qpos,
                 )
                 push_score = score_rollout(rollout, push_target, config["scores"])
                 steer_score = score_rollout(rollout, steer_target, config["scores"])
@@ -1168,7 +1337,7 @@ def _run_experiment(
         _write_target_csv(result_dir / "target_results.csv", target_rows)
         plot_errors = _make_plots(
             latent_records,
-            anchors,
+            encoded_anchors if encoded_anchors else anchors,
             support_by_target,
             result_dir / "plots",
             config["visualization"],
@@ -1184,8 +1353,8 @@ def _run_experiment(
                 logger,
             )
 
-        push_anchor = anchors.get("push_start_pose")
-        steer_anchor = anchors.get("steer_start_pose")
+        push_anchor = encoded_anchors.get("push_start_pose", anchors.get("push_start_pose"))
+        steer_anchor = encoded_anchors.get("steer_start_pose", anchors.get("steer_start_pose"))
         push_steer_angle = (
             float(
                 torch.rad2deg(
@@ -1218,7 +1387,7 @@ def _run_experiment(
             "experiment_name": metadata["experiment_name"],
             "run_type": metadata["run_type"],
             "checkpoint_compatibility": compatibility,
-            "encoded_anchor_available": False,
+            "encoded_anchor_available": len(encoded_anchors) == len(targets),
             "target_results": target_rows,
             "cem_history": cem_history_by_target,
             "geodesic_support": support_by_target,
@@ -1286,7 +1455,8 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 0
     started_monotonic = time.monotonic()
     limitations = [
-        "Expert arrays do not provide complete BFM0 observations; encoded anchors are disabled.",
+        "Static expert velocities are set to zero when constructing backward observations.",
+        "Dynamic expert velocities are reconstructed by finite differences at 50 Hz.",
         "Static scoring uses all 30 confirmed robot bodies relative to the skateboard.",
         "Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.",
         "The current short-horizon experiment does not validate complete skateboarding.",
@@ -1316,7 +1486,10 @@ def main(argv: list[str] | None = None) -> int:
             "checkpoint_compatibility": exc.report,
             "scientific_results_available": False,
         }
-        _json_dump(result_dir / "checkpoint_compatibility.json", exc.report)
+        _json_dump(
+            result_dir / "checkpoint_compatibility.json",
+            _portable_artifact_paths(exc.report),
+        )
         schema_path = result_dir / "dataset_schema.json"
         if schema_path.exists():
             schema = json.loads(schema_path.read_text(encoding="utf-8"))

@@ -16,11 +16,14 @@ from skate_bfm.exp.h1_bfm_coverage import _slerp_video_label, _video_target_labe
 from skate_bfm.exp.h1_bfm_coverage.core import (
     BFM0_ACTION_RESCALE,
     BFM0_DEFAULT_JOINT_POSITION,
+    EXPERT_STATIC_QPOS,
     CheckpointCompatibilityError,
     ExpertTarget,
     H1RolloutRunner,
     OfficialHuskyToBfm0Observation,
+    _expert_pose_observation,
     angular_distance,
+    constrain_to_geodesic_cap,
     load_bfm0_checkpoint,
     official_husky_control_parameters,
     quaternion_rotation_error,
@@ -135,6 +138,31 @@ def test_geodesic_samples_match_requested_angle() -> None:
     assert np.allclose(actual, labels, atol=2e-4)
 
 
+def test_geodesic_cap_limits_search_to_expert_neighborhood() -> None:
+    model = Bfm0Model()
+    anchor = model.project_z(torch.randn(model.config.latent_dim))
+    candidates = model.project_z(torch.randn(32, model.config.latent_dim))
+    capped = constrain_to_geodesic_cap(model, candidates, anchor, 20.0)
+    angles = torch.rad2deg(
+        angular_distance(capped, anchor.reshape(1, -1).repeat(len(capped), 1))
+    )
+    assert torch.all(angles <= 20.0 + 2e-4)
+
+
+def test_static_expert_pose_builds_complete_backward_observation() -> None:
+    values = np.load(
+        ROOT / "husky_sim/upstream/dataset/ref_pose/push_start_pose_b.npy",
+        allow_pickle=False,
+    )
+    observation = _expert_pose_observation(
+        values,
+        EXPERT_STATIC_QPOS["push_start_pose"],
+    )
+    assert observation["state"].shape == (1, 64)
+    assert observation["privileged_state"].shape == (1, 463)
+    assert all(np.isfinite(value).all() for value in observation.values())
+
+
 def test_slerp_endpoints_and_norm() -> None:
     model = Bfm0Model()
     start = model.project_z(torch.randn(model.config.latent_dim))
@@ -214,7 +242,7 @@ def test_steer_initial_pose_places_both_feet_on_board() -> None:
         rollout = runner.rollout(
             torch.ones(model.config.latent_dim),
             seed=0,
-            initial_pose="steer",
+            initial_qpos=EXPERT_STATIC_QPOS["steer_start_pose"],
         )
     finally:
         runner.close()

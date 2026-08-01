@@ -10,10 +10,11 @@ mounting, riding, steering, recovery, and safe departure.
 
 The repository provides the BFM0-HUSKY integration and the first formal
 experiment, H1 Expert-Guided BFM0 Behavior Coverage. H1 evaluates a frozen
-official BFM-Zero model through global sphere sampling, expert-guided CEM,
-geodesic neighborhoods, robustness trials, and push-steer SLERP. It is a
-short-horizon behavior-coverage experiment, not a trained Skate-BFM policy or a
-complete skateboarding controller.
+official BFM-Zero model by reconstructing official backward observations from
+HUSKY expert poses and push trajectories, encoding expert anchors, and comparing
+zero-shot execution with global sphere sampling and expert-centered local CEM.
+It is a short-horizon behavior-coverage experiment, not a trained Skate-BFM
+policy or a complete skateboarding controller.
 
 ## Setup
 
@@ -136,6 +137,14 @@ content-named MuJoCo videos under
 Smoke runs use a temporary directory and are deleted automatically; they do not
 update either experiment document.
 
+H1 reconstructs the official 64-dimensional state and 463-dimensional
+privileged state from confirmed expert fields. Static poses use 29DoF IK and
+zero target velocity; dynamic windows use root and 29DoF trajectories with
+50 Hz finite-difference velocities. The frozen official backward map produces
+the encoded anchors. CEM is initialized at each encoded anchor and constrained
+to a 40-degree spherical neighborhood; random global sampling remains a
+separate baseline.
+
 ## Current Framework
 
 - A compact forward-backward BFM0 model interface with 256-dimensional behavior
@@ -146,6 +155,8 @@ update either experiment document.
 - A project-owned lightweight HUSKY MuJoCo runtime under
   `husky_sim/src/skate_husky/`.
 - A strict adapter for the official pretrained BFM-Zero checkpoint.
+- Expert-pose and expert-motion reconstruction for official backward-map
+  anchors.
 - The formal H1 latent coverage search, metrics, plots, and videos.
 - Unit tests and an end-to-end headless smoke command.
 

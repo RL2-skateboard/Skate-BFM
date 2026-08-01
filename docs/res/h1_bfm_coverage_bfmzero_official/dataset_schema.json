@@ -7,7 +7,7 @@
   },
   "limitations": [
     "Expert records do not provide a complete BFM0 actor observation.",
-    "No encoded expert anchor is constructed by zero-filling unknown fields.",
+    "Expert anchors use reconstructed official backward observations, not zero padding.",
     "Foot contact labels are not part of the expert arrays."
   ],
   "push_start_pose": {
@@ -56,7 +56,9 @@
     "mapping_confirmed": true,
     "finite": true,
     "scoring_enabled": true,
-    "initial_pose": "push"
+    "initial_pose": "push_start_pose",
+    "ik_mean_position_error_m": 0.00084,
+    "encoded_anchor_available": true
   },
   "steer_start_pose": {
     "path": "husky_sim/upstream/dataset/ref_pose/steer_start_pose_b.npy",
@@ -104,7 +106,9 @@
     "mapping_confirmed": true,
     "finite": true,
     "scoring_enabled": true,
-    "initial_pose": "steer"
+    "initial_pose": "steer_start_pose",
+    "ik_mean_position_error_m": 0.00084,
+    "encoded_anchor_available": true
   },
   "human_push_1": {
     "path": "husky_sim/upstream/dataset/skate_push/human_push_1.npy",
@@ -206,21 +210,28 @@
     "loader_boundary_note": "The upstream temporary 36-column buffer copies source 7:35 and leaves column 35 zero. The AMP 23-joint feature does not read that omitted wrist column.",
     "finite": true,
     "scoring_enabled": true,
+    "encoded_anchor_available": true,
     "selected_windows": [
       {
         "target_name": "human_push_1_window_00",
         "start_frame": 0,
-        "end_frame_exclusive": 25
+        "end_frame_exclusive": 25,
+        "encoded_anchor_available": true,
+        "rollout_initial_pose": "push_start_pose"
       },
       {
         "target_name": "human_push_1_window_01",
         "start_frame": 77,
-        "end_frame_exclusive": 102
+        "end_frame_exclusive": 102,
+        "encoded_anchor_available": true,
+        "rollout_initial_pose": "push_start_pose"
       },
       {
         "target_name": "human_push_1_window_02",
         "start_frame": 155,
-        "end_frame_exclusive": 180
+        "end_frame_exclusive": 180,
+        "encoded_anchor_available": true,
+        "rollout_initial_pose": "push_start_pose"
       }
     ]
   },
@@ -324,21 +335,28 @@
     "loader_boundary_note": "The upstream temporary 36-column buffer copies source 7:35 and leaves column 35 zero. The AMP 23-joint feature does not read that omitted wrist column.",
     "finite": true,
     "scoring_enabled": true,
+    "encoded_anchor_available": true,
     "selected_windows": [
       {
         "target_name": "human_push_2_window_00",
         "start_frame": 0,
-        "end_frame_exclusive": 25
+        "end_frame_exclusive": 25,
+        "encoded_anchor_available": true,
+        "rollout_initial_pose": "push_start_pose"
       },
       {
         "target_name": "human_push_2_window_01",
         "start_frame": 98,
-        "end_frame_exclusive": 123
+        "end_frame_exclusive": 123,
+        "encoded_anchor_available": true,
+        "rollout_initial_pose": "push_start_pose"
       },
       {
         "target_name": "human_push_2_window_02",
         "start_frame": 196,
-        "end_frame_exclusive": 221
+        "end_frame_exclusive": 221,
+        "encoded_anchor_available": true,
+        "rollout_initial_pose": "push_start_pose"
       }
     ]
   },
@@ -352,5 +370,5 @@
     "human_push_2_window_01",
     "human_push_2_window_02"
   ],
-  "encoded_anchor_available": false
+  "encoded_anchor_available": true
 }

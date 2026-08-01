@@ -9,27 +9,28 @@
 
 | Dataset | Shape | Scoring enabled | BFM input |
 |---|---:|---:|---:|
-| push_start_pose | `[30, 7]` | True | false |
-| steer_start_pose | `[30, 7]` | True | false |
-| human_push_1 | `[180, 36]` | True | false |
-| human_push_2 | `[221, 36]` | True | false |
+| push_start_pose | `[30, 7]` | True | True |
+| steer_start_pose | `[30, 7]` | True | True |
+| human_push_1 | `[180, 36]` | True | True |
+| human_push_2 | `[221, 36]` | True | True |
 
 ## Coverage results
 
-| Expert target | Encoded anchor | Global best | CEM best | Robust success | Angular support | Coverage type |
-|---|---:|---:|---:|---:|---:|---|
-| push_start_pose | false | -0.154998 | 0.017661 | 0.000 | 0.000 | fragile |
-| steer_start_pose | false | -0.914587 | -0.553239 | 0.000 | 0.000 | not_covered |
-| human_push_1_window_00 | false | -0.390123 | -0.311494 | 0.800 | 1.000 | locally_covered |
-| human_push_1_window_01 | false | -0.315596 | -0.315596 | 0.500 | 1.000 | fragile |
-| human_push_1_window_02 | false | -0.321111 | -0.321111 | 0.650 | 1.000 | fragile |
-| human_push_2_window_00 | false | -0.347950 | -0.317644 | 0.950 | 1.000 | locally_covered |
-| human_push_2_window_01 | false | -0.366666 | -0.324695 | 0.650 | 1.000 | fragile |
-| human_push_2_window_02 | false | -0.340893 | -0.304406 | 0.900 | 1.000 | locally_covered |
+| Expert target | Encoded score | Encoded robust | Global best | CEM best | CEM angle | CEM robust | Angular support | Coverage type |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| push_start_pose | -1.138241 | 0.000 | -1.030625 | -1.045835 | 12.37 deg | 0.000 | 0.000 | not_covered |
+| steer_start_pose | -1.098281 | 0.000 | -0.847677 | -0.998107 | 12.83 deg | 0.000 | 0.000 | not_covered |
+| human_push_1_window_00 | -0.601383 | 0.000 | -0.604842 | -0.553971 | 12.37 deg | 0.000 | 0.000 | not_covered |
+| human_push_1_window_01 | -0.592272 | 0.000 | -0.592723 | -0.552415 | 12.50 deg | 0.000 | 0.000 | not_covered |
+| human_push_1_window_02 | -0.565941 | 0.000 | -0.584074 | -0.531432 | 11.78 deg | 0.000 | 0.000 | not_covered |
+| human_push_2_window_00 | -0.574201 | 0.000 | -0.575069 | -0.549567 | 11.48 deg | 0.000 | 0.000 | not_covered |
+| human_push_2_window_01 | -0.584426 | 0.000 | -0.615353 | -0.557333 | 11.39 deg | 0.000 | 0.000 | not_covered |
+| human_push_2_window_02 | -0.566790 | 0.000 | -0.572806 | -0.533452 | 12.36 deg | 0.000 | 0.000 | not_covered |
 
 ## Limitations
 
-- Expert arrays do not provide complete BFM0 observations; encoded anchors are disabled.
+- Static expert velocities are set to zero when constructing backward observations.
+- Dynamic expert velocities are reconstructed by finite differences at 50 Hz.
 - Static scoring uses all 30 confirmed robot bodies relative to the skateboard.
 - Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.
 - The current short-horizon experiment does not validate complete skateboarding.
