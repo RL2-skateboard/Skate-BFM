@@ -1,0 +1,23 @@
+{
+  "checkpoint": "/tmp/h1_bfm0_temporary_smoke.pt",
+  "run_type": "smoke",
+  "loader": "skate_bfm.bfm0.Bfm0Model strict state_dict loader",
+  "expected_dimensions": {
+    "observation": 465,
+    "action": 29,
+    "latent": 256
+  },
+  "missing_keys": [],
+  "unexpected_keys": [],
+  "shape_mismatches": [],
+  "compatible": true,
+  "formal_eligible": false,
+  "format": "torch_state_dict",
+  "metadata": {
+    "temporary": true,
+    "purpose": "H1 smoke only"
+  },
+  "temporary": true,
+  "loaded_strictly": true,
+  "frozen": true
+}

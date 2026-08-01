@@ -1,0 +1,7 @@
+2026-08-01 17:44:02,863 INFO Experiment h1_bfm_coverage_smoke_videos started
+2026-08-01 17:44:02,863 INFO Run type=smoke device=cpu checkpoint=/tmp/h1_bfm0_temporary_smoke.pt
+2026-08-01 17:44:02,976 INFO Confirmed expert schema; enabled targets: ['push_start_pose']
+2026-08-01 17:44:02,985 INFO Checkpoint loaded strictly and model frozen
+2026-08-01 17:44:03,102 INFO Completed global scan with 4 latents
+2026-08-01 17:44:03,144 INFO Target push_start_pose: global=0.003848 CEM=0.003848 robust=1.000 type=naturally_covered
+2026-08-01 17:44:05,027 INFO Experiment ended status=completed duration=2.164s output=docs/res/h1_bfm_coverage_smoke_videos
