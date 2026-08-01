@@ -8,10 +8,10 @@
 
 - Experiment name: h1_bfm_coverage_bfmzero_official
 - Experiment type: H1 Expert-Guided BFM0 Behavior Coverage
-- Start time: 2026-08-01T20:50:24.477436+08:00
-- End time: 2026-08-01T20:58:57.070986+08:00
-- Duration: 512.568 seconds
-- Git commit: `103ac1900e35dbb15f840b7d736aad3ea7b3aa30`
+- Start time: 2026-08-01T21:02:59.597005+08:00
+- End time: 2026-08-01T21:11:37.175196+08:00
+- Duration: 517.552 seconds
+- Git commit: `6623a48d94b889b589f1407aa3e82a3e1da37246`
 - Checkpoint: `model/bfm-zero-official`
 - Device: `cuda`
 - Result directory: `docs/res/h1_bfm_coverage_bfmzero_official`
