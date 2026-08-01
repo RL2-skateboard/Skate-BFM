@@ -1,7 +1,8 @@
-"""Headless MuJoCo runtime for Skate-BFM integration smoke tests."""
+"""Lightweight MuJoCo runtime for Skate-BFM integration tests."""
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import mujoco
@@ -19,6 +20,8 @@ class HuskyLiteEnv:
         *,
         control_dt: float = 0.02,
         action_scale: float = 0.1,
+        viewer: bool = False,
+        realtime: bool = False,
     ) -> None:
         husky_root = Path(__file__).resolve().parents[2]
         default_xml = husky_root / "upstream/test_scene/mjlab_scene.xml"
@@ -30,8 +33,12 @@ class HuskyLiteEnv:
             )
         self.model = mujoco.MjModel.from_xml_path(str(self.xml_path))
         self.data = mujoco.MjData(self.model)
+        self.control_dt = float(control_dt)
         self.decimation = max(1, round(control_dt / self.model.opt.timestep))
         self.action_scale = float(action_scale)
+        self.realtime = bool(realtime)
+        self._viewer_requested = bool(viewer)
+        self._viewer = None
         self._neutral_control = self.model.key_ctrl[0, : self.robot_action_dim].copy()
         self._last_action = np.zeros(self.robot_action_dim, dtype=np.float32)
         self._robot_joints = [
@@ -39,14 +46,19 @@ class HuskyLiteEnv:
             for index in range(self.robot_action_dim)
         ]
         self._board_dof = self.model.joint("skateboard/floating_base_joint_skateboard").dofadr[0]
+        self._pelvis_body = self.model.body("robot/pelvis").id
 
     def reset(self) -> dict[str, np.ndarray | float]:
         mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
         self._last_action.fill(0.0)
         mujoco.mj_forward(self.model, self.data)
+        if self._viewer_requested and self._viewer is None:
+            self._launch_viewer()
+        self._sync_viewer()
         return self._observation()
 
     def step(self, action: np.ndarray) -> dict[str, np.ndarray | float]:
+        start_time = time.perf_counter()
         action = np.asarray(action, dtype=np.float32)
         if action.shape != (self.robot_action_dim,):
             raise ValueError(f"Expected HUSKY action shape (23,), got {action.shape}")
@@ -56,7 +68,42 @@ class HuskyLiteEnv:
         )
         for _ in range(self.decimation):
             mujoco.mj_step(self.model, self.data)
+        self._sync_viewer()
+        if self.realtime:
+            remaining = self.control_dt - (time.perf_counter() - start_time)
+            if remaining > 0.0:
+                time.sleep(remaining)
         return self._observation()
+
+    @property
+    def is_running(self) -> bool:
+        return self._viewer is None or self._viewer.is_running()
+
+    def close(self) -> None:
+        viewer = self._viewer
+        self._viewer = None
+        if viewer is not None and viewer.is_running():
+            viewer.close()
+            time.sleep(0.1)
+
+    def _launch_viewer(self) -> None:
+        import mujoco.viewer
+
+        self._viewer = mujoco.viewer.launch_passive(
+            self.model,
+            self.data,
+            show_left_ui=False,
+            show_right_ui=False,
+        )
+        self._viewer.cam.distance = 4.0
+        self._viewer.cam.azimuth = 210.0
+        self._viewer.cam.elevation = -10.0
+
+    def _sync_viewer(self) -> None:
+        if self._viewer is None or not self._viewer.is_running():
+            return
+        self._viewer.cam.lookat[:] = self.data.xpos[self._pelvis_body]
+        self._viewer.sync()
 
     def _observation(self) -> dict[str, np.ndarray | float]:
         joint_position = np.empty(self.robot_action_dim, dtype=np.float32)
@@ -84,4 +131,3 @@ class HuskyLiteEnv:
             "root_height": float(self.data.qpos[2]),
             "board_speed": float(self.data.qvel[self._board_dof]),
         }
-

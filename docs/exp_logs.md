@@ -1,5 +1,9 @@
 # Experiment Log
 
+## 2026-08-01
+
+- Added MuJoCo visualization to the existing BFM0-HUSKY smoke command.
+
 ## 2026-07-30
 
 - Wrapped the HUSKY simulator under `husky_sim/`.

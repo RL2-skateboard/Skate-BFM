@@ -18,28 +18,48 @@ class RolloutSummary:
     final_board_speed: float
 
 
-def run_smoke(steps: int = 20, seed: int = 42) -> RolloutSummary:
+def run_smoke(
+    steps: int = 20,
+    seed: int = 42,
+    *,
+    viewer: bool = False,
+    realtime: bool | None = None,
+    action_gain: float = 0.0,
+) -> RolloutSummary:
+    if steps < 0:
+        raise ValueError("steps must be non-negative")
+    if steps == 0 and not viewer:
+        raise ValueError("steps=0 is only supported with viewer=True")
+
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     model = Bfm0Model().eval()
-    adapter = Bfm0ToHusky23(action_gain=0.0)
+    adapter = Bfm0ToHusky23(action_gain=action_gain)
     observation_adapter = HuskyToBfm0Observation()
-    env = HuskyLiteEnv()
+    env = HuskyLiteEnv(
+        viewer=viewer,
+        realtime=viewer if realtime is None else realtime,
+    )
     observation = env.reset()
     initial_height = float(observation["root_height"])
     latent = torch.zeros(model.config.latent_dim)
     latent[0] = 1.0
+    completed_steps = 0
 
-    for _ in range(steps):
-        bfm_observation = observation_adapter(observation)
-        with torch.no_grad():
-            bfm_action = model.act(bfm_observation, latent)[0]
-        husky_action = adapter(bfm_action).numpy()
-        observation = env.step(husky_action)
+    try:
+        while env.is_running and (steps == 0 or completed_steps < steps):
+            bfm_observation = observation_adapter(observation)
+            with torch.no_grad():
+                bfm_action = model.act(bfm_observation, latent)[0]
+            husky_action = adapter(bfm_action).numpy()
+            observation = env.step(husky_action)
+            completed_steps += 1
+    finally:
+        env.close()
 
     return RolloutSummary(
-        steps=steps,
+        steps=completed_steps,
         initial_root_height=initial_height,
         final_root_height=float(observation["root_height"]),
         final_board_speed=float(observation["board_speed"]),

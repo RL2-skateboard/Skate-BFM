@@ -69,9 +69,27 @@ Run the end-to-end headless MuJoCo smoke test:
 skate-bfm-smoke --steps 20
 ```
 
+Open the integrated BFM0-HUSKY MuJoCo viewer:
+
+```bash
+skate-bfm-smoke --viewer --steps 0
+```
+
+Close the MuJoCo window to stop the continuous run. For a short visual check,
+replace `--steps 0` with a finite value such as `--steps 300`.
+Use the mouse to rotate, pan, and zoom the MuJoCo camera.
+
 The smoke test verifies that the BFM0 interface, 29DoF-to-23DoF adapter, HUSKY
 scene, and MuJoCo stepping loop work together. It is a software validation
 command, not a skateboarding experiment or task-performance result.
+
+The viewer keeps `--action-gain 0.0` by default because the repository does not
+yet load an official BFM-Zero checkpoint. A nonzero value applies the current
+untrained model output and is intended only for adapter diagnostics:
+
+```bash
+skate-bfm-smoke --viewer --steps 300 --action-gain 0.05
+```
 
 ## Current Framework
 
