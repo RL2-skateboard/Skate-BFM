@@ -9,9 +9,12 @@ description = "Predictive behavior foundation models for humanoid interaction wi
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "imageio[ffmpeg]>=2.36,<3",
+    "matplotlib>=3.9,<4",
     "mujoco>=3.3,<4",
     "numpy>=1.26,<3",
     "pyyaml>=6,<7",
+    "scikit-learn>=1.6,<2",
     "torch>=2.5,<3",
 ]
 
@@ -23,6 +26,7 @@ dev = [
 
 [project.scripts]
 skate-bfm-smoke = "skate_bfm.cli:main"
+skate-bfm-h1 = "skate_bfm.exp.h1_bfm_coverage:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -38,4 +42,3 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
-

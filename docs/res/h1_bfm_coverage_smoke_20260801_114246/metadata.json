@@ -1,0 +1,18 @@
+{
+  "experiment_name": "h1_bfm_coverage_smoke_20260801_114246",
+  "experiment_type": "H1 Expert-Guided BFM0 Behavior Coverage",
+  "run_type": "smoke",
+  "start_time": "2026-08-01T11:42:47.264393+08:00",
+  "end_time": "2026-08-01T11:42:49.075809+08:00",
+  "duration_seconds": 1.8050708490191028,
+  "git_commit": "bb49f5ae36b8e8137db094724f8da46cf86e56e8",
+  "git_dirty": true,
+  "checkpoint": "/tmp/h1_bfm0_temporary_smoke.pt",
+  "device": "cpu",
+  "result_directory": "docs/res/h1_bfm_coverage_smoke_20260801_114246",
+  "total_rollouts": 12,
+  "successful_rollouts": 12,
+  "failed_rollouts": 0,
+  "fall_count": 0,
+  "status": "completed"
+}
