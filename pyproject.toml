@@ -9,13 +9,19 @@ description = "Predictive behavior foundation models for humanoid interaction wi
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "easydict>=1.13,<2",
+    "gymnasium>=1.1,<2",
     "imageio[ffmpeg]>=2.36,<3",
     "matplotlib>=3.9,<4",
     "mujoco>=3.3,<4",
     "numpy>=1.26,<3",
+    "pydantic>=2.10,<3",
     "pyyaml>=6,<7",
+    "safetensors>=0.5,<1",
     "scikit-learn>=1.6,<2",
+    "tensordict>=0.7,<1",
     "torch>=2.5,<3",
+    "tyro>=0.9,<1",
 ]
 
 [project.optional-dependencies]

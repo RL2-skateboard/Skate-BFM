@@ -4,6 +4,7 @@ import json
 import math
 import os
 import sys
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,118 @@ ROBOT_BODY_PREFIX = "robot/"
 BOARD_BODY_NAME = "skateboard/skateboard_deck"
 ROBOT_ROOT_JOINT = "robot/floating_base_joint"
 BOARD_ROOT_JOINT = "skateboard/floating_base_joint_skateboard"
+BFM0_ACTION_RESCALE = 5.0
+BFM0_ACTION_SCALES = np.asarray(
+    (
+        0.222001498914,
+        0.22200157,
+        0.54754699,
+        0.35066156,
+        0.43857802,
+        0.43857802,
+        0.222001498914,
+        0.22200157,
+        0.54754699,
+        0.35066156,
+        0.43857802,
+        0.43857802,
+        0.54754699,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.07450086,
+        0.07466888,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.07450086,
+        0.07450086,
+    ),
+    dtype=np.float32,
+)
+BFM0_DEFAULT_JOINT_POSITION = np.asarray(
+    (
+        -0.1,
+        0.0,
+        0.0,
+        0.3,
+        -0.2,
+        0.0,
+        -0.1,
+        0.0,
+        0.0,
+        0.3,
+        -0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ),
+    dtype=np.float32,
+)
+# Deterministic IK fit of the pinned HUSKY scene to steer_start_pose_b.npy.
+# Mean body-position error is 8.6 mm and both ankle links are on the deck.
+STEER_INITIAL_ROOT_QPOS = np.asarray(
+    (
+        -0.0038432815,
+        -0.0748751164,
+        0.7488494488,
+        0.7602638606,
+        -0.0512906064,
+        0.0321752264,
+        0.6467865883,
+    ),
+    dtype=np.float64,
+)
+STEER_INITIAL_JOINT_NAMES = BFM0_JOINTS[:19] + BFM0_JOINTS[22:26]
+STEER_INITIAL_JOINT_POSITIONS = np.asarray(
+    (
+        -0.7659440306,
+        0.2669030365,
+        0.0810480487,
+        1.4317196503,
+        -0.7427195802,
+        -0.0836071256,
+        -0.8471968170,
+        -0.0006849587,
+        0.1011210459,
+        1.3671185899,
+        -0.6036057137,
+        0.0976104306,
+        -0.0574495737,
+        0.0514544911,
+        0.1233561063,
+        -0.8413713277,
+        0.2781427836,
+        0.0887707479,
+        0.8442776630,
+        0.0473500704,
+        -0.6579796620,
+        0.1803814730,
+        0.5666507660,
+    ),
+    dtype=np.float64,
+)
 
 
 class CheckpointCompatibilityError(RuntimeError):
@@ -156,6 +269,88 @@ class OfficialBfm0Adapter:
         return result
 
 
+class OfficialHuskyToBfm0Observation:
+    """Construct the actor observation used by the official BFM0 checkpoint."""
+
+    def __init__(self, history_length: int = 4) -> None:
+        self.history_length = history_length
+        self._bfm_indices = np.asarray(
+            [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS],
+            dtype=np.int64,
+        )
+        self._actions: deque[np.ndarray] = deque(maxlen=history_length)
+        self._angular_velocity: deque[np.ndarray] = deque(maxlen=history_length)
+        self._joint_position: deque[np.ndarray] = deque(maxlen=history_length)
+        self._joint_velocity: deque[np.ndarray] = deque(maxlen=history_length)
+        self._gravity: deque[np.ndarray] = deque(maxlen=history_length)
+        self.reset()
+
+    def reset(self) -> None:
+        self._actions.clear()
+        self._angular_velocity.clear()
+        self._joint_position.clear()
+        self._joint_velocity.clear()
+        self._gravity.clear()
+        for _ in range(self.history_length):
+            self._actions.append(np.zeros(29, dtype=np.float32))
+            self._angular_velocity.append(np.zeros(3, dtype=np.float32))
+            self._joint_position.append(np.zeros(29, dtype=np.float32))
+            self._joint_velocity.append(np.zeros(29, dtype=np.float32))
+            self._gravity.append(np.zeros(3, dtype=np.float32))
+
+    def _expand_joints(self, values: np.ndarray) -> np.ndarray:
+        expanded = np.zeros(29, dtype=np.float32)
+        expanded[self._bfm_indices] = values
+        return expanded
+
+    def __call__(
+        self,
+        observation: dict[str, np.ndarray | float],
+        last_bfm0_action: np.ndarray,
+    ) -> dict[str, torch.Tensor]:
+        joint_position = self._expand_joints(
+            np.asarray(observation["joint_position"], dtype=np.float32)
+        )
+        joint_position -= BFM0_DEFAULT_JOINT_POSITION
+        joint_velocity = self._expand_joints(
+            np.asarray(observation["joint_velocity"], dtype=np.float32)
+        )
+        gravity = np.asarray(observation["projected_gravity"], dtype=np.float32)
+        angular_velocity = np.asarray(observation["angular_velocity"], dtype=np.float32) * 0.25
+        last_action = np.asarray(last_bfm0_action, dtype=np.float32) * BFM0_ACTION_RESCALE
+
+        self._actions.appendleft(last_action)
+        self._angular_velocity.appendleft(angular_velocity)
+        self._joint_position.appendleft(joint_position)
+        self._joint_velocity.appendleft(joint_velocity)
+        self._gravity.appendleft(gravity)
+        state = np.concatenate((joint_position, joint_velocity, gravity, angular_velocity))
+        history = np.concatenate(
+            tuple(self._actions)
+            + tuple(self._angular_velocity)
+            + tuple(self._joint_position)
+            + tuple(self._joint_velocity)
+            + tuple(self._gravity)
+        )
+        return {
+            "state": torch.from_numpy(state),
+            "history": torch.from_numpy(history),
+            "last_action": torch.from_numpy(last_action),
+        }
+
+
+def official_husky_control_parameters(
+    action_gain: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    indices = np.asarray(
+        [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS],
+        dtype=np.int64,
+    )
+    neutral = BFM0_DEFAULT_JOINT_POSITION[indices].copy()
+    scale = BFM0_ACTION_SCALES[indices] * BFM0_ACTION_RESCALE * float(action_gain)
+    return neutral, scale
+
+
 @dataclass(frozen=True)
 class ExpertTarget:
     name: str
@@ -166,6 +361,7 @@ class ExpertTarget:
     start_frame: int | None = None
     end_frame: int | None = None
     joint_names: tuple[str, ...] = ()
+    initial_pose: str = "push"
     encoded_anchor_available: bool = False
     limitation: str = ""
 
@@ -319,12 +515,14 @@ def load_expert_targets(
             info["limitation"] = "30-row pose could not be mapped to the robot body list."
             continue
         info["scoring_enabled"] = True
+        info["initial_pose"] = "steer" if name == "steer_start_pose" else "push"
         targets.append(
             ExpertTarget(
                 name=name,
                 kind="static_pose",
                 values=np.load(root / relative_path, allow_pickle=False).astype(np.float32),
                 source=relative_path,
+                initial_pose="steer" if name == "steer_start_pose" else "push",
                 limitation="Search target only; complete BFM0 observation is unavailable.",
             )
         )
@@ -889,14 +1087,28 @@ class H1RolloutRunner:
         self.fall_height = float(rollout_config["fall_height"])
         self.unsafe_angle = float(rollout_config.get("unsafe_root_angle", 1.2))
         self.action_adapter = Bfm0ToHusky23(
-            action_gain=float(rollout_config["action_gain"]),
-            action_clip=float(rollout_config.get("action_clip", 1.0)),
+            action_gain=1.0
+            if isinstance(model, OfficialBfm0Adapter)
+            else float(rollout_config["action_gain"]),
+            action_clip=1.0
+            if isinstance(model, OfficialBfm0Adapter)
+            else float(rollout_config.get("action_clip", 1.0)),
         )
-        self.observation_adapter = HuskyToBfm0Observation()
+        self.observation_adapter = (
+            OfficialHuskyToBfm0Observation()
+            if isinstance(model, OfficialBfm0Adapter)
+            else HuskyToBfm0Observation()
+        )
         self.env = HuskyLiteEnv(
             control_dt=self.control_dt,
             action_scale=float(rollout_config.get("husky_action_scale", 0.1)),
         )
+        if isinstance(model, OfficialBfm0Adapter):
+            neutral, action_scale = official_husky_control_parameters(
+                float(rollout_config["action_gain"])
+            )
+            self.env._neutral_control = neutral
+            self.env.action_scale = action_scale
         self.total_rollouts = 0
         self.successful_rollouts = 0
         self.failed_rollouts = 0
@@ -940,11 +1152,33 @@ class H1RolloutRunner:
         mujoco.mj_normalizeQuat(model, data.qpos)
         mujoco.mj_forward(model, data)
 
+    def _apply_initial_pose(self, initial_pose: str) -> None:
+        if initial_pose == "push":
+            return
+        if initial_pose != "steer":
+            raise ValueError(f"Unsupported H1 initial pose: {initial_pose}")
+        model = self.env.model
+        data = self.env.data
+        root_joint = model.joint(ROBOT_ROOT_JOINT)
+        root_qpos = root_joint.qposadr[0]
+        data.qpos[root_qpos : root_qpos + 7] = STEER_INITIAL_ROOT_QPOS
+        for joint_name, value in zip(
+            STEER_INITIAL_JOINT_NAMES,
+            STEER_INITIAL_JOINT_POSITIONS,
+            strict=True,
+        ):
+            joint = model.joint(f"{ROBOT_BODY_PREFIX}{joint_name}")
+            data.qpos[joint.qposadr[0]] = value
+        data.qvel[:] = 0.0
+        mujoco.mj_normalizeQuat(model, data.qpos)
+        mujoco.mj_forward(model, data)
+
     def rollout(
         self,
         latent: torch.Tensor,
         *,
         seed: int,
+        initial_pose: str = "push",
         perturbation: dict[str, float] | None = None,
         capture_frames: bool = False,
         render_size: tuple[int, int] = (640, 480),
@@ -952,7 +1186,10 @@ class H1RolloutRunner:
         torch.manual_seed(seed)
         np.random.seed(seed)
         observation = self.env.reset()
+        self._apply_initial_pose(initial_pose)
+        observation = self.env._observation()
         self.observation_adapter.reset()
+        last_bfm0_action = np.zeros(29, dtype=np.float32)
         if perturbation:
             self._apply_perturbation(seed, perturbation)
             observation = self.env._observation()
@@ -971,7 +1208,13 @@ class H1RolloutRunner:
         terminated_early = False
         try:
             for _ in range(self.steps):
-                bfm_observation = self.observation_adapter(observation)
+                if isinstance(self.observation_adapter, OfficialHuskyToBfm0Observation):
+                    bfm_observation = self.observation_adapter(
+                        observation,
+                        last_bfm0_action,
+                    )
+                else:
+                    bfm_observation = self.observation_adapter(observation)
                 bfm_observation = {
                     key: value.to(self.device) for key, value in bfm_observation.items()
                 }
@@ -982,6 +1225,7 @@ class H1RolloutRunner:
                         deterministic=True,
                     )[0]
                 husky_action = self.action_adapter(bfm_action).detach().cpu().numpy()
+                last_bfm0_action = bfm_action.detach().cpu().numpy()
                 actions.append(husky_action.copy())
                 observation = self.env.step(husky_action)
                 state = extract_sim_state(self.env)
@@ -1089,18 +1333,21 @@ def score_rollout(
         minimum_index = int(np.argmin(total_errors))
         initial_error = total_errors[0]
         minimum_error = total_errors[minimum_index]
-        progress = initial_error - minimum_error
-        score = progress - fall_penalty - unsafe_penalty
+        final_error = total_errors[-1]
+        minimum_progress = initial_error - minimum_error
+        final_progress = initial_error - final_error
+        score = final_progress - fall_penalty - unsafe_penalty
         metrics = {
             "initial_pose_error": initial_error,
-            "final_pose_error": total_errors[-1],
+            "final_pose_error": final_error,
             "minimum_pose_error": minimum_error,
-            "pose_error_improvement": progress,
+            "pose_error_improvement": final_progress,
+            "minimum_pose_error_improvement": minimum_progress,
             "minimum_position_error": position_errors[minimum_index],
             "minimum_rotation_error": rotation_errors[minimum_index],
         }
         success = (
-            minimum_error <= float(scores["pose_error_threshold"])
+            final_error <= float(scores["pose_error_threshold"])
             and not rollout.fall
             and not rollout.unsafe
         )
@@ -1263,6 +1510,7 @@ def evaluate_robustness(
         rollout = runner.rollout(
             latent,
             seed=seed + trial,
+            initial_pose=target.initial_pose,
             perturbation=perturbation,
         )
         results.append(score_rollout(rollout, target, scores))

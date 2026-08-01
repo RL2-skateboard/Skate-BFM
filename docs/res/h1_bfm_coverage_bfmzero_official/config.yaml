@@ -3,21 +3,21 @@ experiment:
   run_type: formal
   timezone: Asia/Shanghai
   output_root: docs/res
-
 checkpoint:
   path: model/bfm-zero-official
   device: cuda
-
 rollout:
   control_dt: 0.02
   horizon_seconds: 0.5
-  seeds: [0, 1, 2]
+  seeds:
+  - 0
+  - 1
+  - 2
   action_gain: 1.0
   action_clip: 1.0
   husky_action_scale: 0.1
   fall_height: 0.55
   unsafe_root_angle: 1.2
-
 expert_data:
   root: husky_sim/upstream/dataset
   enable_push_pose: true
@@ -27,31 +27,30 @@ expert_data:
   human_push_stride_seconds: 0.25
   human_push_windows_per_file: 3
   tracking_discount: 1.0
-
 global_scan:
   num_latents: 256
-
 cem:
   population_size: 64
   elite_fraction: 0.15
   num_iterations: 6
   initial_std: 1.0
   min_std: 0.05
-
 geodesic:
-  angles_degrees: [5, 10, 20, 40, 80]
+  angles_degrees:
+  - 5
+  - 10
+  - 20
+  - 40
+  - 80
   samples_per_angle: 16
-
 slerp:
   num_points: 11
-
 robustness:
   trials: 20
   root_angle_noise: 0.02
   joint_position_noise: 0.01
   board_roll_noise: 0.02
   board_velocity_noise: 0.05
-
 scores:
   position_weight: 1.0
   rotation_weight: 0.5
@@ -60,13 +59,11 @@ scores:
   unsafe_penalty: 2.0
   pose_error_threshold: 0.5
   motion_error_threshold: 0.5
-
 coverage:
   robust_success_threshold: 0.7
   natural_success_rate: 0.1
   local_support_threshold: 0.25
   distant_angle_degrees: 40.0
-
 visualization:
   tsne_random_state: 42
   save_video: true

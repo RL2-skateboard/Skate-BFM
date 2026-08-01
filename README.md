@@ -8,8 +8,12 @@ priors with the HUSKY skateboard simulator. The project studies closed-loop
 humanoid interaction with a freely rolling, underactuated support, including
 mounting, riding, steering, recovery, and safe departure.
 
-The current repository provides the initial BFM0-HUSKY integration framework.
-It does not yet include a trained Skate-BFM policy or formal experiment results.
+The repository provides the BFM0-HUSKY integration and the first formal
+experiment, H1 Expert-Guided BFM0 Behavior Coverage. H1 evaluates a frozen
+official BFM-Zero model through global sphere sampling, expert-guided CEM,
+geodesic neighborhoods, robustness trials, and push-steer SLERP. It is a
+short-horizon behavior-coverage experiment, not a trained Skate-BFM policy or a
+complete skateboarding controller.
 
 ## Setup
 
@@ -41,6 +45,24 @@ Verify the installation:
 ```bash
 python -c "import torch, mujoco; print(torch.__version__, torch.cuda.is_available(), mujoco.__version__)"
 ```
+
+## Official BFM-Zero Model
+
+Keep all local BFM-Zero source and checkpoints under the ignored `model/`
+directory:
+
+```text
+model/
+├── bfm-zero-source/        # LeCAR-Lab/BFM-Zero at revision 318cf44
+└── bfm-zero-official/      # config.json, init_kwargs.json, model.safetensors
+```
+
+The formal checkpoint is the `LeCAR-Lab/BFM-Zero` Hugging Face bundle at
+revision `62b4206d68e026de5e5dc7efb1529bccfb95164c`. Its
+`model.safetensors` SHA-256 is
+`33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+Model files are intentionally excluded from Git because the checkpoint is
+3.38 GB.
 
 ## Tests
 
@@ -84,12 +106,35 @@ scene, and MuJoCo stepping loop work together. It is a software validation
 command, not a skateboarding experiment or task-performance result.
 
 The viewer keeps `--action-gain 0.0` by default because the repository does not
-yet load an official BFM-Zero checkpoint. A nonzero value applies the current
-untrained model output and is intended only for adapter diagnostics:
+load the official BFM-Zero checkpoint through this lightweight diagnostic
+command. A nonzero value applies the compact untrained interface output and is
+intended only for adapter diagnostics:
 
 ```bash
 skate-bfm-smoke --viewer --steps 300 --action-gain 0.05
 ```
+
+## H1 Formal Experiment
+
+Run the official checkpoint from the repository root:
+
+```bash
+BFM_ZERO_ROOT="$PWD/model/bfm-zero-source" \
+skate-bfm-h1 \
+  --config configs/h1_bfm_coverage.yaml \
+  --checkpoint model/bfm-zero-official \
+  --run-type formal \
+  --experiment-name h1_bfm_coverage_bfmzero_official \
+  --device cuda \
+  --save-video
+```
+
+The completed formal run is recorded in
+[`docs/exp_res.md`](docs/exp_res.md), with four latent-space plots and
+content-named MuJoCo videos under
+[`docs/res/h1_bfm_coverage_bfmzero_official/`](docs/res/h1_bfm_coverage_bfmzero_official/).
+Smoke runs use a temporary directory and are deleted automatically; they do not
+update either experiment document.
 
 ## Current Framework
 
@@ -100,11 +145,13 @@ skate-bfm-smoke --viewer --steps 300 --action-gain 0.05
   `husky_sim/upstream/`.
 - A project-owned lightweight HUSKY MuJoCo runtime under
   `husky_sim/src/skate_husky/`.
+- A strict adapter for the official pretrained BFM-Zero checkpoint.
+- The formal H1 latent coverage search, metrics, plots, and videos.
 - Unit tests and an end-to-end headless smoke command.
 
 The six BFM0 wrist joints absent from the HUSKY G1-23DoF model are explicitly
-dropped by the action adapter. Official BFM-Zero checkpoints and larger training
-datasets remain external artifacts.
+dropped by the action adapter. Official BFM-Zero checkpoints remain local,
+ignored artifacts under `model/`.
 
 ## Repository Layout
 
@@ -115,9 +162,11 @@ Skate-BFM/
 ├── husky_sim/
 │   ├── src/skate_husky/     # Lightweight project runtime
 │   └── upstream/            # Pinned official HUSKY submodule
+├── model/                    # Ignored local source and model checkpoints
 ├── scripts/                 # Environment setup
 ├── src/skate_bfm/
 │   ├── bfm0/                # BFM0 model interface
+│   ├── exp/                  # Formal experiments
 │   └── integration/         # Action and observation adapters
 └── tests/                   # Development tests
 ```
@@ -152,7 +201,7 @@ flowchart LR
 
 - [`docs/exp_logs.md`](docs/exp_logs.md): brief dated development log.
 - [`docs/exp_res.md`](docs/exp_res.md): formal experiment parameters and
-  results. It remains empty until the first experiment is completed.
+  results, plots, and videos.
 
 ## Upstream Projects
 

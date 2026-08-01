@@ -1,0 +1,15 @@
+2026-08-01 19:13:13,889 INFO Experiment h1_bfm_coverage_bfmzero_official started
+2026-08-01 19:13:13,889 INFO Run type=formal device=cuda checkpoint=/home/hm/workspace/skate-bfm/model/bfm-zero-official
+2026-08-01 19:13:14,006 INFO Confirmed expert schema; enabled targets: ['push_start_pose', 'steer_start_pose', 'human_push_1_window_00', 'human_push_1_window_01', 'human_push_1_window_02', 'human_push_2_window_00', 'human_push_2_window_01', 'human_push_2_window_02']
+2026-08-01 19:13:16,628 INFO Checkpoint loaded strictly and model frozen
+2026-08-01 19:13:28,864 INFO Completed global scan with 256 latents from push initial pose
+2026-08-01 19:13:41,408 INFO Completed global scan with 256 latents from steer initial pose
+2026-08-01 19:14:41,596 INFO Target push_start_pose: global=-0.154998 CEM=0.017661 robust=0.000 type=fragile
+2026-08-01 19:15:43,972 INFO Target steer_start_pose: global=-0.914587 CEM=-0.553239 robust=0.000 type=not_covered
+2026-08-01 19:16:43,658 INFO Target human_push_1_window_00: global=-0.390123 CEM=-0.311494 robust=0.800 type=locally_covered
+2026-08-01 19:17:42,945 INFO Target human_push_1_window_01: global=-0.315596 CEM=-0.315596 robust=0.500 type=fragile
+2026-08-01 19:18:42,313 INFO Target human_push_1_window_02: global=-0.321111 CEM=-0.321111 robust=0.650 type=fragile
+2026-08-01 19:19:41,652 INFO Target human_push_2_window_00: global=-0.347950 CEM=-0.317644 robust=0.950 type=locally_covered
+2026-08-01 19:20:41,119 INFO Target human_push_2_window_01: global=-0.366666 CEM=-0.324695 robust=0.650 type=fragile
+2026-08-01 19:21:40,420 INFO Target human_push_2_window_02: global=-0.340893 CEM=-0.304406 robust=0.900 type=locally_covered
+2026-08-01 19:21:54,820 INFO Experiment ended status=completed duration=520.884s output=docs/res/h1_bfm_coverage_bfmzero_official

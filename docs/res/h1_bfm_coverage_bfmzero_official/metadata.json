@@ -1,0 +1,18 @@
+{
+  "experiment_name": "h1_bfm_coverage_bfmzero_official",
+  "experiment_type": "H1 Expert-Guided BFM0 Behavior Coverage",
+  "run_type": "formal",
+  "start_time": "2026-08-01T19:13:13.868933+08:00",
+  "end_time": "2026-08-01T19:21:54.773042+08:00",
+  "duration_seconds": 520.8835540569853,
+  "git_commit": "32a4432b0d15d5f28ede46bbb2f61cb2e3121dd2",
+  "git_dirty": true,
+  "checkpoint": "model/bfm-zero-official",
+  "device": "cuda",
+  "result_directory": "docs/res/h1_bfm_coverage_bfmzero_official",
+  "total_rollouts": 10555,
+  "successful_rollouts": 10555,
+  "failed_rollouts": 0,
+  "fall_count": 11,
+  "status": "completed"
+}

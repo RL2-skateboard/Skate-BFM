@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import subprocess
@@ -15,11 +14,15 @@ import yaml
 from skate_bfm.bfm0 import Bfm0Model
 from skate_bfm.exp.h1_bfm_coverage import _slerp_video_label, _video_target_label
 from skate_bfm.exp.h1_bfm_coverage.core import (
+    BFM0_ACTION_RESCALE,
+    BFM0_DEFAULT_JOINT_POSITION,
     CheckpointCompatibilityError,
     ExpertTarget,
     H1RolloutRunner,
+    OfficialHuskyToBfm0Observation,
     angular_distance,
     load_bfm0_checkpoint,
+    official_husky_control_parameters,
     quaternion_rotation_error,
     sample_geodesic_neighborhood,
     sample_global_latents,
@@ -81,6 +84,39 @@ def test_global_sampling_is_reproducible() -> None:
     third = sample_global_latents(model, 4, seed=18)
     assert torch.equal(first, second)
     assert not torch.equal(first, third)
+
+
+def test_official_observation_uses_training_calibration() -> None:
+    adapter = OfficialHuskyToBfm0Observation()
+    observation = {
+        "joint_position": np.zeros(23, dtype=np.float32),
+        "joint_velocity": np.zeros(23, dtype=np.float32),
+        "last_action": np.zeros(23, dtype=np.float32),
+        "projected_gravity": np.asarray((0.0, 0.0, -1.0), dtype=np.float32),
+        "angular_velocity": np.asarray((4.0, 8.0, 12.0), dtype=np.float32),
+    }
+    action = np.full(29, 0.2, dtype=np.float32)
+    result = adapter(observation, action)
+    assert result["state"].shape == (64,)
+    assert result["history"].shape == (372,)
+    assert torch.allclose(
+        result["state"][:29],
+        torch.from_numpy(-BFM0_DEFAULT_JOINT_POSITION),
+    )
+    assert torch.allclose(result["state"][-3:], torch.tensor((1.0, 2.0, 3.0)))
+    assert torch.allclose(
+        result["last_action"],
+        torch.from_numpy(action * BFM0_ACTION_RESCALE),
+    )
+
+
+def test_official_control_parameters_follow_husky_joint_names() -> None:
+    neutral, scale = official_husky_control_parameters(action_gain=1.0)
+    assert neutral.shape == (23,)
+    assert scale.shape == (23,)
+    assert np.isclose(neutral[0], 0.0)
+    assert np.isclose(neutral[8], -0.1)
+    assert np.all(scale > 0.0)
 
 
 def test_geodesic_samples_match_requested_angle() -> None:
@@ -162,6 +198,35 @@ def test_static_pose_score_is_finite() -> None:
     result = score_rollout(rollout, target, _config()["scores"])
     assert math.isfinite(result.score)
     assert all(math.isfinite(value) for value in result.metrics.values())
+    assert result.score == pytest.approx(
+        result.metrics["initial_pose_error"] - result.metrics["final_pose_error"]
+    )
+
+
+def test_steer_initial_pose_places_both_feet_on_board() -> None:
+    model = Bfm0Model()
+    runner = H1RolloutRunner(model, _config(), device="cpu")
+    target = np.load(
+        ROOT / "husky_sim/upstream/dataset/ref_pose/steer_start_pose_b.npy",
+        allow_pickle=False,
+    )
+    try:
+        rollout = runner.rollout(
+            torch.ones(model.config.latent_dim),
+            seed=0,
+            initial_pose="steer",
+        )
+    finally:
+        runner.close()
+    initial = rollout.states[0]
+    position_error = np.linalg.norm(
+        initial["body_position_board"] - target[:, :3],
+        axis=1,
+    )
+    assert position_error.mean() < 0.01
+    assert position_error.max() < 0.02
+    assert initial["body_position_board"][6, 2] > 0.04
+    assert initial["body_position_board"][12, 2] > 0.04
 
 
 def test_rollout_resets_env_and_observation_history() -> None:
@@ -223,8 +288,10 @@ def test_smoke_command_does_not_update_formal_results(tmp_path: Path) -> None:
     docs_root.mkdir()
     formal_results = docs_root / "exp_res.md"
     formal_results.write_text("# Experiment Results\n", encoding="utf-8")
-    (docs_root / "exp_logs.md").write_text("# Experiment Log\n", encoding="utf-8")
-    before = formal_results.read_bytes()
+    experiment_log = docs_root / "exp_logs.md"
+    experiment_log.write_text("# Experiment Log\n", encoding="utf-8")
+    before_results = formal_results.read_bytes()
+    before_log = experiment_log.read_bytes()
     experiment_name = "h1_pytest_smoke"
     completed = subprocess.run(
         [
@@ -250,9 +317,7 @@ def test_smoke_command_does_not_update_formal_results(tmp_path: Path) -> None:
         text=True,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert formal_results.read_bytes() == before
-    summary = json.loads(
-        (output_root / experiment_name / "summary.json").read_text(encoding="utf-8")
-    )
-    assert summary["status"] == "completed"
-    assert summary["metadata"]["run_type"] == "smoke"
+    assert formal_results.read_bytes() == before_results
+    assert experiment_log.read_bytes() == before_log
+    assert not output_root.exists()
+    assert not list(tmp_path.glob("skate_bfm_h1_smoke_*"))

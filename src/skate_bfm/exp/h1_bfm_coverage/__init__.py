@@ -9,6 +9,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from skate_bfm.exp.h1_bfm_coverage.core import (
     CheckpointCompatibilityError,
     ExpertTarget,
     H1RolloutRunner,
+    RolloutResult,
     ScoredRollout,
     angular_distance,
     classify_coverage,
@@ -608,9 +610,14 @@ def _save_representative_videos(
     logger: logging.Logger,
 ) -> list[str]:
     failures = []
-    for name, (latent, _) in selected.items():
+    for name, (latent, target) in selected.items():
         try:
-            rollout = runner.rollout(latent, seed=seed, capture_frames=True)
+            rollout = runner.rollout(
+                latent,
+                seed=seed,
+                initial_pose=target.initial_pose,
+                capture_frames=True,
+            )
             _write_video(
                 video_dir / f"{_safe_key(name)}.mp4",
                 rollout.frames,
@@ -697,42 +704,24 @@ def _append_experiment_log(
     pytest_status: str,
     limitations: list[str],
 ) -> None:
-    enabled = ", ".join(schema.get("enabled_targets", [])) or "none"
-    unsupported = (
-        "encoded expert anchors (incomplete BFM0 observations)"
-        if not schema.get("encoded_anchor_available")
-        else "none"
-    )
     start = datetime.fromisoformat(metadata["start_time"])
-    block = [
-        "",
-        f"## {start.date().isoformat()}",
-        "",
-        f"### {metadata['experiment_name']}",
-        "",
-        f"- Experiment type: {EXPERIMENT_TYPE}",
-        f"- Run type: {metadata['run_type']}",
-        f"- Start time: {metadata['start_time']}",
-        f"- End time: {metadata['end_time']}",
-        f"- Duration: {metadata['duration_seconds']:.3f} seconds",
-        f"- Checkpoint: `{metadata['checkpoint']}`",
-        f"- Git commit: `{metadata['git_commit']}`",
-        "- Configuration:",
-        f"  - global latents: {config['global_scan']['num_latents']}",
-        f"  - CEM population: {config['cem']['population_size']}",
-        f"  - CEM iterations: {config['cem']['num_iterations']}",
-        f"  - horizon: {config['rollout']['horizon_seconds']} seconds",
-        f"  - seeds: {config['rollout']['seeds']}",
-        f"- Enabled expert targets: {enabled}",
-        f"- Unsupported expert targets: {unsupported}",
-        f"- Result directory: `{metadata['result_directory']}/`",
-        f"- Ruff: {ruff_status}",
-        f"- Pytest: {pytest_status}",
-        f"- Main status: {main_status}",
-        f"- Known limitations: {'; '.join(limitations)}",
+    date_header = f"## {start.date().isoformat()}"
+    entries = [
+        f"- Completed formal experiment `{metadata['experiment_name']}` "
+        f"with status `{main_status}`.",
+        "- Evaluated the frozen official BFM0 checkpoint with global sampling, "
+        "CEM, geodesic neighborhoods, robustness trials, and SLERP.",
+        f"- Saved numeric results, latent visualizations, and videos under "
+        f"`{metadata['result_directory']}/`.",
     ]
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write("\n".join(block) + "\n")
+    content = path.read_text(encoding="utf-8") if path.exists() else "# Experiment Log\n"
+    entry = "\n".join(entries) + "\n"
+    if date_header in content:
+        insertion = content.index(date_header) + len(date_header)
+        content = content[:insertion] + "\n\n" + entry + content[insertion:].lstrip("\n")
+    else:
+        content = content.rstrip() + f"\n\n{date_header}\n\n{entry}"
+    path.write_text(content, encoding="utf-8")
 
 
 def _append_formal_results(
@@ -792,6 +781,8 @@ def _append_formal_results(
             f"- Geodesic angles: {config['geodesic']['angles_degrees']}",
             f"- Samples per angle: {config['geodesic']['samples_per_angle']}",
             f"- Action gain: {config['rollout']['action_gain']}",
+            "- Push and human-push initial pose: pinned upstream push keyframe",
+            "- Steer initial pose: IK fit to the official steer pose with both feet on board",
             "",
             "### Main results",
             "",
@@ -814,9 +805,35 @@ def _append_formal_results(
             "",
             "### Main findings",
             "",
-            "See the per-target coverage classifications above. No encoded zero-shot "
-            "conclusion is reported because the expert files do not contain complete "
-            "BFM0 observations.",
+            "No encoded zero-shot conclusion is reported because the expert files do "
+            "not contain complete BFM0 observations.",
+            "",
+            "The per-target classifications above require the final static pose or "
+            "full dynamic window to meet its threshold; a transient intermediate pose "
+            "is not counted as success.",
+            "",
+            "### Latent-space visualizations",
+            "",
+            f"![2D latent t-SNE](res/{metadata['experiment_name']}/plots/latent_tsne_2d.png)",
+            "",
+            f"![Qualitative latent sphere t-SNE]"
+            f"(res/{metadata['experiment_name']}/plots/latent_sphere_tsne.png)",
+            "",
+            f"![Score versus geodesic angle]"
+            f"(res/{metadata['experiment_name']}/plots/score_vs_geodesic_angle.png)",
+            "",
+            f"![Geodesic support curve]"
+            f"(res/{metadata['experiment_name']}/plots/geodesic_support_curve.png)",
+            "",
+            "### Videos",
+            "",
+            f"- [Push pose: CEM best]"
+            f"(res/{metadata['experiment_name']}/videos/push_pose_cem_best.mp4)",
+            f"- [Steer pose: CEM best]"
+            f"(res/{metadata['experiment_name']}/videos/steer_pose_cem_best.mp4)",
+            f"- [Push-steer midpoint]"
+            f"(res/{metadata['experiment_name']}/videos/push_steer_midpoint_blend.mp4)",
+            f"- [All generated videos](res/{metadata['experiment_name']}/videos/)",
             "",
             "### Limitations",
             "",
@@ -896,6 +913,7 @@ def _run_experiment(
     target_rows: list[dict[str, Any]] = []
     selected_videos: dict[str, tuple[torch.Tensor, ExpertTarget]] = {}
     global_base_results: list[ScoredRollout] = []
+    global_rollouts_by_initial_pose: dict[str, list[RolloutResult]] = {}
     seed = int(config["rollout"]["seeds"][0])
 
     try:
@@ -904,13 +922,23 @@ def _run_experiment(
             int(config["global_scan"]["num_latents"]),
             seed,
         )
-        global_rollouts = [
-            runner.rollout(latent, seed=seed + index) for index, latent in enumerate(global_latents)
-        ]
-        logger.info("Completed global scan with %d latents", len(global_latents))
-
         global_scores_by_target: dict[str, list[ScoredRollout]] = {}
         for target in targets:
+            if target.initial_pose not in global_rollouts_by_initial_pose:
+                global_rollouts_by_initial_pose[target.initial_pose] = [
+                    runner.rollout(
+                        latent,
+                        seed=seed + index,
+                        initial_pose=target.initial_pose,
+                    )
+                    for index, latent in enumerate(global_latents)
+                ]
+                logger.info(
+                    "Completed global scan with %d latents from %s initial pose",
+                    len(global_latents),
+                    target.initial_pose,
+                )
+            global_rollouts = global_rollouts_by_initial_pose[target.initial_pose]
             scored = [
                 score_rollout(rollout, target, config["scores"]) for rollout in global_rollouts
             ]
@@ -921,7 +949,8 @@ def _run_experiment(
                 global_base_results = scored
         if targets:
             failure_count = 0
-            for index, rollout in enumerate(global_rollouts):
+            push_rollouts = global_rollouts_by_initial_pose[targets[0].initial_pose]
+            for index, rollout in enumerate(push_rollouts):
                 if rollout.fall and failure_count < 5:
                     selected_videos[f"failure_latent_{index:04d}"] = (
                         global_latents[index],
@@ -943,7 +972,11 @@ def _run_experiment(
 
             def evaluate(latent: torch.Tensor, rollout_seed: int) -> ScoredRollout:
                 return score_rollout(
-                    runner.rollout(latent, seed=rollout_seed),
+                    runner.rollout(
+                        latent,
+                        seed=rollout_seed,
+                        initial_pose=target.initial_pose,
+                    ),
                     target,
                     config["scores"],
                 )
@@ -1098,7 +1131,11 @@ def _run_experiment(
             representative = {0, len(fractions) // 4, len(fractions) // 2}
             representative.update({3 * len(fractions) // 4, len(fractions) - 1})
             for index, (fraction, latent) in enumerate(zip(fractions, slerp_latents, strict=True)):
-                rollout = runner.rollout(latent, seed=seed + 20000 + index)
+                rollout = runner.rollout(
+                    latent,
+                    seed=seed + 20000 + index,
+                    initial_pose=steer_target.initial_pose,
+                )
                 push_score = score_rollout(rollout, push_target, config["scores"])
                 steer_score = score_rollout(rollout, steer_target, config["scores"])
                 slerp_rows.append(
@@ -1122,7 +1159,7 @@ def _run_experiment(
                 if index in representative:
                     selected_videos[_slerp_video_label(index, len(fractions))] = (
                         latent,
-                        push_target,
+                        steer_target,
                     )
             _json_dump(result_dir / "slerp_results.json", slerp_rows)
 
@@ -1164,7 +1201,13 @@ def _run_experiment(
         latent_metrics = {
             "Push-steer angular distance (degrees)": push_steer_angle,
             "Global stable proposal rate": float(
-                np.mean([not rollout.fall for rollout in global_rollouts])
+                np.mean(
+                    [
+                        not rollout.fall
+                        for rollouts in global_rollouts_by_initial_pose.values()
+                        for rollout in rollouts
+                    ]
+                )
             ),
             "Latent-behavior Spearman correlation": _spearman_latent_behavior(
                 latent_records,
@@ -1200,7 +1243,12 @@ def main(argv: list[str] | None = None) -> int:
     timezone = ZoneInfo(config["experiment"]["timezone"])
     start = datetime.now(timezone)
     experiment_name = _run_name(config, args.experiment_name, start)
-    output_root = _resolve_path(config["experiment"]["output_root"])
+    smoke_workspace = None
+    if config["experiment"]["run_type"] == "smoke":
+        smoke_workspace = tempfile.TemporaryDirectory(prefix="skate_bfm_h1_smoke_")
+        output_root = Path(smoke_workspace.name)
+    else:
+        output_root = _resolve_path(config["experiment"]["output_root"])
     docs_root = Path(os.environ.get("SKATE_BFM_H1_DOCS_ROOT", REPO_ROOT / "docs"))
     docs_root.mkdir(parents=True, exist_ok=True)
     result_dir = output_root / experiment_name
@@ -1220,7 +1268,7 @@ def main(argv: list[str] | None = None) -> int:
         "duration_seconds": None,
         "git_commit": git_commit,
         "git_dirty": git_dirty,
-        "checkpoint": str(checkpoint),
+        "checkpoint": _display_path(checkpoint),
         "device": device,
         "result_directory": _display_path(result_dir),
     }
@@ -1306,32 +1354,38 @@ def main(argv: list[str] | None = None) -> int:
             ),
             encoding="utf-8",
         )
-        _append_experiment_log(
-            docs_root / "exp_logs.md",
-            metadata,
-            config,
-            schema,
-            main_status=status,
-            ruff_status="not run by experiment command",
-            pytest_status="not run by experiment command",
-            limitations=limitations,
-        )
-        if metadata["run_type"] == "formal" and status == "completed":
-            _append_formal_results(
-                docs_root / "exp_res.md",
+        if metadata["run_type"] == "formal":
+            _append_experiment_log(
+                docs_root / "exp_logs.md",
                 metadata,
                 config,
-                rows,
                 schema,
-                summary["latent_metrics"],
-                limitations,
+                main_status=status,
+                ruff_status="not run by experiment command",
+                pytest_status="not run by experiment command",
+                limitations=limitations,
             )
+            if status == "completed":
+                _append_formal_results(
+                    docs_root / "exp_res.md",
+                    metadata,
+                    config,
+                    rows,
+                    schema,
+                    summary["latent_metrics"],
+                    limitations,
+                )
         logger.info(
             "Experiment ended status=%s duration=%.3fs output=%s",
             status,
             metadata["duration_seconds"],
             metadata["result_directory"],
         )
+        if smoke_workspace is not None:
+            for handler in logger.handlers:
+                handler.close()
+            logger.handlers.clear()
+            smoke_workspace.cleanup()
     return exit_code
 
 

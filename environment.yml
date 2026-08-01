@@ -12,6 +12,12 @@ dependencies:
   - pyyaml>=6
   - pip:
       - mujoco>=3.3,<4
+      - easydict>=1.13,<2
+      - gymnasium>=1.1,<2
+      - pydantic>=2.10,<3
+      - safetensors>=0.5,<1
+      - tensordict>=0.7,<1
+      - tyro>=0.9,<1
       - pytest>=8,<9
       - ruff>=0.9,<1
       - -e .
