@@ -699,7 +699,7 @@ def inspect_expert_data(
         },
         "limitations": [
             "Expert records do not provide a complete BFM0 actor observation.",
-            "Expert anchors use reconstructed official backward observations, not zero padding.",
+            "Expert latents use reconstructed official backward observations, not zero padding.",
             "Foot contact labels are not part of the expert arrays.",
         ],
     }
@@ -863,8 +863,8 @@ def load_expert_targets(
                         expert_observation=window_observation,
                         encoded_anchor_available=window_observation is not None,
                         limitation=(
-                            "Scores common joint positions; the encoded anchor also uses the "
-                            "confirmed root and full 29DoF trajectory."
+                            "Scores common joint positions; the encoded latent trajectory also "
+                            "uses the confirmed root and full 29DoF trajectory."
                         ),
                     )
                 )
@@ -1112,10 +1112,9 @@ def sample_global_latents(
     return model.project_z(samples)
 
 
-def encode_expert_anchor(
+def encode_expert_latents(
     model: Bfm0Model | OfficialBfm0Adapter,
     target: ExpertTarget,
-    discount: float,
 ) -> torch.Tensor | None:
     if not isinstance(model, OfficialBfm0Adapter) or target.expert_observation is None:
         return None
@@ -1125,12 +1124,14 @@ def encode_expert_anchor(
     }
     with torch.no_grad():
         embeddings = model.backward_embedding(observation)
-        weights = torch.pow(
-            torch.as_tensor(discount, device=embeddings.device),
-            torch.arange(len(embeddings), device=embeddings.device),
-        )
-        anchor = torch.sum(weights[:, None] * embeddings, dim=0, keepdim=True)
-        return model.project_z(anchor)[0].detach().cpu()
+        if target.kind == "human_push_window":
+            if len(embeddings) < 2:
+                raise ValueError(
+                    f"Dynamic expert target {target.name} needs at least two observations"
+                )
+            embeddings = embeddings[1:]
+        latents = model.project_z(embeddings).detach().cpu()
+        return latents[0] if target.kind == "static_pose" else latents
 
 
 def angular_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -1147,24 +1148,25 @@ def constrain_to_geodesic_cap(
     max_angle_degrees: float,
 ) -> torch.Tensor:
     projected = model.project_z(latents)
-    anchor = model.project_z(anchor.reshape(1, -1).to(projected))[0]
+    anchor = model.project_z(anchor.to(projected))
+    while anchor.ndim < projected.ndim:
+        anchor = anchor.unsqueeze(0)
     anchor_hat = torch.nn.functional.normalize(anchor, dim=-1)
     directions = torch.nn.functional.normalize(projected, dim=-1)
-    cosine = torch.clamp(directions @ anchor_hat, -1.0, 1.0)
+    cosine = torch.clamp(torch.sum(directions * anchor_hat, dim=-1), -1.0, 1.0)
     angles = torch.acos(cosine)
     maximum = math.radians(float(max_angle_degrees))
     outside = angles > maximum
     if not torch.any(outside):
         return projected
-    tangent = directions[outside] - cosine[outside, None] * anchor_hat
+    tangent = directions - cosine.unsqueeze(-1) * anchor_hat
     tangent = torch.nn.functional.normalize(tangent, dim=-1)
-    radius = torch.linalg.vector_norm(anchor)
+    radius = torch.linalg.vector_norm(anchor, dim=-1, keepdim=True)
     capped = radius * (
         math.cos(maximum) * anchor_hat
         + math.sin(maximum) * tangent
     )
-    result = projected.clone()
-    result[outside] = capped
+    result = torch.where(outside.unsqueeze(-1), capped, projected)
     return model.project_z(result)
 
 
@@ -1175,20 +1177,22 @@ def sample_geodesic_neighborhood(
     samples_per_angle: int,
     seed: int,
 ) -> tuple[torch.Tensor, np.ndarray]:
-    anchor = model.project_z(anchor.reshape(1, -1))[0].cpu()
+    anchor = model.project_z(anchor).cpu()
     anchor_hat = torch.nn.functional.normalize(anchor, dim=-1)
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
     outputs = []
     labels = []
-    radius = torch.linalg.vector_norm(anchor)
+    radius = torch.linalg.vector_norm(anchor, dim=-1, keepdim=True)
     for angle_degrees in angles_degrees:
         epsilon = torch.randn(
             samples_per_angle,
-            anchor.numel(),
+            *anchor.shape,
             generator=generator,
         )
-        tangent = epsilon - (epsilon @ anchor_hat).unsqueeze(-1) * anchor_hat
+        tangent = epsilon - (
+            torch.sum(epsilon * anchor_hat, dim=-1, keepdim=True) * anchor_hat
+        )
         tangent = torch.nn.functional.normalize(tangent, dim=-1)
         alpha = math.radians(float(angle_degrees))
         points = radius * (math.cos(alpha) * anchor_hat + math.sin(alpha) * tangent)
@@ -1543,7 +1547,19 @@ class H1RolloutRunner:
             self._apply_perturbation(seed, perturbation)
             observation = self.env._observation()
 
-        latent = self.model.project_z(latent.reshape(1, -1).to(self.device))[0]
+        latent = torch.as_tensor(latent, device=self.device)
+        if latent.ndim == 1:
+            latent_schedule = self.model.project_z(latent)
+            rollout_steps = self.steps
+        elif latent.ndim == 2:
+            if len(latent) == 0:
+                raise ValueError("Latent trajectory cannot be empty")
+            latent_schedule = self.model.project_z(latent)
+            rollout_steps = len(latent_schedule)
+        else:
+            raise ValueError(
+                f"Latent must have shape [D] or [T, D], got {tuple(latent.shape)}"
+            )
         states = [extract_sim_state(self.env)]
         actions = []
         frames: list[np.ndarray] = []
@@ -1556,7 +1572,7 @@ class H1RolloutRunner:
 
         terminated_early = False
         try:
-            for _ in range(self.steps):
+            for step in range(rollout_steps):
                 if isinstance(self.observation_adapter, OfficialHuskyToBfm0Observation):
                     bfm_observation = self.observation_adapter(
                         observation,
@@ -1570,7 +1586,11 @@ class H1RolloutRunner:
                 with torch.no_grad():
                     bfm_action = self.model.act(
                         bfm_observation,
-                        latent,
+                        (
+                            latent_schedule
+                            if latent_schedule.ndim == 1
+                            else latent_schedule[step]
+                        ),
                         deterministic=True,
                     )[0]
                 husky_action = self.action_adapter(bfm_action).detach().cpu().numpy()
@@ -1603,7 +1623,7 @@ class H1RolloutRunner:
         if fall:
             self.fall_count += 1
         return RolloutResult(
-            latent=latent.detach().cpu().numpy(),
+            latent=latent_schedule.detach().cpu().numpy(),
             states=states,
             actions=action_array,
             descriptor=descriptor,
@@ -1683,12 +1703,14 @@ def score_rollout(
         initial_error = total_errors[0]
         minimum_error = total_errors[minimum_index]
         final_error = total_errors[-1]
+        mean_error = float(np.mean(total_errors))
         minimum_progress = initial_error - minimum_error
         final_progress = initial_error - final_error
-        score = final_progress - fall_penalty - unsafe_penalty
+        score = -mean_error - fall_penalty - unsafe_penalty
         metrics = {
             "initial_pose_error": initial_error,
             "final_pose_error": final_error,
+            "mean_pose_error": mean_error,
             "minimum_pose_error": minimum_error,
             "pose_error_improvement": final_progress,
             "minimum_pose_error_improvement": minimum_progress,
@@ -1697,6 +1719,7 @@ def score_rollout(
         }
         success = (
             final_error <= float(scores["pose_error_threshold"])
+            and mean_error <= float(scores["pose_error_threshold"])
             and not rollout.fall
             and not rollout.unsafe
         )
@@ -1747,12 +1770,15 @@ def run_cem(
         int(math.ceil(population_size * float(config["elite_fraction"]))),
     )
     iterations = int(config["num_iterations"])
-    anchor = model.project_z(initial_latent.detach().cpu().reshape(1, -1))[0]
+    anchor = model.project_z(initial_latent.detach().cpu())
     mean = anchor.clone()
     initial_std = float(config["initial_std"])
     std = torch.full_like(mean, initial_std)
     min_std = float(config["min_std"])
     max_angle_degrees = float(config["max_angle_degrees"])
+    temporal_correlation = float(config.get("temporal_correlation", 0.0))
+    if not 0.0 <= temporal_correlation < 1.0:
+        raise ValueError("CEM temporal_correlation must be in [0, 1)")
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
     best_pair: tuple[torch.Tensor, ScoredRollout] | None = None
@@ -1761,9 +1787,16 @@ def run_cem(
     for iteration in range(iterations):
         noise = torch.randn(
             population_size,
-            model.config.latent_dim,
+            *anchor.shape,
             generator=generator,
         )
+        if anchor.ndim == 2 and temporal_correlation > 0.0:
+            innovation_scale = math.sqrt(1.0 - temporal_correlation**2)
+            for step in range(1, anchor.shape[0]):
+                noise[:, step] = (
+                    temporal_correlation * noise[:, step - 1]
+                    + innovation_scale * noise[:, step]
+                )
         unprojected = mean + std * noise
         unprojected[0] = mean
         latents = constrain_to_geodesic_cap(
@@ -1776,6 +1809,7 @@ def run_cem(
             evaluate(latent, seed + iteration * population_size + candidate_index)
             for candidate_index, latent in enumerate(latents)
         ]
+        candidate_offset = len(candidates)
         candidates.extend(
             (latent.detach().cpu(), result) for latent, result in zip(latents, scored, strict=True)
         )
@@ -1798,11 +1832,23 @@ def run_cem(
         history.append(
             {
                 "iteration": iteration,
-                "best_latent": iteration_pair[0].numpy(),
+                "best_candidate_index": candidate_offset + iteration_best_index,
+                "best_latent": (
+                    iteration_pair[0]
+                    if iteration_pair[0].ndim == 1
+                    else iteration_pair[0][len(iteration_pair[0]) // 2]
+                ).numpy(),
                 "best_score": iteration_pair[1].score,
                 "elite_mean_score": float(score_values[elite_indices].mean()),
-                "mean": mean.numpy().copy(),
-                "std": std.numpy().copy(),
+                "trajectory_steps": 1 if mean.ndim == 1 else len(mean),
+                "mean": (
+                    mean if mean.ndim == 1 else mean[len(mean) // 2]
+                ).numpy().copy(),
+                "std": (
+                    std if std.ndim == 1 else std[len(std) // 2]
+                ).numpy().copy(),
+                "std_overall_mean": float(std.mean()),
+                "std_overall_max": float(std.max()),
             }
         )
     if best_pair is None:

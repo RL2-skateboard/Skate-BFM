@@ -17,16 +17,20 @@ from skate_bfm.exp.h1_bfm_coverage.core import (
     BFM0_ACTION_RESCALE,
     BFM0_DEFAULT_JOINT_POSITION,
     EXPERT_STATIC_QPOS,
+    CemResult,
     CheckpointCompatibilityError,
     ExpertTarget,
     H1RolloutRunner,
     OfficialHuskyToBfm0Observation,
+    RolloutResult,
+    ScoredRollout,
     _expert_pose_observation,
     angular_distance,
     constrain_to_geodesic_cap,
     load_bfm0_checkpoint,
     official_husky_control_parameters,
     quaternion_rotation_error,
+    run_cem,
     sample_geodesic_neighborhood,
     sample_global_latents,
     score_rollout,
@@ -149,6 +153,55 @@ def test_geodesic_cap_limits_search_to_expert_neighborhood() -> None:
     assert torch.all(angles <= 20.0 + 2e-4)
 
 
+def test_geodesic_cap_limits_every_expert_trajectory_step() -> None:
+    model = Bfm0Model()
+    anchor = model.project_z(torch.randn(5, model.config.latent_dim))
+    candidates = model.project_z(torch.randn(7, 5, model.config.latent_dim))
+    capped = constrain_to_geodesic_cap(model, candidates, anchor, 10.0)
+    angles = torch.rad2deg(angular_distance(capped, anchor.unsqueeze(0)))
+    assert capped.shape == candidates.shape
+    assert torch.all(angles <= 10.0 + 2e-4)
+
+
+def test_cem_preserves_time_aligned_latent_trajectory() -> None:
+    model = Bfm0Model()
+    anchor = model.project_z(torch.randn(4, model.config.latent_dim))
+
+    def evaluate(latent: torch.Tensor, seed: int) -> ScoredRollout:
+        score = -float(angular_distance(latent, anchor).mean())
+        rollout = RolloutResult(
+            latent=latent.numpy(),
+            states=[],
+            actions=np.empty((0, 23), dtype=np.float32),
+            descriptor={},
+            fall=False,
+            unsafe=False,
+            terminated_early=False,
+            seed=seed,
+        )
+        return ScoredRollout("trajectory", score, True, {}, rollout)
+
+    result: CemResult = run_cem(
+        model,
+        evaluate,
+        anchor,
+        {
+            "population_size": 8,
+            "elite_fraction": 0.25,
+            "num_iterations": 2,
+            "initial_std": 0.1,
+            "min_std": 0.01,
+            "max_angle_degrees": 15.0,
+            "temporal_correlation": 0.9,
+        },
+        seed=9,
+    )
+    assert result.best_latent.shape == anchor.shape
+    assert torch.all(
+        torch.rad2deg(angular_distance(result.best_latent, anchor)) <= 15.0 + 2e-4
+    )
+
+
 def test_static_expert_pose_builds_complete_backward_observation() -> None:
     values = np.load(
         ROOT / "husky_sim/upstream/dataset/ref_pose/push_start_pose_b.npy",
@@ -226,9 +279,7 @@ def test_static_pose_score_is_finite() -> None:
     result = score_rollout(rollout, target, _config()["scores"])
     assert math.isfinite(result.score)
     assert all(math.isfinite(value) for value in result.metrics.values())
-    assert result.score == pytest.approx(
-        result.metrics["initial_pose_error"] - result.metrics["final_pose_error"]
-    )
+    assert result.score == pytest.approx(-result.metrics["mean_pose_error"])
 
 
 def test_steer_initial_pose_places_both_feet_on_board() -> None:
@@ -275,6 +326,19 @@ def test_rollout_resets_env_and_observation_history() -> None:
         first.states[-1]["joint_position"],
         second.states[-1]["joint_position"],
     )
+
+
+def test_rollout_executes_time_aligned_latent_trajectory() -> None:
+    model = Bfm0Model()
+    runner = H1RolloutRunner(model, _config(), device="cpu")
+    latent_trajectory = model.project_z(torch.randn(3, model.config.latent_dim))
+    try:
+        rollout = runner.rollout(latent_trajectory, seed=7)
+    finally:
+        runner.close()
+    assert rollout.latent.shape == (3, model.config.latent_dim)
+    assert rollout.actions.shape[0] == 3
+    assert len(rollout.states) == 4
 
 
 def test_temporary_checkpoint_two_latent_two_step_smoke(tmp_path: Path) -> None:

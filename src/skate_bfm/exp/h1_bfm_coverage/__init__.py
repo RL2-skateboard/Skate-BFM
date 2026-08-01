@@ -30,7 +30,7 @@ from skate_bfm.exp.h1_bfm_coverage.core import (
     ScoredRollout,
     angular_distance,
     classify_coverage,
-    encode_expert_anchor,
+    encode_expert_latents,
     evaluate_geodesic_support,
     evaluate_robustness,
     load_bfm0_checkpoint,
@@ -203,6 +203,43 @@ def _latent_record(
     }
 
 
+def _latent_sequence_records(
+    latent: torch.Tensor,
+    source: str,
+    target: str,
+    result: ScoredRollout,
+) -> list[dict[str, Any]]:
+    latent = torch.as_tensor(latent)
+    if latent.ndim == 1:
+        return [_latent_record(latent, source, target, result)]
+    if latent.ndim != 2 or len(latent) == 0:
+        raise ValueError(f"Expected latent [D] or [T, D], got {tuple(latent.shape)}")
+    denominator = max(1, len(latent) - 1)
+    return [
+        _latent_record(
+            step_latent,
+            source,
+            target,
+            result,
+            fraction=step / denominator,
+        )
+        for step, step_latent in enumerate(latent)
+    ]
+
+
+def _representative_latent(latent: torch.Tensor) -> torch.Tensor:
+    latent = torch.as_tensor(latent)
+    return latent if latent.ndim == 1 else latent[len(latent) // 2]
+
+
+def _trajectory_angles_degrees(
+    first: torch.Tensor,
+    second: torch.Tensor,
+) -> tuple[float, float]:
+    angles = torch.rad2deg(angular_distance(first, second))
+    return float(torch.mean(angles)), float(torch.max(angles))
+
+
 def _trajectory_arrays(result: ScoredRollout) -> dict[str, np.ndarray]:
     states = result.rollout.states
     return {
@@ -279,7 +316,11 @@ def _write_target_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "searched_anchor_score",
         "searched_success",
         "robust_success_rate",
+        "encoded_latent_steps",
+        "searched_latent_steps",
         "search_angle_from_global_degrees",
+        "search_angle_from_global_mean_degrees",
+        "search_angle_mean_degrees",
         "search_angle_degrees",
         "angular_support",
         "coverage_type",
@@ -330,6 +371,10 @@ def _record_color(record: dict[str, Any]) -> str:
         return "#ea7c23"
     if source == "human_push_anchor":
         return "#2f6fed"
+    if source == "encoded_trajectory":
+        return "#2563eb"
+    if source == "searched_trajectory":
+        return "#0f766e"
     if source == "encoded_anchor":
         if target.startswith("human_push"):
             return "#2f6fed"
@@ -393,18 +438,22 @@ def _plot_latent_tsne(
                         linewidth=1.2,
                         alpha=0.8,
                     )
-    human_push_indices = [
-        index for index, record in enumerate(records) if record["source"] == "human_push_anchor"
-    ]
-    if len(human_push_indices) > 1:
-        human_push_indices.sort(key=lambda index: records[index]["target"])
-        axis.plot(
-            coordinates[human_push_indices, 0],
-            coordinates[human_push_indices, 1],
-            color="#2f6fed",
-            linewidth=1.2,
-            alpha=0.8,
-        )
+    for target in {record["target"] for record in records}:
+        for source in ("encoded_trajectory", "searched_trajectory"):
+            indices = [
+                index
+                for index, record in enumerate(records)
+                if record["target"] == target and record["source"] == source
+            ]
+            if len(indices) > 1:
+                indices.sort(key=lambda index: records[index]["fraction"])
+                axis.plot(
+                    coordinates[indices, 0],
+                    coordinates[indices, 1],
+                    color=_record_color(records[indices[0]]),
+                    linewidth=1.2,
+                    alpha=0.8,
+                )
     axis.set_title("BFM0 latent directions: cosine t-SNE")
     axis.set_xlabel("t-SNE 1")
     axis.set_ylabel("t-SNE 2")
@@ -489,19 +538,23 @@ def _plot_latent_sphere(
                         linewidth=1.2,
                         alpha=0.8,
                     )
-    human_push_indices = [
-        index for index, record in enumerate(records) if record["source"] == "human_push_anchor"
-    ]
-    if len(human_push_indices) > 1:
-        human_push_indices.sort(key=lambda index: records[index]["target"])
-        axis.plot(
-            coordinates[human_push_indices, 0],
-            coordinates[human_push_indices, 1],
-            coordinates[human_push_indices, 2],
-            color="#2f6fed",
-            linewidth=1.2,
-            alpha=0.8,
-        )
+    for target in {record["target"] for record in records}:
+        for source in ("encoded_trajectory", "searched_trajectory"):
+            indices = [
+                index
+                for index, record in enumerate(records)
+                if record["target"] == target and record["source"] == source
+            ]
+            if len(indices) > 1:
+                indices.sort(key=lambda index: records[index]["fraction"])
+                axis.plot(
+                    coordinates[indices, 0],
+                    coordinates[indices, 1],
+                    coordinates[indices, 2],
+                    color=_record_color(records[indices[0]]),
+                    linewidth=1.2,
+                    alpha=0.8,
+                )
     axis.set_title(
         "Paper-style latent sphere\n"
         "t-SNE sphere is qualitative; quantitative distances use original latents."
@@ -523,6 +576,7 @@ def _plot_score_angle(
     figure, axis = plt.subplots(figsize=(8, 5))
     markers = {
         "encoded_anchor": "*",
+        "encoded_trajectory": "*",
         "global": "o",
         "geodesic": "^",
         "cem": "s",
@@ -551,7 +605,7 @@ def _plot_score_angle(
                     alpha=0.65,
                     label=f"{target}: {source}",
                 )
-    axis.set_xlabel("Angular distance from encoded expert anchor (degrees)")
+    axis.set_xlabel("Angular distance from encoded expert midpoint (degrees)")
     axis.set_ylabel("Expert target score")
     axis.set_title("Score versus original-space geodesic angle")
     axis.legend(fontsize=7, frameon=False, ncol=2)
@@ -579,7 +633,7 @@ def _plot_support(
         axis.set_xlabel("Geodesic angle (degrees)")
         axis.grid(alpha=0.2)
     axes[0].legend(fontsize=7, frameon=False)
-    figure.suptitle("Expert-anchor geodesic support")
+    figure.suptitle("Expert latent / trajectory geodesic support")
     figure.tight_layout()
     figure.savefig(path, dpi=180)
     plt.close(figure)
@@ -707,14 +761,16 @@ def _summary_markdown(
             "",
             "## Coverage results",
             "",
-            "| Expert target | Encoded score | Encoded robust | Global best | CEM best | "
-            "CEM angle | CEM robust | Angular support | Coverage type |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+            "| Expert target | Latent steps | Encoded score | Encoded robust | "
+            "Global best | CEM best | CEM max angle | CEM robust | Angular support | "
+            "Coverage type |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for row in rows:
         lines.append(
-            f"| {row['target']} | {row['encoded_anchor_score']:.6f} | "
+            f"| {row['target']} | {row['encoded_latent_steps']} | "
+            f"{row['encoded_anchor_score']:.6f} | "
             f"{row['encoded_robust_success_rate']:.3f} | "
             f"{row['global_best_score']:.6f} | "
             f"{row['searched_anchor_score']:.6f} | "
@@ -743,8 +799,8 @@ def _append_experiment_log(
     entries = [
         "- Reconstructed HUSKY expert poses and motions as official BFM0 "
         "backward observations.",
-        "- Connected expert-encoded BFM0 anchors to HUSKY rollouts and constrained "
-        "local CEM.",
+        "- Connected time-aligned expert BFM0 latents to HUSKY rollouts and "
+        "trajectory-local CEM.",
         "- Completed the formal H1 coverage experiment with plots and MuJoCo videos.",
     ]
     content = path.read_text(encoding="utf-8") if path.exists() else "# Experiment Log\n"
@@ -832,22 +888,25 @@ def _append_formal_results(
             f"- Geodesic angles: {config['geodesic']['angles_degrees']}",
             f"- Samples per angle: {config['geodesic']['samples_per_angle']}",
             f"- Action gain: {config['rollout']['action_gain']}",
-            f"- CEM maximum angle from encoded anchor: "
+            f"- CEM maximum per-step angle from encoded expert latent: "
             f"{config['cem']['max_angle_degrees']} degrees",
+            f"- CEM temporal noise correlation: "
+            f"{config['cem']['temporal_correlation']}",
             "- Static rollouts start from their reconstructed expert pose",
             "- Human-push rollouts start from the push expert pose because the motion "
             "files do not include skateboard state",
             "",
             "### Main results",
             "",
-            "| Expert target | Encoded score | Encoded robust | Global best | CEM best | "
-            "CEM angle | CEM robust | Coverage type |",
-            "|---|---:|---:|---:|---:|---:|---:|---|",
+            "| Expert target | Latent steps | Encoded score | Encoded robust | "
+            "Global best | CEM best | CEM max angle | CEM robust | Coverage type |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for row in rows:
         lines.append(
-            f"| {row['target']} | {row['encoded_anchor_score']:.6f} | "
+            f"| {row['target']} | {row['encoded_latent_steps']} | "
+            f"{row['encoded_anchor_score']:.6f} | "
             f"{row['encoded_robust_success_rate']:.3f} | "
             f"{row['global_best_score']:.6f} | "
             f"{row['searched_anchor_score']:.6f} | "
@@ -862,13 +921,14 @@ def _append_formal_results(
             "",
             "### Main findings",
             "",
-            "Encoded anchors are produced by the frozen official backward map from "
-            "reconstructed expert observations. No unknown observation field is "
-            "zero-filled.",
+            "Static goal latents and time-aligned dynamic latent trajectories are "
+            "produced by the frozen official backward map from reconstructed expert "
+            "observations. Dynamic execution follows the official next-frame pattern "
+            "`z_t = project_z(backward_map(obs[t + 1]))`.",
             "",
-            f"Local CEM improved the encoded-anchor score for {improved_count}/"
-            f"{len(rows)} targets. Selected CEM latents remained {angle_summary} "
-            "from their encoded expert anchors.",
+            f"Trajectory-local CEM improved the encoded score for {improved_count}/"
+            f"{len(rows)} targets. Selected CEM latents remained at most "
+            f"{angle_summary} from their matching expert latent at every step.",
             "",
             f"{covered_count}/{len(rows)} targets met the formal coverage criteria. "
             "A failed rollout does not imply failed expert encoding; it means the "
@@ -879,8 +939,9 @@ def _append_formal_results(
             "full dynamic window to meet its threshold; a transient intermediate pose "
             "is not counted as success.",
             "",
-            "Random global sampling is reported only as a baseline. CEM starts at the "
-            "encoded expert anchor and is constrained by the configured angular cap.",
+            "Random constant-latent sampling is reported only as a baseline. Dynamic "
+            "CEM starts from the complete encoded expert trajectory and uses "
+            "time-correlated perturbations under a per-step angular cap.",
             "",
             "### Latent-space visualizations",
             "",
@@ -1008,13 +1069,9 @@ def _run_experiment(
 
     try:
         for target in targets:
-            anchor = encode_expert_anchor(
-                model,
-                target,
-                float(config["expert_data"]["tracking_discount"]),
-            )
-            if anchor is not None:
-                encoded_anchors[target.name] = anchor
+            latents = encode_expert_latents(model, target)
+            if latents is not None:
+                encoded_anchors[target.name] = latents
         if metadata["run_type"] == "formal" and len(encoded_anchors) != len(targets):
             missing = sorted(
                 target.name for target in targets if target.name not in encoded_anchors
@@ -1100,10 +1157,14 @@ def _run_experiment(
             )
             if encoded_anchor is not None and encoded_result is not None:
                 trajectories[f"{target.name}_encoded_anchor"] = encoded_result
-                latent_records.append(
-                    _latent_record(
+                latent_records.extend(
+                    _latent_sequence_records(
                         encoded_anchor,
-                        "encoded_anchor",
+                        (
+                            "encoded_trajectory"
+                            if target.kind == "human_push_window"
+                            else "encoded_anchor"
+                        ),
                         target.name,
                         encoded_result,
                     )
@@ -1133,21 +1194,15 @@ def _run_experiment(
                     }
                 )
                 for iteration, entry in enumerate(cem_candidate.history):
-                    matching = max(
-                        (
-                            pair
-                            for pair in cem_candidate.candidates
-                            if np.allclose(pair[0].numpy(), entry["best_latent"])
-                        ),
-                        key=lambda pair: pair[1].score,
-                    )
+                    matching = cem_candidate.candidates[entry["best_candidate_index"]]
                     latent_records.append(
                         _latent_record(
-                            matching[0],
+                            _representative_latent(matching[0]),
                             "cem",
                             target.name,
                             matching[1],
                             iteration=iteration,
+                            fraction=0.5 if matching[0].ndim == 2 else math.nan,
                             search_seed=search_seed,
                         )
                     )
@@ -1159,13 +1214,14 @@ def _run_experiment(
                 cem.best_latent,
                 target,
             )
-            anchor_source = (
-                "human_push_anchor" if target.kind == "human_push_window" else "searched_anchor"
-            )
-            latent_records.append(
-                _latent_record(
+            latent_records.extend(
+                _latent_sequence_records(
                     cem.best_latent,
-                    anchor_source,
+                    (
+                        "searched_trajectory"
+                        if target.kind == "human_push_window"
+                        else "searched_anchor"
+                    ),
                     target.name,
                     cem.best,
                 )
@@ -1182,11 +1238,12 @@ def _run_experiment(
             for latent, angle, result in geodesic_records:
                 latent_records.append(
                     _latent_record(
-                        latent,
+                        _representative_latent(latent),
                         "geodesic",
                         target.name,
                         result,
                         angle_degrees=angle,
+                        fraction=0.5 if latent.ndim == 2 else math.nan,
                     )
                 )
 
@@ -1211,21 +1268,22 @@ def _run_experiment(
                 else 0.0
             )
             global_success_rate = float(np.mean([result.success for result in global_results]))
-            search_angle_from_global = float(
-                angular_distance(
-                    cem.best_latent.reshape(1, -1),
-                    global_best_latent.reshape(1, -1),
-                )[0]
+            global_comparison_latent = (
+                global_best_latent
+                if cem.best_latent.ndim == 1
+                else global_best_latent.repeat(len(cem.best_latent), 1)
+            )
+            search_angle_from_global_mean, search_angle_from_global = _trajectory_angles_degrees(
+                cem.best_latent,
+                global_comparison_latent,
             )
             search_angle_from_encoded = (
-                float(
-                    angular_distance(
-                        cem.best_latent.reshape(1, -1),
-                        encoded_anchor.reshape(1, -1),
-                    )[0]
+                _trajectory_angles_degrees(
+                    cem.best_latent,
+                    encoded_anchor,
                 )
                 if encoded_anchor is not None
-                else math.nan
+                else (math.nan, math.nan)
             )
             small_support = next(
                 (row["success_rate"] for row in support if row["angle_degrees"] <= 20.0),
@@ -1238,7 +1296,7 @@ def _run_experiment(
                 searched_success=cem.best.success,
                 robust_success_rate=robust_rate,
                 small_angle_support=small_support,
-                search_angle_radians=search_angle_from_encoded,
+                search_angle_radians=math.radians(search_angle_from_encoded[1]),
                 config=config["coverage"],
             )
             target_rows.append(
@@ -1258,10 +1316,22 @@ def _run_experiment(
                     "searched_anchor_score": cem.best.score,
                     "searched_success": cem.best.success,
                     "robust_success_rate": robust_rate,
-                    "search_angle_from_global_degrees": math.degrees(
-                        search_angle_from_global
+                    "search_angle_from_global_degrees": search_angle_from_global,
+                    "search_angle_from_global_mean_degrees": (
+                        search_angle_from_global_mean
                     ),
-                    "search_angle_degrees": math.degrees(search_angle_from_encoded),
+                    "search_angle_mean_degrees": search_angle_from_encoded[0],
+                    "search_angle_degrees": search_angle_from_encoded[1],
+                    "encoded_latent_steps": (
+                        int(encoded_anchor.shape[0])
+                        if encoded_anchor is not None and encoded_anchor.ndim == 2
+                        else 1
+                    ),
+                    "searched_latent_steps": (
+                        int(cem.best_latent.shape[0])
+                        if cem.best_latent.ndim == 2
+                        else 1
+                    ),
                     "angular_support": small_support,
                     "coverage_type": coverage_type,
                     "global_best_metrics": global_best.metrics,
@@ -1272,11 +1342,14 @@ def _run_experiment(
                 }
             )
             logger.info(
-                "Target %s: encoded=%.6f global=%.6f CEM=%.6f robust=%.3f type=%s",
+                "Target %s: steps=%d encoded=%.6f global=%.6f CEM=%.6f "
+                "max_angle=%.2f robust=%.3f type=%s",
                 target.name,
+                target_rows[-1]["encoded_latent_steps"],
                 encoded_result.score if encoded_result is not None else math.nan,
                 global_best.score,
                 cem.best.score,
+                target_rows[-1]["search_angle_degrees"],
                 robust_rate,
                 coverage_type,
             )
@@ -1338,7 +1411,12 @@ def _run_experiment(
         _write_target_csv(result_dir / "target_results.csv", target_rows)
         plot_errors = _make_plots(
             latent_records,
-            encoded_anchors if encoded_anchors else anchors,
+            {
+                name: _representative_latent(latent)
+                for name, latent in (
+                    encoded_anchors if encoded_anchors else anchors
+                ).items()
+            },
             support_by_target,
             result_dir / "plots",
             config["visualization"],
@@ -1474,6 +1552,8 @@ def main(argv: list[str] | None = None) -> int:
         "The current short-horizon experiment does not validate complete skateboarding.",
         "Foot contact metrics are not included in H1 coverage.",
         "t-SNE sphere plots are qualitative; quantitative distances use original latents.",
+        "Dynamic score-angle plots use trajectory midpoints for display; CEM constraints "
+        "and reported maximum angles use every original latent step.",
     ]
     if metadata["run_type"] == "smoke":
         limitations.insert(
