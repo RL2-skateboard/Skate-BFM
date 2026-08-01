@@ -572,8 +572,9 @@ def _plot_score_angle(
     path: Path,
 ) -> None:
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
-    figure, axis = plt.subplots(figsize=(8, 5))
+    figure, axis = plt.subplots(figsize=(11, 6))
     markers = {
         "encoded_anchor": "*",
         "encoded_trajectory": "*",
@@ -581,6 +582,12 @@ def _plot_score_angle(
         "geodesic": "^",
         "cem": "s",
         "slerp": "D",
+    }
+    targets = sorted(anchors)
+    color_map = plt.get_cmap("tab10")
+    target_colors = {
+        target: color_map(index % color_map.N)
+        for index, target in enumerate(targets)
     }
     for target, anchor in anchors.items():
         target_records = [
@@ -602,14 +609,53 @@ def _plot_score_angle(
                     angles[indices],
                     [target_records[index]["score"] for index in indices],
                     marker=markers[source],
+                    color=target_colors[target],
                     alpha=0.65,
-                    label=f"{target}: {source}",
                 )
     axis.set_xlabel("Angular distance from encoded expert midpoint (degrees)")
     axis.set_ylabel("Expert target score")
     axis.set_title("Score versus original-space geodesic angle")
-    axis.legend(fontsize=7, frameon=False, ncol=2)
-    figure.tight_layout()
+    source_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=marker,
+            color="none",
+            markerfacecolor="#5f6368",
+            markeredgecolor="#5f6368",
+            label=("encoded expert" if source == "encoded_anchor" else source),
+        )
+        for source, marker in markers.items()
+        if source not in {"encoded_trajectory", "slerp"}
+    ]
+    source_legend = axis.legend(
+        handles=source_handles,
+        title="Source",
+        loc="lower left",
+        frameon=False,
+    )
+    axis.add_artist(source_legend)
+    target_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor=target_colors[target],
+            markeredgecolor=target_colors[target],
+            label=target,
+        )
+        for target in targets
+    ]
+    axis.legend(
+        handles=target_handles,
+        title="Expert target",
+        loc="center left",
+        bbox_to_anchor=(1.01, 0.5),
+        frameon=False,
+        fontsize=8,
+    )
+    figure.tight_layout(rect=(0.0, 0.0, 0.78, 1.0))
     figure.savefig(path, dpi=180)
     plt.close(figure)
 
@@ -966,6 +1012,12 @@ def _append_formal_results(
             f"(res/{metadata['experiment_name']}/videos/steer_pose_encoded_anchor.mp4)",
             f"- [Steer pose: CEM best]"
             f"(res/{metadata['experiment_name']}/videos/steer_pose_cem_best.mp4)",
+            f"- [Human push 1 window 00: encoded trajectory]"
+            f"(res/{metadata['experiment_name']}/videos/"
+            f"human_push_1_window_00_encoded_trajectory.mp4)",
+            f"- [Human push 1 window 00: CEM best]"
+            f"(res/{metadata['experiment_name']}/videos/"
+            f"human_push_1_window_00_cem_best.mp4)",
             f"- [Push-steer midpoint]"
             f"(res/{metadata['experiment_name']}/videos/push_steer_midpoint_blend.mp4)",
             f"- [All generated videos](res/{metadata['experiment_name']}/videos/)",
@@ -1081,7 +1133,7 @@ def _run_experiment(
             )
         schema["encoded_anchor_available"] = len(encoded_anchors) == len(targets)
         logger.info(
-            "Encoded %d expert anchors with the official backward map",
+            "Encoded %d expert goals/trajectories with the official backward map",
             len(encoded_anchors),
         )
 
@@ -1169,11 +1221,14 @@ def _run_experiment(
                         encoded_result,
                     )
                 )
-                if target.kind == "static_pose":
-                    selected_videos[f"{_video_target_label(target)}_encoded_anchor"] = (
-                        encoded_anchor,
-                        target,
-                    )
+                encoded_video_suffix = (
+                    "encoded_trajectory"
+                    if target.kind == "human_push_window"
+                    else "encoded_anchor"
+                )
+                selected_videos[
+                    f"{_video_target_label(target)}_{encoded_video_suffix}"
+                ] = (encoded_anchor, target)
 
             cem_results = []
             target_histories = []

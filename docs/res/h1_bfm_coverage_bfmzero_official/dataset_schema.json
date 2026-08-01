@@ -7,7 +7,7 @@
   },
   "limitations": [
     "Expert records do not provide a complete BFM0 actor observation.",
-    "Expert anchors use reconstructed official backward observations, not zero padding.",
+    "Expert latents use reconstructed official backward observations, not zero padding.",
     "Foot contact labels are not part of the expert arrays."
   ],
   "push_start_pose": {

@@ -1,8 +1,8 @@
 [
   {
     "fraction": 0.0,
-    "push_score": -0.13959825038909912,
-    "steer_score": -1.1353753832809161,
+    "push_score": -1.0028100059582636,
+    "steer_score": -0.6858045079828187,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.06199688470653386,
@@ -32,8 +32,8 @@
   },
   {
     "fraction": 0.10000000149011612,
-    "push_score": -0.1268186867237091,
-    "steer_score": -1.1140596000186633,
+    "push_score": -0.9946276889397547,
+    "steer_score": -0.672865982473013,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.058200063171993395,
@@ -63,8 +63,8 @@
   },
   {
     "fraction": 0.20000000298023224,
-    "push_score": -0.11341950297355652,
-    "steer_score": -1.091047319554491,
+    "push_score": -0.9851159694103094,
+    "steer_score": -0.6633828997336633,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.046587936036653316,
@@ -94,8 +94,8 @@
   },
   {
     "fraction": 0.30000001192092896,
-    "push_score": -0.08910983800888062,
-    "steer_score": -1.0876504508487415,
+    "push_score": -0.9811077255469102,
+    "steer_score": -0.6512981185951503,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.03506028528803813,
@@ -125,8 +125,8 @@
   },
   {
     "fraction": 0.4000000059604645,
-    "push_score": -0.08882850408554077,
-    "steer_score": -1.1143724647990894,
+    "push_score": -0.9751553822022218,
+    "steer_score": -0.6422480925248237,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.026597391877182058,
@@ -156,8 +156,8 @@
   },
   {
     "fraction": 0.5,
-    "push_score": -0.1022634208202362,
-    "steer_score": -1.1324141053191852,
+    "push_score": -0.9771449542962588,
+    "steer_score": -0.6350280346467536,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.005424048062464434,
@@ -187,8 +187,8 @@
   },
   {
     "fraction": 0.6000000238418579,
-    "push_score": -0.09177255630493164,
-    "steer_score": -1.1288233725063037,
+    "push_score": -0.9828246499483402,
+    "steer_score": -0.6321058146165272,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.0016585718926362932,
@@ -218,8 +218,8 @@
   },
   {
     "fraction": 0.699999988079071,
-    "push_score": -0.09215912222862244,
-    "steer_score": -1.0865966407291126,
+    "push_score": -0.9841958181216166,
+    "steer_score": -0.6200277329648648,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.022554786980393454,
@@ -249,8 +249,8 @@
   },
   {
     "fraction": 0.800000011920929,
-    "push_score": -0.08239972591400146,
-    "steer_score": -1.083945113205118,
+    "push_score": -0.9868676089323484,
+    "steer_score": -0.6129846011586219,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.026994546887203704,
@@ -280,8 +280,8 @@
   },
   {
     "fraction": 0.8999999761581421,
-    "push_score": -0.11205953359603882,
-    "steer_score": -1.0881261108152103,
+    "push_score": -1.0009325639559672,
+    "steer_score": -0.6084258069582015,
     "fall": false,
     "descriptor": {
       "delta_root_x": 0.04768017308550051,
@@ -311,8 +311,8 @@
   },
   {
     "fraction": 1.0,
-    "push_score": -0.1154623031616211,
-    "steer_score": -1.0980939445726108,
+    "push_score": -1.015033677793466,
+    "steer_score": -0.6086086811365721,
     "fall": false,
     "descriptor": {
       "delta_root_x": -0.0002930479282912835,

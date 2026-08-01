@@ -16,16 +16,16 @@
 
 ## Coverage results
 
-| Expert target | Encoded score | Encoded robust | Global best | CEM best | CEM angle | CEM robust | Angular support | Coverage type |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| push_start_pose | -1.138241 | 0.000 | -1.030625 | -1.045835 | 12.37 deg | 0.000 | 0.000 | not_covered |
-| steer_start_pose | -1.098281 | 0.000 | -0.847677 | -0.998107 | 12.83 deg | 0.000 | 0.000 | not_covered |
-| human_push_1_window_00 | -0.601383 | 0.000 | -0.604842 | -0.553971 | 12.37 deg | 0.000 | 0.000 | not_covered |
-| human_push_1_window_01 | -0.592272 | 0.000 | -0.592723 | -0.552415 | 12.50 deg | 0.000 | 0.000 | not_covered |
-| human_push_1_window_02 | -0.565941 | 0.000 | -0.584074 | -0.531432 | 11.78 deg | 0.000 | 0.000 | not_covered |
-| human_push_2_window_00 | -0.574201 | 0.000 | -0.575069 | -0.549567 | 11.48 deg | 0.000 | 0.000 | not_covered |
-| human_push_2_window_01 | -0.584426 | 0.000 | -0.615353 | -0.557333 | 11.39 deg | 0.000 | 0.000 | not_covered |
-| human_push_2_window_02 | -0.566790 | 0.000 | -0.572806 | -0.533452 | 12.36 deg | 0.000 | 0.000 | not_covered |
+| Expert target | Latent steps | Encoded score | Encoded robust | Global best | CEM best | CEM max angle | CEM robust | Angular support | Coverage type |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| push_start_pose | 1 | -0.727388 | 0.000 | -0.662178 | -0.687604 | 13.85 deg | 0.000 | 0.000 | not_covered |
+| steer_start_pose | 1 | -0.608622 | 0.000 | -0.368672 | -0.499037 | 14.15 deg | 0.000 | 0.000 | not_covered |
+| human_push_1_window_00 | 24 | -0.590235 | 0.000 | -0.604842 | -0.560348 | 13.17 deg | 0.000 | 0.000 | not_covered |
+| human_push_1_window_01 | 24 | -0.565269 | 0.000 | -0.592723 | -0.541290 | 12.10 deg | 0.000 | 0.000 | not_covered |
+| human_push_1_window_02 | 24 | -0.575500 | 0.000 | -0.584074 | -0.546026 | 13.40 deg | 0.000 | 0.000 | not_covered |
+| human_push_2_window_00 | 24 | -0.581676 | 0.000 | -0.575069 | -0.543916 | 13.47 deg | 0.000 | 0.000 | not_covered |
+| human_push_2_window_01 | 24 | -0.590527 | 0.000 | -0.615353 | -0.561113 | 14.04 deg | 0.000 | 0.000 | not_covered |
+| human_push_2_window_02 | 24 | -0.560243 | 0.000 | -0.572806 | -0.529089 | 13.09 deg | 0.000 | 0.000 | not_covered |
 
 ## Limitations
 
@@ -36,3 +36,4 @@
 - The current short-horizon experiment does not validate complete skateboarding.
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.
+- Dynamic score-angle plots use trajectory midpoints for display; CEM constraints and reported maximum angles use every original latent step.
