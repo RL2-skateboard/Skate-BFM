@@ -785,6 +785,7 @@ def _save_representative_videos(
                 latent,
                 seed=seed,
                 initial_qpos=target.initial_qpos,
+                initial_qvel=target.initial_qvel,
                 capture_frames=True,
             )
             _write_video(
@@ -1068,8 +1069,8 @@ def _append_formal_results(
             f"- CEM temporal noise correlation: "
             f"{cem_config['temporal_correlation']}",
             "- Static rollouts start from their reconstructed expert pose",
-            "- Human-push rollouts start from the push expert pose because the motion "
-            "files do not include skateboard state",
+            "- Human-push rollouts start from each window's first expert qpos/qvel; "
+            "global translation and heading are aligned to the skateboard",
             "",
             "### Main results",
             "",
@@ -1270,6 +1271,7 @@ def _run_experiment(
                         latent,
                         seed=seed + index,
                         initial_qpos=target.initial_qpos,
+                        initial_qvel=target.initial_qvel,
                     )
                     for index, latent in enumerate(global_latents)
                 ]
@@ -1316,6 +1318,7 @@ def _run_experiment(
                         latent,
                         seed=rollout_seed,
                         initial_qpos=target.initial_qpos,
+                        initial_qvel=target.initial_qvel,
                     ),
                     target,
                     config["scores"],
@@ -1562,6 +1565,7 @@ def _run_experiment(
                     latent,
                     seed=seed + 20000 + index,
                     initial_qpos=steer_target.initial_qpos,
+                    initial_qvel=steer_target.initial_qvel,
                 )
                 push_score = score_rollout(rollout, push_target, config["scores"])
                 steer_score = score_rollout(rollout, steer_target, config["scores"])
@@ -1740,6 +1744,8 @@ def main(argv: list[str] | None = None) -> int:
         "Dynamic expert velocities are reconstructed by finite differences at 50 Hz.",
         "Static scoring uses all 30 confirmed robot bodies relative to the skateboard.",
         "Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.",
+        "Human-push files do not include synchronized skateboard state; initialization "
+        "aligns the expert feet to the HUSKY deck while preserving expert pose and velocity.",
         "The current short-horizon experiment does not validate complete skateboarding.",
         "Foot contact metrics are not included in H1 coverage.",
         "t-SNE sphere plots are qualitative; quantitative distances use original latents.",

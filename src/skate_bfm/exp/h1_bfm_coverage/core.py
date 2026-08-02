@@ -427,6 +427,7 @@ class ExpertTarget:
     joint_names: tuple[str, ...] = ()
     initial_pose: str = "push"
     initial_qpos: np.ndarray | None = None
+    initial_qvel: np.ndarray | None = None
     expert_observation: dict[str, np.ndarray] | None = None
     encoded_anchor_available: bool = False
     limitation: str = ""
@@ -526,6 +527,66 @@ def _finite_angular_velocity(quaternion: np.ndarray, dt: float) -> np.ndarray:
         axis = vector / np.maximum(vector_norm[..., None], 1e-12)
         result[index] = axis * angle[..., None] / ((end - start) * dt)
     return result
+
+
+def _motion_initial_state(
+    raw: np.ndarray,
+    start: int,
+    model: mujoco.MjModel,
+) -> tuple[np.ndarray, np.ndarray]:
+    data = mujoco.MjData(model)
+    joint_qpos = np.asarray(
+        [model.joint(index).qposadr[0] for index in range(1, model.njnt)],
+        dtype=np.int64,
+    )
+    foot_ids = np.asarray(
+        [
+            model.body("left_ankle_roll_link").id,
+            model.body("right_ankle_roll_link").id,
+        ],
+        dtype=np.int64,
+    )
+    source_qpos = raw[start, :36].astype(np.float64, copy=True)
+    data.qpos[:7] = source_qpos[:7]
+    data.qpos[joint_qpos] = source_qpos[7:36]
+    mujoco.mj_forward(model, data)
+    feet = data.xpos[foot_ids].copy()
+
+    foot_delta = feet[1, :2] - feet[0, :2]
+    yaw = -math.atan2(float(foot_delta[1]), float(foot_delta[0]))
+    yaw_quaternion = np.asarray(
+        (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)),
+        dtype=np.float64,
+    )
+    source_qpos[3:7] = _quat_multiply(yaw_quaternion, source_qpos[3:7])
+    data.qpos[:7] = source_qpos[:7]
+    data.qpos[joint_qpos] = source_qpos[7:36]
+    mujoco.mj_forward(model, data)
+    feet = data.xpos[foot_ids].copy()
+    translation = np.zeros(3, dtype=np.float64)
+    translation[:2] = -feet[:, :2].mean(axis=0)
+    translation[2] = 0.12 - float(np.min(feet[:, 2]))
+    source_qpos[:3] += translation
+
+    def aligned_qpos(row: np.ndarray) -> np.ndarray:
+        qpos = row[:36].astype(np.float64, copy=True)
+        qpos[:3] += translation
+        qpos[3:7] = _quat_multiply(yaw_quaternion, qpos[3:7])
+        return qpos
+
+    dt = 1.0 / HUMAN_PUSH_FPS
+    start_index = max(0, start - 1)
+    end_index = min(len(raw) - 1, start + 1)
+    elapsed = max(dt, (end_index - start_index) * dt)
+    initial_qvel = np.empty(model.nv, dtype=np.float64)
+    mujoco.mj_differentiatePos(
+        model,
+        initial_qvel,
+        elapsed,
+        aligned_qpos(raw[start_index]),
+        aligned_qpos(raw[end_index]),
+    )
+    return source_qpos, initial_qvel
 
 
 def _official_privileged_state(
@@ -837,7 +898,12 @@ def load_expert_targets(
                         "start_frame": int(start),
                         "end_frame_exclusive": int(end),
                         "encoded_anchor_available": official_observation is not None,
-                        "rollout_initial_pose": "push_start_pose",
+                        "rollout_initial_pose": target_name,
+                        "rollout_initialization": (
+                            "Window-first expert qpos/qvel; global translation removed, "
+                            "foot heading aligned to skateboard length, lowest foot "
+                            "aligned to deck surface"
+                        ),
                     }
                 )
                 window_observation = (
@@ -847,6 +913,11 @@ def load_expert_targets(
                     }
                     if official_observation is not None
                     else None
+                )
+                initial_qpos, initial_qvel = _motion_initial_state(
+                    raw,
+                    int(start),
+                    official_g1_model,
                 )
                 targets.append(
                     ExpertTarget(
@@ -858,13 +929,15 @@ def load_expert_targets(
                         start_frame=int(start),
                         end_frame=int(end),
                         joint_names=HUSKY_JOINTS,
-                        initial_pose="push_start_pose",
-                        initial_qpos=EXPERT_STATIC_QPOS["push_start_pose"],
+                        initial_pose=target_name,
+                        initial_qpos=initial_qpos,
+                        initial_qvel=initial_qvel,
                         expert_observation=window_observation,
                         encoded_anchor_available=window_observation is not None,
                         limitation=(
                             "Scores common joint positions; the encoded latent trajectory also "
-                            "uses the confirmed root and full 29DoF trajectory."
+                            "uses the confirmed root and full 29DoF trajectory. The source "
+                            "does not contain synchronized skateboard state."
                         ),
                     )
                 )
@@ -1508,7 +1581,11 @@ class H1RolloutRunner:
         mujoco.mj_normalizeQuat(model, data.qpos)
         mujoco.mj_forward(model, data)
 
-    def _apply_initial_pose(self, initial_qpos: np.ndarray | None) -> None:
+    def _apply_initial_pose(
+        self,
+        initial_qpos: np.ndarray | None,
+        initial_qvel: np.ndarray | None,
+    ) -> None:
         if initial_qpos is None:
             return
         initial_qpos = np.asarray(initial_qpos, dtype=np.float64)
@@ -1523,6 +1600,19 @@ class H1RolloutRunner:
             joint = model.joint(f"{ROBOT_BODY_PREFIX}{joint_name}")
             data.qpos[joint.qposadr[0]] = initial_qpos[7 + BFM0_JOINTS.index(joint_name)]
         data.qvel[:] = 0.0
+        if initial_qvel is not None:
+            initial_qvel = np.asarray(initial_qvel, dtype=np.float64)
+            if initial_qvel.shape != (35,):
+                raise ValueError(
+                    f"Expert initial qvel must have shape (35,), got {initial_qvel.shape}"
+                )
+            root_dof = root_joint.dofadr[0]
+            data.qvel[root_dof : root_dof + 6] = initial_qvel[:6]
+            for joint_name in HUSKY_JOINTS:
+                joint = model.joint(f"{ROBOT_BODY_PREFIX}{joint_name}")
+                data.qvel[joint.dofadr[0]] = initial_qvel[
+                    6 + BFM0_JOINTS.index(joint_name)
+                ]
         mujoco.mj_normalizeQuat(model, data.qpos)
         mujoco.mj_forward(model, data)
 
@@ -1532,6 +1622,7 @@ class H1RolloutRunner:
         *,
         seed: int,
         initial_qpos: np.ndarray | None = None,
+        initial_qvel: np.ndarray | None = None,
         perturbation: dict[str, float] | None = None,
         capture_frames: bool = False,
         render_size: tuple[int, int] = (640, 480),
@@ -1539,7 +1630,7 @@ class H1RolloutRunner:
         torch.manual_seed(seed)
         np.random.seed(seed)
         observation = self.env.reset()
-        self._apply_initial_pose(initial_qpos)
+        self._apply_initial_pose(initial_qpos, initial_qvel)
         observation = self.env._observation()
         self.observation_adapter.reset()
         last_bfm0_action = np.zeros(29, dtype=np.float32)
@@ -1918,6 +2009,7 @@ def evaluate_robustness(
             latent,
             seed=seed + trial,
             initial_qpos=target.initial_qpos,
+            initial_qvel=target.initial_qvel,
             perturbation=perturbation,
         )
         results.append(score_rollout(rollout, target, scores))

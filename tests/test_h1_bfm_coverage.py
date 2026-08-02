@@ -20,7 +20,9 @@ from skate_bfm.exp.h1_bfm_coverage import (
 from skate_bfm.exp.h1_bfm_coverage.core import (
     BFM0_ACTION_RESCALE,
     BFM0_DEFAULT_JOINT_POSITION,
+    BFM0_JOINTS,
     EXPERT_STATIC_QPOS,
+    HUSKY_JOINTS,
     CemResult,
     CheckpointCompatibilityError,
     ExpertTarget,
@@ -32,6 +34,7 @@ from skate_bfm.exp.h1_bfm_coverage.core import (
     angular_distance,
     constrain_to_geodesic_cap,
     load_bfm0_checkpoint,
+    load_expert_targets,
     official_husky_control_parameters,
     quaternion_rotation_error,
     run_cem,
@@ -236,6 +239,33 @@ def test_static_expert_pose_builds_complete_backward_observation() -> None:
     assert all(np.isfinite(value).all() for value in observation.values())
 
 
+def test_dynamic_targets_start_from_their_own_expert_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BFM_ZERO_ROOT", str(ROOT / "model/bfm-zero-source"))
+    config = yaml.safe_load(
+        (ROOT / "configs/h1_bfm_coverage.yaml").read_text(encoding="utf-8")
+    )
+    targets, _ = load_expert_targets(
+        ROOT / config["expert_data"]["root"],
+        ROOT / "husky_sim/upstream/test_scene/mjlab_scene.xml",
+        config["expert_data"],
+    )
+    bfm_indices = [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS]
+    for target in targets:
+        if target.kind != "human_push_window":
+            continue
+        assert target.initial_qpos is not None
+        assert target.initial_qvel is not None
+        assert target.initial_pose == target.name
+        assert np.allclose(
+            target.initial_qpos[7:][bfm_indices],
+            target.values[0],
+        )
+        assert target.initial_qvel.shape == (35,)
+        assert np.isfinite(target.initial_qvel).all()
+
+
 def test_slerp_endpoints_and_norm() -> None:
     model = Bfm0Model()
     start = model.project_z(torch.randn(model.config.latent_dim))
@@ -359,6 +389,28 @@ def test_rollout_executes_time_aligned_latent_trajectory() -> None:
     assert rollout.latent.shape == (3, model.config.latent_dim)
     assert rollout.actions.shape[0] == 3
     assert len(rollout.states) == 4
+
+
+def test_rollout_applies_expert_initial_velocity() -> None:
+    model = Bfm0Model()
+    runner = H1RolloutRunner(model, _config(), device="cpu")
+    initial_qpos = runner.env.data.qpos[
+        runner.env.model.joint("robot/floating_base_joint").qposadr[0] :
+    ][:36].copy()
+    initial_qvel = np.linspace(-0.2, 0.2, 35)
+    try:
+        rollout = runner.rollout(
+            torch.ones(model.config.latent_dim),
+            seed=3,
+            initial_qpos=initial_qpos,
+            initial_qvel=initial_qvel,
+        )
+    finally:
+        runner.close()
+    assert np.allclose(
+        rollout.states[0]["joint_velocity"],
+        initial_qvel[6:][[BFM0_JOINTS.index(name) for name in HUSKY_JOINTS]],
+    )
 
 
 def test_temporary_checkpoint_two_latent_two_step_smoke(tmp_path: Path) -> None:

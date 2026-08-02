@@ -161,6 +161,10 @@ evaluator. In `with_prior`, dynamic CEM perturbs the complete latent trajectory
 with temporally correlated noise and constrains every step to a 40-degree
 spherical neighborhood. In `without_prior`, 256 random constant-latent
 directions are evaluated before broad CEM refinement from the global best.
+Each dynamic rollout starts from its own expert window's first qpos and qvel.
+Because the motion files do not contain synchronized skateboard state, global
+translation is removed, foot heading is aligned with the board length, and the
+lowest foot is placed on the deck.
 
 ## Current Framework
 
