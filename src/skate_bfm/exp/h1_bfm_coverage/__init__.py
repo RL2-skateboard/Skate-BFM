@@ -649,6 +649,7 @@ def _plot_score_angle(
         )
         for source, marker in markers.items()
         if source not in {"encoded_trajectory", "slerp"}
+        and any(record["source"] == source for record in records)
     ]
     source_legend = axis.legend(
         handles=source_handles,
