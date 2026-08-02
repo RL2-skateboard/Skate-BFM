@@ -1,16 +1,22 @@
-2026-08-02 09:48:03,694 INFO Experiment h1_bfm0_motion_without_prior started
-2026-08-02 09:48:03,694 INFO Run type=formal prior=without_prior device=cuda checkpoint=/home/hm/workspace/skate-bfm/model/bfm-zero-official
-2026-08-02 09:48:04,045 INFO Confirmed expert schema; enabled targets: ['push_start_pose', 'steer_start_pose', 'human_push_1_window_00', 'human_push_1_window_01', 'human_push_1_window_02', 'human_push_2_window_00', 'human_push_2_window_01', 'human_push_2_window_02']
-2026-08-02 09:48:06,685 INFO Checkpoint loaded strictly and model frozen
-2026-08-02 09:48:06,769 INFO Without-prior mode: expert data is excluded from latent proposal generation
-2026-08-02 09:48:18,688 INFO Completed global scan with 256 latents from push_start_pose initial pose
-2026-08-02 09:48:31,544 INFO Completed global scan with 256 latents from steer_start_pose initial pose
-2026-08-02 09:49:30,597 INFO Target push_start_pose: steps=0 encoded=nan global=-0.662178 CEM=-0.523622 max_angle=41.24 robust=0.000 type=not_covered
-2026-08-02 09:50:32,592 INFO Target steer_start_pose: steps=0 encoded=nan global=-0.368672 CEM=-0.287402 max_angle=40.77 robust=0.000 type=fragile
-2026-08-02 09:51:30,075 INFO Target human_push_1_window_00: steps=0 encoded=nan global=-0.604842 CEM=-0.526947 max_angle=33.94 robust=0.000 type=not_covered
-2026-08-02 09:52:27,436 INFO Target human_push_1_window_01: steps=0 encoded=nan global=-0.592723 CEM=-0.524287 max_angle=43.12 robust=0.000 type=not_covered
-2026-08-02 09:53:25,772 INFO Target human_push_1_window_02: steps=0 encoded=nan global=-0.584074 CEM=-0.323566 max_angle=37.15 robust=0.850 type=locally_covered
-2026-08-02 09:54:24,071 INFO Target human_push_2_window_00: steps=0 encoded=nan global=-0.575069 CEM=-0.465430 max_angle=37.27 robust=0.350 type=fragile
-2026-08-02 09:55:22,033 INFO Target human_push_2_window_01: steps=0 encoded=nan global=-0.615353 CEM=-0.360626 max_angle=37.13 robust=0.950 type=locally_covered
-2026-08-02 09:56:20,326 INFO Target human_push_2_window_02: steps=0 encoded=nan global=-0.572806 CEM=-0.311128 max_angle=34.20 robust=1.000 type=locally_covered
-2026-08-02 09:56:34,936 INFO Experiment ended status=completed duration=511.193s output=docs/res/h1_bfm0_motion_without_prior
+2026-08-02 11:42:25,066 INFO Experiment h1_bfm0_motion_without_prior started
+2026-08-02 11:42:25,066 INFO Run type=formal prior=without_prior device=cuda checkpoint=/home/hm/workspace/skate-bfm/model/bfm-zero-official
+2026-08-02 11:42:25,418 INFO Confirmed expert schema; enabled targets: ['push_start_pose', 'steer_start_pose', 'human_push_1_window_00', 'human_push_1_window_01', 'human_push_1_window_02', 'human_push_2_window_00', 'human_push_2_window_01', 'human_push_2_window_02']
+2026-08-02 11:42:28,108 INFO Checkpoint loaded strictly and model frozen
+2026-08-02 11:42:28,194 INFO Without-prior mode: expert data is excluded from latent proposal generation
+2026-08-02 11:42:40,056 INFO Completed global scan with 256 latents from push_start_pose initial pose
+2026-08-02 11:42:52,849 INFO Completed global scan with 256 latents from steer_start_pose initial pose
+2026-08-02 11:43:05,649 INFO Completed global scan with 256 latents from human_push_1_window_00 initial pose
+2026-08-02 11:43:17,381 INFO Completed global scan with 256 latents from human_push_1_window_01 initial pose
+2026-08-02 11:43:29,067 INFO Completed global scan with 256 latents from human_push_1_window_02 initial pose
+2026-08-02 11:43:41,482 INFO Completed global scan with 256 latents from human_push_2_window_00 initial pose
+2026-08-02 11:43:54,644 INFO Completed global scan with 256 latents from human_push_2_window_01 initial pose
+2026-08-02 11:44:07,571 INFO Completed global scan with 256 latents from human_push_2_window_02 initial pose
+2026-08-02 11:45:06,396 INFO Target push_start_pose: steps=0 encoded=nan global=-0.662178 CEM=-0.523622 max_angle=41.24 robust=0.000 type=not_covered
+2026-08-02 11:46:08,501 INFO Target steer_start_pose: steps=0 encoded=nan global=-0.368672 CEM=-0.287402 max_angle=40.77 robust=0.000 type=fragile
+2026-08-02 11:47:09,795 INFO Target human_push_1_window_00: steps=0 encoded=nan global=-0.496919 CEM=-0.251098 max_angle=42.46 robust=0.950 type=locally_covered
+2026-08-02 11:48:05,616 INFO Target human_push_1_window_01: steps=0 encoded=nan global=-0.567508 CEM=-0.475055 max_angle=41.20 robust=0.400 type=fragile
+2026-08-02 11:49:02,821 INFO Target human_push_1_window_02: steps=0 encoded=nan global=-0.541270 CEM=-0.367334 max_angle=36.78 robust=0.750 type=locally_covered
+2026-08-02 11:50:03,181 INFO Target human_push_2_window_00: steps=0 encoded=nan global=-0.568968 CEM=-0.522360 max_angle=40.29 robust=0.000 type=not_covered
+2026-08-02 11:51:09,052 INFO Target human_push_2_window_01: steps=0 encoded=nan global=-0.571243 CEM=-0.504313 max_angle=39.05 robust=0.150 type=not_covered
+2026-08-02 11:52:11,154 INFO Target human_push_2_window_02: steps=0 encoded=nan global=-0.359733 CEM=-0.292182 max_angle=44.72 robust=0.550 type=fragile
+2026-08-02 11:52:25,360 INFO Experiment ended status=completed duration=600.246s output=docs/res/h1_bfm0_motion_without_prior

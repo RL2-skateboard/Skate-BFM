@@ -4,19 +4,24 @@
 
 | Study date | Experiment | Latent proposal | Stable coverage | Main result |
 |---|---|---|---:|---|
-| 2026-07-31 | `h1_bfm0_motion_without_prior` | 256 global sphere samples, then broad CEM from global best | 3/8 | Frozen BFM0 contains robust constant-latent behaviors for three dynamic windows |
-| 2026-08-01 | `h1_bfm0_motion_with_prior` | Time-aligned expert `z_t`, then trajectory-local CEM | 0/8 | Expert trajectories produce clear time-varying motion but are not robustly maintained in HUSKY |
+| 2026-07-31 | `h1_bfm0_motion_without_prior` | Target-conditioned retrieval: 256 global sphere samples, then broad CEM from each target's global best | 2/8 | Retrieved stable short-horizon meta-actions for two skateboard motion targets without expert latent proposals |
+| 2026-08-01 | `h1_bfm0_motion_with_prior` | Time-aligned expert `z_t`, then trajectory-local CEM | pending rerun | The previous result is withdrawn because all dynamic windows used a shared, mismatched initial pose |
 
-The without-prior run found three robust local regions, with success rates
-`0.85`, `0.95`, and `1.00`. The with-prior run preserved the official
-next-frame latent sequence and remained within `12.10-14.15` degrees of its
-expert reference, but every target had zero robust success.
+The without-prior run performs goal-directed retrieval over the frozen BFM0
+latent space. It does not use expert poses to propose latents: expert data
+defines the skateboard motion targets, rollout initial states, and evaluation
+scores only. The search found stable local regions for
+`human_push_1_window_00` and `human_push_1_window_02`, with robust success
+rates of `0.95` and `0.75`.
 
-This comparison measures frozen BFM0 motion capacity under the current HUSKY
-adapter. It does not establish that the without-prior motions semantically
-match human pushing: dynamic scoring currently uses only the common 23 joint
-positions, without root trajectory, foot contact, or synchronized skateboard
-state.
+These results show that BFM0 contains short-horizon motions satisfying two
+current skateboard joint-trajectory targets under the HUSKY adapter. They do
+not yet prove a complete pushing skill or the full richness limit of BFM0:
+dynamic scoring currently uses the common 23 joint positions without root
+trajectory, foot contact, or synchronized skateboard state. The 256-sample
+diversity diagnostic checks whether the global proposal set is broadly
+representative; it is supporting evidence for retrieval coverage, not the
+experiment objective.
 
 # H1 Frozen BFM0 Motion Coverage
 
@@ -28,10 +33,10 @@ state.
 - Experiment type: H1 Frozen BFM0 Motion Coverage
 - Study date: 2026-07-31
 - Prior mode: `without_prior`
-- Start time: 2026-08-02T09:48:03.669309+08:00
-- End time: 2026-08-02T09:56:34.888070+08:00
-- Duration: 511.193 seconds
-- Git commit: `4609369cfc149727542e065610fb5805b5c4c3de`
+- Start time: 2026-08-02T11:42:25.034965+08:00
+- End time: 2026-08-02T11:52:25.311883+08:00
+- Duration: 600.246 seconds
+- Git commit: `b68643b5c4800f5e34d03db5a9595c3dad123caa`
 - Checkpoint: `model/bfm-zero-official`
 - Device: `cuda`
 - Result directory: `docs/res/h1_bfm0_motion_without_prior`
@@ -60,7 +65,7 @@ state.
 - CEM maximum angle from search reference: 180.0 degrees
 - CEM temporal noise correlation: 0.0
 - Static rollouts start from their reconstructed expert pose
-- Human-push rollouts start from the push expert pose because the motion files do not include skateboard state
+- Human-push rollouts start from each window's first expert qpos/qvel; global translation and heading are aligned to the skateboard
 
 ### Main results
 
@@ -68,30 +73,30 @@ state.
 |---|---:|---:|---:|---:|---:|---:|---:|---|
 | push_start_pose | 0 | n/a | n/a | -0.662178 | -0.523622 | 41.24 deg | 0.000 | not_covered |
 | steer_start_pose | 0 | n/a | n/a | -0.368672 | -0.287402 | 40.77 deg | 0.000 | fragile |
-| human_push_1_window_00 | 0 | n/a | n/a | -0.604842 | -0.526947 | 33.94 deg | 0.000 | not_covered |
-| human_push_1_window_01 | 0 | n/a | n/a | -0.592723 | -0.524287 | 43.12 deg | 0.000 | not_covered |
-| human_push_1_window_02 | 0 | n/a | n/a | -0.584074 | -0.323566 | 37.15 deg | 0.850 | locally_covered |
-| human_push_2_window_00 | 0 | n/a | n/a | -0.575069 | -0.465430 | 37.27 deg | 0.350 | fragile |
-| human_push_2_window_01 | 0 | n/a | n/a | -0.615353 | -0.360626 | 37.13 deg | 0.950 | locally_covered |
-| human_push_2_window_02 | 0 | n/a | n/a | -0.572806 | -0.311128 | 34.20 deg | 1.000 | locally_covered |
+| human_push_1_window_00 | 0 | n/a | n/a | -0.496919 | -0.251098 | 42.46 deg | 0.950 | locally_covered |
+| human_push_1_window_01 | 0 | n/a | n/a | -0.567508 | -0.475055 | 41.20 deg | 0.400 | fragile |
+| human_push_1_window_02 | 0 | n/a | n/a | -0.541270 | -0.367334 | 36.78 deg | 0.750 | locally_covered |
+| human_push_2_window_00 | 0 | n/a | n/a | -0.568968 | -0.522360 | 40.29 deg | 0.000 | not_covered |
+| human_push_2_window_01 | 0 | n/a | n/a | -0.571243 | -0.504313 | 39.05 deg | 0.150 | not_covered |
+| human_push_2_window_02 | 0 | n/a | n/a | -0.359733 | -0.292182 | 44.72 deg | 0.550 | fragile |
 
 ### Latent-space results
 
 | Metric | Result |
 |---|---:|
 | Push-steer angular distance (degrees) | 90.02168273925781 |
-| Global stable proposal rate | 1.0 |
+| Global stable proposal rate | 0.99755859375 |
 | Latent-behavior Spearman correlation | 0.038124072015193224 |
 
 ### Main findings
 
 No expert backward-map latent is used for proposal generation. Expert poses and motions are used only as common evaluation targets and rollout initial conditions.
 
-Broad CEM improved the global-best score for 8/8 targets. Its distance from the global-best initialization ranged 33.94-43.12 degrees.
+Broad CEM improved the global-best score for 8/8 targets. Its distance from the global-best initialization ranged 36.78-44.72 degrees.
 
 The search first evaluates uniformly sampled constant latent directions on the frozen BFM0 sphere, then refines each target from its global best.
 
-3/8 targets met the formal coverage criteria. Coverage failure means the selected frozen-BFM0 behavior was not maintained under the adapted actor, coupled skateboard physics, and current thresholds.
+2/8 targets met the formal coverage criteria. Coverage failure means the selected frozen-BFM0 behavior was not maintained under the adapted actor, coupled skateboard physics, and current thresholds.
 
 The per-target classifications above require the final static pose or full dynamic window to meet its threshold; a transient intermediate pose is not counted as success.
 
@@ -121,14 +126,19 @@ The per-target classifications above require the final static pose or full dynam
 - Dynamic expert velocities are reconstructed by finite differences at 50 Hz.
 - Static scoring uses all 30 confirmed robot bodies relative to the skateboard.
 - Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.
+- Human-push files do not include synchronized skateboard state; initialization aligns the expert feet to the HUSKY deck while preserving expert pose and velocity.
 - The current short-horizon experiment does not validate complete skateboarding.
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.
 - Without-prior score-angle plots use the searched constant-latent CEM anchor as their reference.
-
 # H1 Frozen BFM0 Motion Coverage
 
 ## h1_bfm0_motion_with_prior
+
+> Withdrawn: this run initialized all dynamic targets from one shared push
+> pose instead of each expert window's first state. The measurements below
+> are retained only as an invalid-run record and must not be interpreted as
+> frozen-BFM0 coverage results. A state-aligned formal rerun is pending.
 
 ### Experiment metadata
 

@@ -21,12 +21,12 @@
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | push_start_pose | 0 | n/a | n/a | -0.662178 | -0.523622 | 41.24 deg | 0.000 | 0.000 | not_covered |
 | steer_start_pose | 0 | n/a | n/a | -0.368672 | -0.287402 | 40.77 deg | 0.000 | 0.000 | fragile |
-| human_push_1_window_00 | 0 | n/a | n/a | -0.604842 | -0.526947 | 33.94 deg | 0.000 | 0.000 | not_covered |
-| human_push_1_window_01 | 0 | n/a | n/a | -0.592723 | -0.524287 | 43.12 deg | 0.000 | 0.000 | not_covered |
-| human_push_1_window_02 | 0 | n/a | n/a | -0.584074 | -0.323566 | 37.15 deg | 0.850 | 0.938 | locally_covered |
-| human_push_2_window_00 | 0 | n/a | n/a | -0.575069 | -0.465430 | 37.27 deg | 0.350 | 0.875 | fragile |
-| human_push_2_window_01 | 0 | n/a | n/a | -0.615353 | -0.360626 | 37.13 deg | 0.950 | 1.000 | locally_covered |
-| human_push_2_window_02 | 0 | n/a | n/a | -0.572806 | -0.311128 | 34.20 deg | 1.000 | 1.000 | locally_covered |
+| human_push_1_window_00 | 0 | n/a | n/a | -0.496919 | -0.251098 | 42.46 deg | 0.950 | 1.000 | locally_covered |
+| human_push_1_window_01 | 0 | n/a | n/a | -0.567508 | -0.475055 | 41.20 deg | 0.400 | 1.000 | fragile |
+| human_push_1_window_02 | 0 | n/a | n/a | -0.541270 | -0.367334 | 36.78 deg | 0.750 | 0.938 | locally_covered |
+| human_push_2_window_00 | 0 | n/a | n/a | -0.568968 | -0.522360 | 40.29 deg | 0.000 | 0.000 | not_covered |
+| human_push_2_window_01 | 0 | n/a | n/a | -0.571243 | -0.504313 | 39.05 deg | 0.150 | 0.000 | not_covered |
+| human_push_2_window_02 | 0 | n/a | n/a | -0.359733 | -0.292182 | 44.72 deg | 0.550 | 1.000 | fragile |
 
 ## Limitations
 
@@ -34,6 +34,7 @@
 - Dynamic expert velocities are reconstructed by finite differences at 50 Hz.
 - Static scoring uses all 30 confirmed robot bodies relative to the skateboard.
 - Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.
+- Human-push files do not include synchronized skateboard state; initialization aligns the expert feet to the HUSKY deck while preserving expert pose and velocity.
 - The current short-horizon experiment does not validate complete skateboarding.
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.
