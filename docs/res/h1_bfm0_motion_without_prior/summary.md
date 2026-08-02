@@ -21,12 +21,12 @@
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | push_start_pose | 0 | n/a | n/a | -0.662178 | -0.523622 | 41.24 deg | 0.000 | 0.000 | not_covered |
 | steer_start_pose | 0 | n/a | n/a | -0.368672 | -0.287402 | 40.77 deg | 0.000 | 0.000 | fragile |
-| human_push_1_window_00 | 0 | n/a | n/a | -0.496919 | -0.251098 | 42.46 deg | 0.950 | 1.000 | locally_covered |
-| human_push_1_window_01 | 0 | n/a | n/a | -0.567508 | -0.475055 | 41.20 deg | 0.400 | 1.000 | fragile |
-| human_push_1_window_02 | 0 | n/a | n/a | -0.541270 | -0.367334 | 36.78 deg | 0.750 | 0.938 | locally_covered |
-| human_push_2_window_00 | 0 | n/a | n/a | -0.568968 | -0.522360 | 40.29 deg | 0.000 | 0.000 | not_covered |
-| human_push_2_window_01 | 0 | n/a | n/a | -0.571243 | -0.504313 | 39.05 deg | 0.150 | 0.000 | not_covered |
-| human_push_2_window_02 | 0 | n/a | n/a | -0.359733 | -0.292182 | 44.72 deg | 0.550 | 1.000 | fragile |
+| human_push_1_window_00 | 0 | n/a | n/a | -0.506456 | -0.235852 | 40.79 deg | 0.750 | 1.000 | locally_covered |
+| human_push_1_window_01 | 0 | n/a | n/a | -0.556736 | -0.479196 | 35.70 deg | 0.750 | 1.000 | locally_covered |
+| human_push_1_window_02 | 0 | n/a | n/a | -0.526268 | -0.393350 | 37.52 deg | 0.850 | 1.000 | locally_covered |
+| human_push_2_window_00 | 0 | n/a | n/a | -0.541474 | -0.315968 | 40.22 deg | 0.750 | 0.938 | locally_covered |
+| human_push_2_window_01 | 0 | n/a | n/a | -0.566813 | -0.471406 | 37.95 deg | 0.900 | 1.000 | locally_covered |
+| human_push_2_window_02 | 0 | n/a | n/a | -0.475021 | -0.301938 | 40.15 deg | 0.900 | 1.000 | locally_covered |
 
 ## Limitations
 
@@ -34,7 +34,7 @@
 - Dynamic expert velocities are reconstructed by finite differences at 50 Hz.
 - Static scoring uses all 30 confirmed robot bodies relative to the skateboard.
 - Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.
-- Human-push files do not include synchronized skateboard state; initialization aligns the expert feet to the HUSKY deck while preserving expert pose and velocity.
+- Human-push files do not include synchronized skateboard state; initialization aligns the right support foot to the push-start deck reference and preserves the left push foot's expert-relative position and velocity.
 - The current short-horizon experiment does not validate complete skateboarding.
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.
