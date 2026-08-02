@@ -4,37 +4,23 @@
 
 | Study date | Experiment | Latent proposal | Stable coverage | Main result |
 |---|---|---|---:|---|
-| 2026-07-31 | `h1_bfm0_motion_without_prior` | Target-conditioned retrieval: 256 global sphere samples, then broad CEM from each target's global best | 2/8 | Retrieved stable short-horizon meta-actions for two skateboard motion targets without expert latent proposals |
-| 2026-08-01 | `h1_bfm0_motion_with_prior` | Time-aligned expert `z_t`, then trajectory-local CEM | 1/8 | Retrieved one stable candidate inside the expert-trajectory neighborhood after state-aligned initialization |
+| 2026-07-31 | `h1_bfm0_motion_without_prior` | Target-conditioned retrieval: 256 global sphere samples, then broad CEM from each target's global best | pending rerun | Previous result withdrawn because human-push initialization incorrectly placed the push foot on the deck |
+| 2026-08-01 | `h1_bfm0_motion_with_prior` | Time-aligned expert `z_t`, then trajectory-local CEM | pending rerun | Previous result withdrawn because human-push initialization incorrectly placed the push foot on the deck |
 
-The without-prior run performs goal-directed retrieval over the frozen BFM0
-latent space. It does not use expert poses to propose latents: expert data
-defines the skateboard motion targets, rollout initial states, and evaluation
-scores only. The search found stable local regions for
-`human_push_1_window_00` and `human_push_1_window_02`, with robust success
-rates of `0.95` and `0.75`.
-
-The state-aligned with-prior rerun found one stable local region for
-`human_push_2_window_02`, with robust success rate `0.85`. Every dynamic
-target used 24 next-frame latents and its own expert-window qpos/qvel. Adjacent
-expert latent angles were `1.26-6.37` degrees and window endpoint angles were
-`24.02-71.60` degrees, confirming that the encoded trajectories are
-time-varying rather than collapsed. Prior-local CEM stayed within
-`12.15-14.74` degrees of the complete expert trajectory.
-
-The without-prior result establishes that the tested frozen BFM0 contains
-short-horizon motions satisfying two current skateboard joint-trajectory
-targets under the HUSKY adapter. The six failed finite searches do not prove
-that matching latents are absent or that BFM0's motion-library limit has been
-reached. The candidates also do not yet constitute a complete pushing skill:
-dynamic scoring currently uses the common 23 joint positions without root
-trajectory, foot contact, or synchronized skateboard state. Diversity
-diagnostics are supporting checks on proposal breadth, not the experiment
-objective.
+Both published result sets below are withdrawn. Their dynamic windows used the
+correct expert qpos/qvel but an incorrect world alignment that moved the
+left push foot onto the skateboard. The corrected initialization aligns the
+right support foot to the static push reference on the deck and preserves the
+left foot's expert-relative position on the ground or in the swing phase.
+Formal reruns are required before reporting coverage.
 
 # H1 Frozen BFM0 Motion Coverage
 
 ## h1_bfm0_motion_without_prior
+
+> Withdrawn: human-push initialization incorrectly placed the left push foot
+> on the deck. The measurements below are retained only as an invalid-run
+> record until the corrected formal rerun replaces this block.
 
 ### Experiment metadata
 
@@ -145,6 +131,10 @@ The per-target classifications above require the final static pose or full dynam
 # H1 Frozen BFM0 Motion Coverage
 
 ## h1_bfm0_motion_with_prior
+
+> Withdrawn: human-push initialization incorrectly placed the left push foot
+> on the deck. The measurements below are retained only as an invalid-run
+> record until the corrected formal rerun replaces this block.
 
 ### Experiment metadata
 

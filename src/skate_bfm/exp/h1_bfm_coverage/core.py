@@ -533,6 +533,7 @@ def _motion_initial_state(
     raw: np.ndarray,
     start: int,
     model: mujoco.MjModel,
+    push_reference_feet: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     data = mujoco.MjData(model)
     joint_qpos = np.asarray(
@@ -546,34 +547,39 @@ def _motion_initial_state(
         ],
         dtype=np.int64,
     )
-    source_qpos = raw[start, :36].astype(np.float64, copy=True)
-    data.qpos[:7] = source_qpos[:7]
-    data.qpos[joint_qpos] = source_qpos[7:36]
+    raw_qpos = raw[start, :36].astype(np.float64, copy=True)
+    data.qpos[:7] = raw_qpos[:7]
+    data.qpos[joint_qpos] = raw_qpos[7:36]
     mujoco.mj_forward(model, data)
     feet = data.xpos[foot_ids].copy()
 
-    foot_delta = feet[1, :2] - feet[0, :2]
-    yaw = -math.atan2(float(foot_delta[1]), float(foot_delta[0]))
+    source_foot_delta = feet[1, :2] - feet[0, :2]
+    reference_foot_delta = push_reference_feet[1, :2] - push_reference_feet[0, :2]
+    yaw = math.atan2(
+        float(reference_foot_delta[1]),
+        float(reference_foot_delta[0]),
+    ) - math.atan2(float(source_foot_delta[1]), float(source_foot_delta[0]))
     yaw_quaternion = np.asarray(
         (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)),
         dtype=np.float64,
     )
-    source_qpos[3:7] = _quat_multiply(yaw_quaternion, source_qpos[3:7])
-    data.qpos[:7] = source_qpos[:7]
-    data.qpos[joint_qpos] = source_qpos[7:36]
-    mujoco.mj_forward(model, data)
-    feet = data.xpos[foot_ids].copy()
-    translation = np.zeros(3, dtype=np.float64)
-    translation[:2] = -feet[:, :2].mean(axis=0)
-    translation[2] = 0.12 - float(np.min(feet[:, 2]))
-    source_qpos[:3] += translation
+    rotation = np.asarray(
+        (
+            (math.cos(yaw), -math.sin(yaw), 0.0),
+            (math.sin(yaw), math.cos(yaw), 0.0),
+            (0.0, 0.0, 1.0),
+        ),
+        dtype=np.float64,
+    )
+    translation = push_reference_feet[1] - rotation @ feet[1]
 
     def aligned_qpos(row: np.ndarray) -> np.ndarray:
         qpos = row[:36].astype(np.float64, copy=True)
-        qpos[:3] += translation
+        qpos[:3] = rotation @ qpos[:3] + translation
         qpos[3:7] = _quat_multiply(yaw_quaternion, qpos[3:7])
         return qpos
 
+    source_qpos = aligned_qpos(raw[start])
     dt = 1.0 / HUMAN_PUSH_FPS
     start_index = max(0, start - 1)
     end_index = min(len(raw) - 1, start + 1)
@@ -833,6 +839,23 @@ def load_expert_targets(
     schema = inspect_expert_data(root, scene_xml)
     targets: list[ExpertTarget] = []
     official_g1_model = _official_g1_model()
+    scene_model = mujoco.MjModel.from_xml_path(str(scene_xml))
+    scene_data = mujoco.MjData(scene_model)
+    mujoco.mj_forward(scene_model, scene_data)
+    scene_body_names = _body_names(scene_model)
+    foot_body_indices = [
+        scene_body_names.index("left_ankle_roll_link"),
+        scene_body_names.index("right_ankle_roll_link"),
+    ]
+    push_pose = np.load(
+        root / "ref_pose/push_start_pose_b.npy",
+        allow_pickle=False,
+    )
+    board = scene_data.body(BOARD_BODY_NAME)
+    push_reference_feet = board.xpos + _quat_rotate(
+        np.broadcast_to(board.xquat, (2, 4)),
+        push_pose[foot_body_indices, :3],
+    )
 
     pose_options = (
         ("push_start_pose", "enable_push_pose", "ref_pose/push_start_pose_b.npy"),
@@ -900,9 +923,9 @@ def load_expert_targets(
                         "encoded_anchor_available": official_observation is not None,
                         "rollout_initial_pose": target_name,
                         "rollout_initialization": (
-                            "Window-first expert qpos/qvel; global translation removed, "
-                            "foot heading aligned to skateboard length, lowest foot "
-                            "aligned to deck surface"
+                            "Window-first expert qpos/qvel; rigidly aligned to the "
+                            "push-start reference with the right support foot on the "
+                            "deck and the left push foot preserving its source offset"
                         ),
                     }
                 )
@@ -918,6 +941,7 @@ def load_expert_targets(
                     raw,
                     int(start),
                     official_g1_model,
+                    push_reference_feet,
                 )
                 targets.append(
                     ExpertTarget(

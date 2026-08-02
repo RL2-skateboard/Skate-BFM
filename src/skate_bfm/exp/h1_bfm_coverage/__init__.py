@@ -1070,7 +1070,8 @@ def _append_formal_results(
             f"{cem_config['temporal_correlation']}",
             "- Static rollouts start from their reconstructed expert pose",
             "- Human-push rollouts start from each window's first expert qpos/qvel; "
-            "global translation and heading are aligned to the skateboard",
+            "the right support foot is aligned to the push-start deck reference while "
+            "the left push foot preserves its expert offset",
             "",
             "### Main results",
             "",
@@ -1745,7 +1746,8 @@ def main(argv: list[str] | None = None) -> int:
         "Static scoring uses all 30 confirmed robot bodies relative to the skateboard.",
         "Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.",
         "Human-push files do not include synchronized skateboard state; initialization "
-        "aligns the expert feet to the HUSKY deck while preserving expert pose and velocity.",
+        "aligns the right support foot to the push-start deck reference and preserves "
+        "the left push foot's expert-relative position and velocity.",
         "The current short-horizon experiment does not validate complete skateboarding.",
         "Foot contact metrics are not included in H1 coverage.",
         "t-SNE sphere plots are qualitative; quantitative distances use original latents.",

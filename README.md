@@ -166,9 +166,10 @@ global best. A positive retrieval is evidence that a matching short-horizon
 meta-action exists in the tested frozen model; an unsuccessful finite search
 does not prove that no matching latent exists. Each dynamic rollout starts
 from its own expert window's first qpos and qvel. Because the motion files do
-not contain synchronized skateboard state, global translation is removed,
-foot heading is aligned with the board length, and the lowest foot is placed
-on the deck.
+not contain synchronized skateboard state, the complete root trajectory is
+rigidly aligned to the static push reference: the right support foot is placed
+on the deck, while the left push foot keeps its expert-relative distance and
+height so it remains on the ground or in its swing phase.
 
 ## Current Framework
 

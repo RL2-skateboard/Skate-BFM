@@ -266,6 +266,43 @@ def test_dynamic_targets_start_from_their_own_expert_window(
         assert np.isfinite(target.initial_qvel).all()
 
 
+def test_dynamic_push_initialization_keeps_push_foot_off_board(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BFM_ZERO_ROOT", str(ROOT / "model/bfm-zero-source"))
+    config = yaml.safe_load(
+        (ROOT / "configs/h1_bfm_coverage.yaml").read_text(encoding="utf-8")
+    )
+    targets, _ = load_expert_targets(
+        ROOT / config["expert_data"]["root"],
+        ROOT / "husky_sim/upstream/test_scene/mjlab_scene.xml",
+        config["expert_data"],
+    )
+    model = Bfm0Model()
+    runner = H1RolloutRunner(model, _config(), device="cpu")
+    latent = torch.ones(model.config.latent_dim)
+    try:
+        for target in targets:
+            if target.kind != "human_push_window":
+                continue
+            rollout = runner.rollout(
+                latent,
+                seed=0,
+                initial_qpos=target.initial_qpos,
+                initial_qvel=target.initial_qvel,
+            )
+            feet = rollout.states[0]["body_position_board"][[6, 12]]
+            left_foot, right_foot = feet
+            assert abs(right_foot[0]) < 0.4
+            assert abs(right_foot[1]) < 0.1
+            assert right_foot[2] == pytest.approx(0.04755, abs=0.01)
+            assert abs(left_foot[1]) > 0.1
+            if target.name.endswith("window_00"):
+                assert -0.08 < left_foot[2] < 0.0
+    finally:
+        runner.close()
+
+
 def test_slerp_endpoints_and_norm() -> None:
     model = Bfm0Model()
     start = model.project_z(torch.randn(model.config.latent_dim))
