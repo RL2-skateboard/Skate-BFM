@@ -938,7 +938,11 @@ def _append_formal_results(
         float(row["searched_anchor_score"]) > float(row[reference_score])
         for row in rows
     )
-    covered_count = sum(row["coverage_type"] != "not_covered" for row in rows)
+    covered_count = sum(
+        row["coverage_type"]
+        in {"zero_shot_covered", "naturally_covered", "locally_covered"}
+        for row in rows
+    )
     angle_summary = (
         f"{min(finite_angles):.2f}-{max(finite_angles):.2f} degrees"
         if finite_angles
@@ -1736,9 +1740,17 @@ def main(argv: list[str] | None = None) -> int:
         "The current short-horizon experiment does not validate complete skateboarding.",
         "Foot contact metrics are not included in H1 coverage.",
         "t-SNE sphere plots are qualitative; quantitative distances use original latents.",
-        "Dynamic score-angle plots use trajectory midpoints for display; CEM constraints "
-        "and reported maximum angles use every original latent step.",
     ]
+    if config["search"]["prior_mode"] == "with_prior":
+        limitations.append(
+            "Dynamic score-angle plots use trajectory midpoints for display; CEM "
+            "constraints and reported maximum angles use every original latent step."
+        )
+    else:
+        limitations.append(
+            "Without-prior score-angle plots use the searched constant-latent CEM "
+            "anchor as their reference."
+        )
     if metadata["run_type"] == "smoke":
         limitations.insert(
             0,

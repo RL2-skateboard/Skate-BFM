@@ -22,7 +22,7 @@ from skate_bfm.bfm0 import Bfm0Model
 from skate_bfm.integration import Bfm0ToHusky23, HuskyToBfm0Observation
 from skate_bfm.integration.actions import BFM0_JOINTS, HUSKY_JOINTS
 
-EXPERIMENT_TYPE = "H1 Expert-Guided BFM0 Behavior Coverage"
+EXPERIMENT_TYPE = "H1 Frozen BFM0 Motion Coverage"
 HUMAN_PUSH_FPS = 50.0
 ROBOT_BODY_PREFIX = "robot/"
 BOARD_BODY_NAME = "skateboard/skateboard_deck"
