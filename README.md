@@ -10,12 +10,13 @@ mounting, riding, steering, recovery, and safe departure.
 
 The repository provides the BFM0-HUSKY integration and two matched H1
 experiments for measuring the motion capacity of a frozen official BFM-Zero
-model. `without_prior` performs a global latent scan followed by broad CEM;
-expert data is used only for evaluation. `with_prior` reconstructs official
-backward observations and executes time-aligned expert latent trajectories,
-followed by trajectory-local CEM. These are short-horizon behavior-coverage
-experiments, not a trained Skate-BFM policy or a complete skateboarding
-controller.
+model. `without_prior` performs goal-directed retrieval for skateboard motion
+targets using a global latent scan followed by broad CEM; expert data defines
+the targets, initial states, and scores but never proposes a latent.
+`with_prior` reconstructs official backward observations and executes
+time-aligned expert latent trajectories, followed by trajectory-local CEM.
+These are short-horizon behavior-coverage experiments, not a trained
+Skate-BFM policy or a complete skateboarding controller.
 
 ## Setup
 
@@ -159,12 +160,15 @@ zero target velocity; dynamic windows use root and 29DoF trajectories with
 `z_t` from each next-frame expert observation, matching the official tracking
 evaluator. In `with_prior`, dynamic CEM perturbs the complete latent trajectory
 with temporally correlated noise and constrains every step to a 40-degree
-spherical neighborhood. In `without_prior`, 256 random constant-latent
-directions are evaluated before broad CEM refinement from the global best.
-Each dynamic rollout starts from its own expert window's first qpos and qvel.
-Because the motion files do not contain synchronized skateboard state, global
-translation is removed, foot heading is aligned with the board length, and the
-lowest foot is placed on the deck.
+spherical neighborhood. In `without_prior`, each target scores 256 random
+constant-latent directions before broad CEM refinement from that target's
+global best. A positive retrieval is evidence that a matching short-horizon
+meta-action exists in the tested frozen model; an unsuccessful finite search
+does not prove that no matching latent exists. Each dynamic rollout starts
+from its own expert window's first qpos and qvel. Because the motion files do
+not contain synchronized skateboard state, global translation is removed,
+foot heading is aligned with the board length, and the lowest foot is placed
+on the deck.
 
 ## Current Framework
 

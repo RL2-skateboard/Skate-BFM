@@ -217,21 +217,24 @@
         "start_frame": 0,
         "end_frame_exclusive": 25,
         "encoded_anchor_available": true,
-        "rollout_initial_pose": "push_start_pose"
+        "rollout_initial_pose": "human_push_1_window_00",
+        "rollout_initialization": "Window-first expert qpos/qvel; global translation removed, foot heading aligned to skateboard length, lowest foot aligned to deck surface"
       },
       {
         "target_name": "human_push_1_window_01",
         "start_frame": 77,
         "end_frame_exclusive": 102,
         "encoded_anchor_available": true,
-        "rollout_initial_pose": "push_start_pose"
+        "rollout_initial_pose": "human_push_1_window_01",
+        "rollout_initialization": "Window-first expert qpos/qvel; global translation removed, foot heading aligned to skateboard length, lowest foot aligned to deck surface"
       },
       {
         "target_name": "human_push_1_window_02",
         "start_frame": 155,
         "end_frame_exclusive": 180,
         "encoded_anchor_available": true,
-        "rollout_initial_pose": "push_start_pose"
+        "rollout_initial_pose": "human_push_1_window_02",
+        "rollout_initialization": "Window-first expert qpos/qvel; global translation removed, foot heading aligned to skateboard length, lowest foot aligned to deck surface"
       }
     ]
   },
@@ -342,21 +345,24 @@
         "start_frame": 0,
         "end_frame_exclusive": 25,
         "encoded_anchor_available": true,
-        "rollout_initial_pose": "push_start_pose"
+        "rollout_initial_pose": "human_push_2_window_00",
+        "rollout_initialization": "Window-first expert qpos/qvel; global translation removed, foot heading aligned to skateboard length, lowest foot aligned to deck surface"
       },
       {
         "target_name": "human_push_2_window_01",
         "start_frame": 98,
         "end_frame_exclusive": 123,
         "encoded_anchor_available": true,
-        "rollout_initial_pose": "push_start_pose"
+        "rollout_initial_pose": "human_push_2_window_01",
+        "rollout_initialization": "Window-first expert qpos/qvel; global translation removed, foot heading aligned to skateboard length, lowest foot aligned to deck surface"
       },
       {
         "target_name": "human_push_2_window_02",
         "start_frame": 196,
         "end_frame_exclusive": 221,
         "encoded_anchor_available": true,
-        "rollout_initial_pose": "push_start_pose"
+        "rollout_initial_pose": "human_push_2_window_02",
+        "rollout_initialization": "Window-first expert qpos/qvel; global translation removed, foot heading aligned to skateboard length, lowest foot aligned to deck surface"
       }
     ]
   },
