@@ -8,14 +8,13 @@ priors with the HUSKY skateboard simulator. The project studies closed-loop
 humanoid interaction with a freely rolling, underactuated support, including
 mounting, riding, steering, recovery, and safe departure.
 
-The repository provides the BFM0-HUSKY integration and the first formal
-experiment, H1 Expert-Guided BFM0 Behavior Coverage. H1 evaluates a frozen
-official BFM-Zero model by reconstructing official backward observations from
-HUSKY expert poses and push trajectories. Static poses produce one goal latent;
-push motions produce a time-aligned latent trajectory and execute one latent per
-control step. H1 compares this zero-shot tracking with a random constant-latent
-baseline and trajectory-local CEM. It is a short-horizon behavior-coverage
-experiment, not a trained Skate-BFM policy or a complete skateboarding
+The repository provides the BFM0-HUSKY integration and two matched H1
+experiments for measuring the motion capacity of a frozen official BFM-Zero
+model. `without_prior` performs a global latent scan followed by broad CEM;
+expert data is used only for evaluation. `with_prior` reconstructs official
+backward observations and executes time-aligned expert latent trajectories,
+followed by trajectory-local CEM. These are short-horizon behavior-coverage
+experiments, not a trained Skate-BFM policy or a complete skateboarding
 controller.
 
 ## Setup
@@ -117,9 +116,9 @@ intended only for adapter diagnostics:
 skate-bfm-smoke --viewer --steps 300 --action-gain 0.05
 ```
 
-## H1 Formal Experiment
+## H1 Formal Experiments
 
-Run the official checkpoint from the repository root:
+Run the global search without an expert latent prior:
 
 ```bash
 BFM_ZERO_ROOT="$PWD/model/bfm-zero-source" \
@@ -127,26 +126,41 @@ skate-bfm-h1 \
   --config configs/h1_bfm_coverage.yaml \
   --checkpoint model/bfm-zero-official \
   --run-type formal \
-  --experiment-name h1_bfm_coverage_bfmzero_official \
+  --experiment-name h1_bfm0_motion_without_prior \
+  --prior-mode without_prior \
   --device cuda \
   --save-video
 ```
 
-The completed formal run is recorded in
-[`docs/exp_res.md`](docs/exp_res.md), with four latent-space plots and
-content-named MuJoCo videos under
-[`docs/res/h1_bfm_coverage_bfmzero_official/`](docs/res/h1_bfm_coverage_bfmzero_official/).
-Smoke runs use a temporary directory and are deleted automatically; they do not
-update either experiment document.
+Run the time-aligned search with an expert latent prior:
+
+```bash
+BFM_ZERO_ROOT="$PWD/model/bfm-zero-source" \
+skate-bfm-h1 \
+  --config configs/h1_bfm_coverage.yaml \
+  --checkpoint model/bfm-zero-official \
+  --run-type formal \
+  --experiment-name h1_bfm0_motion_with_prior \
+  --prior-mode with_prior \
+  --device cuda \
+  --save-video
+```
+
+Both completed runs are compared in [`docs/exp_res.md`](docs/exp_res.md).
+Their structured results, four latent-space plots, and content-named MuJoCo
+videos are stored under [`docs/res/`](docs/res/). Smoke runs use a temporary
+directory and are deleted automatically; they do not update either experiment
+document.
 
 H1 reconstructs the official 64-dimensional state and 463-dimensional
 privileged state from confirmed expert fields. Static poses use 29DoF IK and
 zero target velocity; dynamic windows use root and 29DoF trajectories with
 50 Hz finite-difference velocities. The frozen official backward map produces
 `z_t` from each next-frame expert observation, matching the official tracking
-evaluator. Dynamic CEM perturbs the complete latent trajectory with temporally
-correlated noise and constrains every step to a 40-degree spherical
-neighborhood; random constant-latent sampling remains a separate baseline.
+evaluator. In `with_prior`, dynamic CEM perturbs the complete latent trajectory
+with temporally correlated noise and constrains every step to a 40-degree
+spherical neighborhood. In `without_prior`, 256 random constant-latent
+directions are evaluated before broad CEM refinement from the global best.
 
 ## Current Framework
 
@@ -160,7 +174,8 @@ neighborhood; random constant-latent sampling remains a separate baseline.
 - A strict adapter for the official pretrained BFM-Zero checkpoint.
 - Expert-pose and expert-motion reconstruction for official backward-map goal
   latents and time-aligned latent trajectories.
-- The formal H1 latent coverage search, metrics, plots, and videos.
+- The matched without-prior and with-prior H1 searches, metrics, plots, and
+  videos.
 - Unit tests and an end-to-end headless smoke command.
 
 The six BFM0 wrist joints absent from the HUSKY G1-23DoF model are explicitly

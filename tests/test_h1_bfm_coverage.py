@@ -12,7 +12,11 @@ import torch
 import yaml
 
 from skate_bfm.bfm0 import Bfm0Model
-from skate_bfm.exp.h1_bfm_coverage import _slerp_video_label, _video_target_label
+from skate_bfm.exp.h1_bfm_coverage import (
+    _cem_config,
+    _slerp_video_label,
+    _video_target_label,
+)
 from skate_bfm.exp.h1_bfm_coverage.core import (
     BFM0_ACTION_RESCALE,
     BFM0_DEFAULT_JOINT_POSITION,
@@ -72,6 +76,22 @@ def _temporary_checkpoint(path: Path) -> Path:
         path,
     )
     return path
+
+
+def test_prior_modes_select_distinct_cem_search_scales() -> None:
+    config = yaml.safe_load(
+        (ROOT / "configs/h1_bfm_coverage.yaml").read_text(encoding="utf-8")
+    )
+    config["search"]["prior_mode"] = "with_prior"
+    with_prior = _cem_config(config)
+    config["search"]["prior_mode"] = "without_prior"
+    without_prior = _cem_config(config)
+    assert with_prior["initial_std"] == 0.25
+    assert with_prior["max_angle_degrees"] == 40.0
+    assert with_prior["temporal_correlation"] == 0.9
+    assert without_prior["initial_std"] == 1.0
+    assert without_prior["max_angle_degrees"] == 180.0
+    assert without_prior["temporal_correlation"] == 0.0
 
 
 def test_project_z_norm_matches_model_definition() -> None:

@@ -8,6 +8,9 @@ checkpoint:
   path: model/bfm-zero-official
   device: cuda
 
+search:
+  prior_mode: with_prior
+
 rollout:
   control_dt: 0.02
   horizon_seconds: 0.5
@@ -34,10 +37,16 @@ cem:
   population_size: 64
   elite_fraction: 0.15
   num_iterations: 6
-  initial_std: 0.25
-  min_std: 0.02
-  max_angle_degrees: 40.0
-  temporal_correlation: 0.9
+  with_prior:
+    initial_std: 0.25
+    min_std: 0.02
+    max_angle_degrees: 40.0
+    temporal_correlation: 0.9
+  without_prior:
+    initial_std: 1.0
+    min_std: 0.05
+    max_angle_degrees: 180.0
+    temporal_correlation: 0.0
 
 geodesic:
   angles_degrees: [5, 10, 20, 40, 80]

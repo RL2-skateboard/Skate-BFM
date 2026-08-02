@@ -2,9 +2,11 @@
 
 ## 2026-08-01
 
-- Reconstructed HUSKY expert poses and motions as official BFM0 backward observations.
-- Connected time-aligned expert BFM0 latents to HUSKY rollouts and trajectory-local CEM.
-- Completed the formal H1 coverage experiment with plots and MuJoCo videos.
+- Evaluated frozen BFM0 with time-aligned expert latent trajectories and trajectory-local CEM.
+
+## 2026-07-31
+
+- Evaluated frozen BFM0 with a global latent scan and broad CEM, without expert latent priors.
 
 ## 2026-07-30
 

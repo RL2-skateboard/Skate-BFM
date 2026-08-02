@@ -71,6 +71,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-type", choices=("smoke", "formal"))
     parser.add_argument("--experiment-name")
     parser.add_argument("--device")
+    parser.add_argument(
+        "--prior-mode",
+        choices=("without_prior", "with_prior"),
+    )
     video = parser.add_mutually_exclusive_group()
     video.add_argument("--save-video", dest="save_video", action="store_true")
     video.add_argument("--no-save-video", dest="save_video", action="store_false")
@@ -113,6 +117,8 @@ def _load_config(args: argparse.Namespace) -> dict[str, Any]:
         config["experiment"]["run_type"] = args.run_type
     if args.device:
         config["checkpoint"]["device"] = args.device
+    if args.prior_mode:
+        config["search"]["prior_mode"] = args.prior_mode
     if args.save_video is not None:
         config["visualization"]["save_video"] = args.save_video
     if config["experiment"]["run_type"] == "smoke":
@@ -128,6 +134,15 @@ def _load_config(args: argparse.Namespace) -> dict[str, Any]:
         config["geodesic"]["samples_per_angle"] = 2
         config["robustness"]["trials"] = 2
     return config
+
+
+def _cem_config(config: dict[str, Any]) -> dict[str, Any]:
+    mode = config["search"]["prior_mode"]
+    return {
+        key: value
+        for key, value in config["cem"].items()
+        if not isinstance(value, dict)
+    } | dict(config["cem"][mode])
 
 
 def _git_metadata() -> tuple[str, bool]:
@@ -240,6 +255,11 @@ def _trajectory_angles_degrees(
     return float(torch.mean(angles)), float(torch.max(angles))
 
 
+def _format_number(value: Any, digits: int) -> str:
+    number = float(value)
+    return f"{number:.{digits}f}" if math.isfinite(number) else "n/a"
+
+
 def _trajectory_arrays(result: ScoredRollout) -> dict[str, np.ndarray]:
     states = result.rollout.states
     return {
@@ -320,6 +340,7 @@ def _write_target_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "searched_latent_steps",
         "search_angle_from_global_degrees",
         "search_angle_from_global_mean_degrees",
+        "search_angle_reference",
         "search_angle_mean_degrees",
         "search_angle_degrees",
         "angular_support",
@@ -570,6 +591,7 @@ def _plot_score_angle(
     records: list[dict[str, Any]],
     anchors: dict[str, torch.Tensor],
     path: Path,
+    reference_label: str,
 ) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
@@ -612,7 +634,7 @@ def _plot_score_angle(
                     color=target_colors[target],
                     alpha=0.65,
                 )
-    axis.set_xlabel("Angular distance from encoded expert midpoint (degrees)")
+    axis.set_xlabel(f"Angular distance from {reference_label} (degrees)")
     axis.set_ylabel("Expert target score")
     axis.set_title("Score versus original-space geodesic angle")
     source_handles = [
@@ -663,6 +685,7 @@ def _plot_score_angle(
 def _plot_support(
     support_by_target: dict[str, list[dict[str, float]]],
     path: Path,
+    reference_label: str,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -679,7 +702,7 @@ def _plot_support(
         axis.set_xlabel("Geodesic angle (degrees)")
         axis.grid(alpha=0.2)
     axes[0].legend(fontsize=7, frameon=False)
-    figure.suptitle("Expert latent / trajectory geodesic support")
+    figure.suptitle(f"Geodesic support around {reference_label}")
     figure.tight_layout()
     figure.savefig(path, dpi=180)
     plt.close(figure)
@@ -691,9 +714,15 @@ def _make_plots(
     support_by_target: dict[str, list[dict[str, float]]],
     plot_dir: Path,
     config: dict[str, Any],
+    prior_mode: str,
     logger: logging.Logger,
 ) -> list[str]:
     errors = []
+    reference_label = (
+        "encoded expert midpoint"
+        if prior_mode == "with_prior"
+        else "searched CEM anchor"
+    )
     operations = (
         (
             _plot_latent_tsne,
@@ -709,11 +738,20 @@ def _make_plots(
         ),
         (
             _plot_score_angle,
-            (records, anchors, plot_dir / "score_vs_geodesic_angle.png"),
+            (
+                records,
+                anchors,
+                plot_dir / "score_vs_geodesic_angle.png",
+                reference_label,
+            ),
         ),
         (
             _plot_support,
-            (support_by_target, plot_dir / "geodesic_support_curve.png"),
+            (
+                support_by_target,
+                plot_dir / "geodesic_support_curve.png",
+                reference_label,
+            ),
         ),
     )
     for operation, arguments in operations:
@@ -771,6 +809,7 @@ def _summary_markdown(
         "",
         f"- Experiment: `{metadata['experiment_name']}`",
         f"- Run type: `{metadata['run_type']}`",
+        f"- Prior mode: `{metadata['prior_mode']}`",
         f"- Checkpoint: `{metadata['checkpoint']}`",
         f"- Result directory: `{metadata['result_directory']}`",
         "",
@@ -798,9 +837,13 @@ def _summary_markdown(
         "human_push_2",
     ):
         value = schema[name]
+        used_as_bfm_input = (
+            metadata["prior_mode"] == "with_prior"
+            and value.get("encoded_anchor_available", False)
+        )
         lines.append(
             f"| {name} | `{value['shape']}` | {value.get('scoring_enabled', False)} | "
-            f"{value.get('encoded_anchor_available', False)} |"
+            f"{used_as_bfm_input} |"
         )
     lines.extend(
         [
@@ -816,8 +859,8 @@ def _summary_markdown(
     for row in rows:
         lines.append(
             f"| {row['target']} | {row['encoded_latent_steps']} | "
-            f"{row['encoded_anchor_score']:.6f} | "
-            f"{row['encoded_robust_success_rate']:.3f} | "
+            f"{_format_number(row['encoded_anchor_score'], 6)} | "
+            f"{_format_number(row['encoded_robust_success_rate'], 3)} | "
             f"{row['global_best_score']:.6f} | "
             f"{row['searched_anchor_score']:.6f} | "
             f"{row['search_angle_degrees']:.2f} deg | "
@@ -840,15 +883,23 @@ def _append_experiment_log(
     pytest_status: str,
     limitations: list[str],
 ) -> None:
-    start = datetime.fromisoformat(metadata["start_time"])
-    date_header = f"## {start.date().isoformat()}"
-    entries = [
-        "- Reconstructed HUSKY expert poses and motions as official BFM0 "
-        "backward observations.",
-        "- Connected time-aligned expert BFM0 latents to HUSKY rollouts and "
-        "trajectory-local CEM.",
-        "- Completed the formal H1 coverage experiment with plots and MuJoCo videos.",
-    ]
+    prior_mode = metadata["prior_mode"]
+    experiment_date = {
+        "without_prior": "2026-07-31",
+        "with_prior": "2026-08-01",
+    }[prior_mode]
+    date_header = f"## {experiment_date}"
+    entries = (
+        [
+            "- Evaluated frozen BFM0 with a global latent scan and broad CEM, "
+            "without expert latent priors."
+        ]
+        if prior_mode == "without_prior"
+        else [
+            "- Evaluated frozen BFM0 with time-aligned expert latent trajectories "
+            "and trajectory-local CEM."
+        ]
+    )
     content = path.read_text(encoding="utf-8") if path.exists() else "# Experiment Log\n"
     entries = [entry for entry in entries if entry not in content]
     if not entries:
@@ -871,13 +922,20 @@ def _append_formal_results(
     latent_metrics: dict[str, Any],
     limitations: list[str],
 ) -> None:
+    prior_mode = metadata["prior_mode"]
+    cem_config = _cem_config(config)
     finite_angles = [
         float(row["search_angle_degrees"])
         for row in rows
         if math.isfinite(float(row["search_angle_degrees"]))
     ]
+    reference_score = (
+        "encoded_anchor_score"
+        if prior_mode == "with_prior"
+        else "global_best_score"
+    )
     improved_count = sum(
-        float(row["searched_anchor_score"]) > float(row["encoded_anchor_score"])
+        float(row["searched_anchor_score"]) > float(row[reference_score])
         for row in rows
     )
     covered_count = sum(row["coverage_type"] != "not_covered" for row in rows)
@@ -885,6 +943,60 @@ def _append_formal_results(
         f"{min(finite_angles):.2f}-{max(finite_angles):.2f} degrees"
         if finite_angles
         else "not available"
+    )
+    study_date = (
+        "2026-07-31" if prior_mode == "without_prior" else "2026-08-01"
+    )
+    if prior_mode == "with_prior":
+        method_findings = [
+            "Static goal latents and time-aligned dynamic latent trajectories are "
+            "produced by the frozen official backward map from reconstructed expert "
+            "observations. Dynamic execution follows the official next-frame pattern "
+            "`z_t = project_z(backward_map(obs[t + 1]))`.",
+            f"Trajectory-local CEM improved the encoded score for {improved_count}/"
+            f"{len(rows)} targets. The per-target maximum trajectory angle ranged "
+            f"{angle_summary}.",
+            "Random constant-latent sampling is reported only as a baseline. Dynamic "
+            "CEM starts from the complete encoded expert trajectory and uses "
+            "time-correlated perturbations under a per-step angular cap.",
+        ]
+    else:
+        method_findings = [
+            "No expert backward-map latent is used for proposal generation. Expert "
+            "poses and motions are used only as common evaluation targets and rollout "
+            "initial conditions.",
+            f"Broad CEM improved the global-best score for {improved_count}/"
+            f"{len(rows)} targets. Its distance from the global-best initialization "
+            f"ranged {angle_summary}.",
+            "The search first evaluates uniformly sampled constant latent directions "
+            "on the frozen BFM0 sphere, then refines each target from its global best.",
+        ]
+    video_root = f"res/{metadata['experiment_name']}/videos"
+    video_lines = [
+        f"- [Push pose: CEM best]({video_root}/push_pose_cem_best.mp4)",
+        f"- [Steer pose: CEM best]({video_root}/steer_pose_cem_best.mp4)",
+        f"- [Human push 1 window 00: CEM best]"
+        f"({video_root}/human_push_1_window_00_cem_best.mp4)",
+    ]
+    if prior_mode == "with_prior":
+        video_lines[0:0] = [
+            f"- [Push pose: encoded expert goal]"
+            f"({video_root}/push_pose_encoded_anchor.mp4)",
+            f"- [Steer pose: encoded expert goal]"
+            f"({video_root}/steer_pose_encoded_anchor.mp4)",
+            f"- [Human push 1 window 00: encoded trajectory]"
+            f"({video_root}/human_push_1_window_00_encoded_trajectory.mp4)",
+        ]
+    else:
+        video_lines[0:0] = [
+            f"- [Push pose: global best]({video_root}/push_pose_global_best.mp4)",
+            f"- [Steer pose: global best]({video_root}/steer_pose_global_best.mp4)",
+        ]
+    video_lines.extend(
+        [
+            f"- [Push-steer midpoint]({video_root}/push_steer_midpoint_blend.mp4)",
+            f"- [All generated videos]({video_root}/)",
+        ]
     )
     lines = [
         f"# {EXPERIMENT_TYPE}",
@@ -895,6 +1007,8 @@ def _append_formal_results(
         "",
         f"- Experiment name: {metadata['experiment_name']}",
         f"- Experiment type: {EXPERIMENT_TYPE}",
+        f"- Study date: {study_date}",
+        f"- Prior mode: `{prior_mode}`",
         f"- Start time: {metadata['start_time']}",
         f"- End time: {metadata['end_time']}",
         f"- Duration: {metadata['duration_seconds']:.3f} seconds",
@@ -915,16 +1029,26 @@ def _append_formal_results(
         "human_push_2",
     ):
         value = schema[name]
+        used_as_bfm_input = (
+            prior_mode == "with_prior"
+            and value.get("encoded_anchor_available", False)
+        )
+        limitation = (
+            "Official backward observation reconstructed from confirmed fields"
+            if prior_mode == "with_prior"
+            else "Used only for evaluation; excluded from latent proposal generation"
+        )
         lines.append(
-            f"| {name} | true | {value.get('encoded_anchor_available', False)} | "
+            f"| {name} | true | {used_as_bfm_input} | "
             f"{value.get('scoring_enabled', False)} | "
-            "Official backward observation reconstructed from confirmed fields |"
+            f"{limitation} |"
         )
     lines.extend(
         [
             "",
             "### Configuration",
             "",
+            f"- Prior mode: {prior_mode}",
             f"- Global sphere samples: {config['global_scan']['num_latents']}",
             f"- CEM population: {config['cem']['population_size']}",
             f"- CEM iterations: {config['cem']['num_iterations']}",
@@ -934,10 +1058,10 @@ def _append_formal_results(
             f"- Geodesic angles: {config['geodesic']['angles_degrees']}",
             f"- Samples per angle: {config['geodesic']['samples_per_angle']}",
             f"- Action gain: {config['rollout']['action_gain']}",
-            f"- CEM maximum per-step angle from encoded expert latent: "
-            f"{config['cem']['max_angle_degrees']} degrees",
+            f"- CEM maximum angle from search reference: "
+            f"{cem_config['max_angle_degrees']} degrees",
             f"- CEM temporal noise correlation: "
-            f"{config['cem']['temporal_correlation']}",
+            f"{cem_config['temporal_correlation']}",
             "- Static rollouts start from their reconstructed expert pose",
             "- Human-push rollouts start from the push expert pose because the motion "
             "files do not include skateboard state",
@@ -952,8 +1076,8 @@ def _append_formal_results(
     for row in rows:
         lines.append(
             f"| {row['target']} | {row['encoded_latent_steps']} | "
-            f"{row['encoded_anchor_score']:.6f} | "
-            f"{row['encoded_robust_success_rate']:.3f} | "
+            f"{_format_number(row['encoded_anchor_score'], 6)} | "
+            f"{_format_number(row['encoded_robust_success_rate'], 3)} | "
             f"{row['global_best_score']:.6f} | "
             f"{row['searched_anchor_score']:.6f} | "
             f"{row['search_angle_degrees']:.2f} deg | "
@@ -967,27 +1091,19 @@ def _append_formal_results(
             "",
             "### Main findings",
             "",
-            "Static goal latents and time-aligned dynamic latent trajectories are "
-            "produced by the frozen official backward map from reconstructed expert "
-            "observations. Dynamic execution follows the official next-frame pattern "
-            "`z_t = project_z(backward_map(obs[t + 1]))`.",
-            "",
-            f"Trajectory-local CEM improved the encoded score for {improved_count}/"
-            f"{len(rows)} targets. Selected CEM latents remained at most "
-            f"{angle_summary} from their matching expert latent at every step.",
-            "",
+            *[
+                part
+                for finding in method_findings
+                for part in (finding, "")
+            ],
             f"{covered_count}/{len(rows)} targets met the formal coverage criteria. "
-            "A failed rollout does not imply failed expert encoding; it means the "
-            "encoded behavior was not maintained under the adapted actor, coupled "
-            "skateboard physics, and current thresholds.",
+            "Coverage failure means the selected frozen-BFM0 behavior was not "
+            "maintained under the adapted actor, coupled skateboard physics, and "
+            "current thresholds.",
             "",
             "The per-target classifications above require the final static pose or "
             "full dynamic window to meet its threshold; a transient intermediate pose "
             "is not counted as success.",
-            "",
-            "Random constant-latent sampling is reported only as a baseline. Dynamic "
-            "CEM starts from the complete encoded expert trajectory and uses "
-            "time-correlated perturbations under a per-step angular cap.",
             "",
             "### Latent-space visualizations",
             "",
@@ -1004,23 +1120,7 @@ def _append_formal_results(
             "",
             "### Videos",
             "",
-            f"- [Push pose: encoded expert anchor]"
-            f"(res/{metadata['experiment_name']}/videos/push_pose_encoded_anchor.mp4)",
-            f"- [Push pose: CEM best]"
-            f"(res/{metadata['experiment_name']}/videos/push_pose_cem_best.mp4)",
-            f"- [Steer pose: encoded expert anchor]"
-            f"(res/{metadata['experiment_name']}/videos/steer_pose_encoded_anchor.mp4)",
-            f"- [Steer pose: CEM best]"
-            f"(res/{metadata['experiment_name']}/videos/steer_pose_cem_best.mp4)",
-            f"- [Human push 1 window 00: encoded trajectory]"
-            f"(res/{metadata['experiment_name']}/videos/"
-            f"human_push_1_window_00_encoded_trajectory.mp4)",
-            f"- [Human push 1 window 00: CEM best]"
-            f"(res/{metadata['experiment_name']}/videos/"
-            f"human_push_1_window_00_cem_best.mp4)",
-            f"- [Push-steer midpoint]"
-            f"(res/{metadata['experiment_name']}/videos/push_steer_midpoint_blend.mp4)",
-            f"- [All generated videos](res/{metadata['experiment_name']}/videos/)",
+            *video_lines,
             "",
             "### Limitations",
             "",
@@ -1107,6 +1207,8 @@ def _run_experiment(
     logger.info("Checkpoint loaded strictly and model frozen")
 
     runner = H1RolloutRunner(model, config, device=metadata["device"])
+    prior_mode = config["search"]["prior_mode"]
+    cem_config = _cem_config(config)
     latent_records: list[dict[str, Any]] = []
     trajectories: dict[str, ScoredRollout] = {}
     support_by_target: dict[str, list[dict[str, float]]] = {}
@@ -1120,22 +1222,33 @@ def _run_experiment(
     seed = int(config["rollout"]["seeds"][0])
 
     try:
-        for target in targets:
-            latents = encode_expert_latents(model, target)
-            if latents is not None:
-                encoded_anchors[target.name] = latents
-        if metadata["run_type"] == "formal" and len(encoded_anchors) != len(targets):
+        if prior_mode == "with_prior":
+            for target in targets:
+                latents = encode_expert_latents(model, target)
+                if latents is not None:
+                    encoded_anchors[target.name] = latents
+        if (
+            metadata["run_type"] == "formal"
+            and prior_mode == "with_prior"
+            and len(encoded_anchors) != len(targets)
+        ):
             missing = sorted(
                 target.name for target in targets if target.name not in encoded_anchors
             )
             raise RuntimeError(
                 f"Formal expert-guided run requires encoded anchors for every target: {missing}"
             )
-        schema["encoded_anchor_available"] = len(encoded_anchors) == len(targets)
-        logger.info(
-            "Encoded %d expert goals/trajectories with the official backward map",
-            len(encoded_anchors),
-        )
+        schema["encoded_anchor_available"] = bool(encoded_anchors)
+        schema["prior_mode"] = prior_mode
+        if prior_mode == "with_prior":
+            logger.info(
+                "Encoded %d expert goals/trajectories with the official backward map",
+                len(encoded_anchors),
+            )
+        else:
+            logger.info(
+                "Without-prior mode: expert data is excluded from latent proposal generation"
+            )
 
         global_latents = sample_global_latents(
             model,
@@ -1238,7 +1351,7 @@ def _run_experiment(
                     model,
                     evaluate,
                     encoded_anchor if encoded_anchor is not None else global_best_latent,
-                    config["cem"],
+                    cem_config,
                     seed=search_seed + 1000 * (target_index + 1),
                 )
                 cem_results.append((search_seed, cem_candidate))
@@ -1320,7 +1433,7 @@ def _run_experiment(
                     seed=seed + 15000 * (target_index + 1),
                 )[0]
                 if encoded_anchor is not None
-                else 0.0
+                else math.nan
             )
             global_success_rate = float(np.mean([result.success for result in global_results]))
             global_comparison_latent = (
@@ -1340,6 +1453,14 @@ def _run_experiment(
                 if encoded_anchor is not None
                 else (math.nan, math.nan)
             )
+            search_reference = (
+                "encoded_expert" if encoded_anchor is not None else "global_best"
+            )
+            search_angle_from_reference = (
+                search_angle_from_encoded
+                if encoded_anchor is not None
+                else (search_angle_from_global_mean, search_angle_from_global)
+            )
             small_support = next(
                 (row["success_rate"] for row in support if row["angle_degrees"] <= 20.0),
                 0.0,
@@ -1351,7 +1472,7 @@ def _run_experiment(
                 searched_success=cem.best.success,
                 robust_success_rate=robust_rate,
                 small_angle_support=small_support,
-                search_angle_radians=math.radians(search_angle_from_encoded[1]),
+                search_angle_radians=math.radians(search_angle_from_reference[1]),
                 config=config["coverage"],
             )
             target_rows.append(
@@ -1375,12 +1496,13 @@ def _run_experiment(
                     "search_angle_from_global_mean_degrees": (
                         search_angle_from_global_mean
                     ),
-                    "search_angle_mean_degrees": search_angle_from_encoded[0],
-                    "search_angle_degrees": search_angle_from_encoded[1],
+                    "search_angle_mean_degrees": search_angle_from_reference[0],
+                    "search_angle_degrees": search_angle_from_reference[1],
+                    "search_angle_reference": search_reference,
                     "encoded_latent_steps": (
                         int(encoded_anchor.shape[0])
                         if encoded_anchor is not None and encoded_anchor.ndim == 2
-                        else 1
+                        else (1 if encoded_anchor is not None else 0)
                     ),
                     "searched_latent_steps": (
                         int(cem.best_latent.shape[0])
@@ -1475,6 +1597,7 @@ def _run_experiment(
             support_by_target,
             result_dir / "plots",
             config["visualization"],
+            prior_mode,
             logger,
         )
         video_errors = []
@@ -1520,6 +1643,7 @@ def _run_experiment(
         summary = {
             "experiment_name": metadata["experiment_name"],
             "run_type": metadata["run_type"],
+            "prior_mode": prior_mode,
             "checkpoint_compatibility": compatibility,
             "encoded_anchor_available": len(encoded_anchors) == len(targets),
             "target_results": target_rows,
@@ -1552,14 +1676,12 @@ def main(argv: list[str] | None = None) -> int:
         output_root = Path(smoke_workspace.name)
     else:
         output_root = _resolve_path(config["experiment"]["output_root"])
+        output_root.mkdir(parents=True, exist_ok=True)
     docs_root = Path(os.environ.get("SKATE_BFM_H1_DOCS_ROOT", REPO_ROOT / "docs"))
     docs_root.mkdir(parents=True, exist_ok=True)
     published_result_dir = output_root / experiment_name
     formal_workspace = None
-    if (
-        config["experiment"]["run_type"] == "formal"
-        and published_result_dir.exists()
-    ):
+    if config["experiment"]["run_type"] == "formal":
         formal_workspace = tempfile.TemporaryDirectory(
             prefix="skate_bfm_h1_formal_"
         )
@@ -1577,6 +1699,7 @@ def main(argv: list[str] | None = None) -> int:
         "experiment_name": experiment_name,
         "experiment_type": EXPERIMENT_TYPE,
         "run_type": config["experiment"]["run_type"],
+        "prior_mode": config["search"]["prior_mode"],
         "start_time": start.isoformat(),
         "end_time": None,
         "duration_seconds": None,
@@ -1592,7 +1715,13 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     logger.info("Experiment %s started", experiment_name)
-    logger.info("Run type=%s device=%s checkpoint=%s", metadata["run_type"], device, checkpoint)
+    logger.info(
+        "Run type=%s prior=%s device=%s checkpoint=%s",
+        metadata["run_type"],
+        metadata["prior_mode"],
+        device,
+        checkpoint,
+    )
 
     status = "completed"
     summary: dict[str, Any] = {}
@@ -1706,12 +1835,17 @@ def main(argv: list[str] | None = None) -> int:
                 handler.close()
             logger.handlers.clear()
             if status == "completed":
-                previous_result_dir = Path(formal_workspace.name) / "previous_result"
-                shutil.move(published_result_dir, previous_result_dir)
+                previous_result_dir = None
+                if published_result_dir.exists():
+                    previous_result_dir = (
+                        Path(formal_workspace.name) / "previous_result"
+                    )
+                    shutil.move(published_result_dir, previous_result_dir)
                 try:
                     shutil.move(result_dir, published_result_dir)
                 except Exception:
-                    shutil.move(previous_result_dir, published_result_dir)
+                    if previous_result_dir is not None:
+                        shutil.move(previous_result_dir, published_result_dir)
                     raise
             formal_workspace.cleanup()
         if smoke_workspace is not None:
