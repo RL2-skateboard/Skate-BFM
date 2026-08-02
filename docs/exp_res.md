@@ -1,19 +1,19 @@
 # Experiment Results
 
-# H1 Expert-Guided BFM0 Behavior Coverage
+# H1 Frozen BFM0 Motion Coverage
 
 ## h1_bfm0_motion_without_prior
 
 ### Experiment metadata
 
 - Experiment name: h1_bfm0_motion_without_prior
-- Experiment type: H1 Expert-Guided BFM0 Behavior Coverage
+- Experiment type: H1 Frozen BFM0 Motion Coverage
 - Study date: 2026-07-31
 - Prior mode: `without_prior`
-- Start time: 2026-08-02T09:36:45.467744+08:00
-- End time: 2026-08-02T09:45:11.335094+08:00
-- Duration: 505.840 seconds
-- Git commit: `6d0adcdcd87d90d6890514fb9c0c2f86d9208e56`
+- Start time: 2026-08-02T09:48:03.669309+08:00
+- End time: 2026-08-02T09:56:34.888070+08:00
+- Duration: 511.193 seconds
+- Git commit: `4609369cfc149727542e065610fb5805b5c4c3de`
 - Checkpoint: `model/bfm-zero-official`
 - Device: `cuda`
 - Result directory: `docs/res/h1_bfm0_motion_without_prior`
@@ -73,7 +73,7 @@ Broad CEM improved the global-best score for 8/8 targets. Its distance from the 
 
 The search first evaluates uniformly sampled constant latent directions on the frozen BFM0 sphere, then refines each target from its global best.
 
-5/8 targets met the formal coverage criteria. Coverage failure means the selected frozen-BFM0 behavior was not maintained under the adapted actor, coupled skateboard physics, and current thresholds.
+3/8 targets met the formal coverage criteria. Coverage failure means the selected frozen-BFM0 behavior was not maintained under the adapted actor, coupled skateboard physics, and current thresholds.
 
 The per-target classifications above require the final static pose or full dynamic window to meet its threshold; a transient intermediate pose is not counted as success.
 
@@ -106,4 +106,4 @@ The per-target classifications above require the final static pose or full dynam
 - The current short-horizon experiment does not validate complete skateboarding.
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.
-- Dynamic score-angle plots use trajectory midpoints for display; CEM constraints and reported maximum angles use every original latent step.
+- Without-prior score-angle plots use the searched constant-latent CEM anchor as their reference.

@@ -1,4 +1,4 @@
-# H1 Expert-Guided BFM0 Behavior Coverage
+# H1 Frozen BFM0 Motion Coverage
 
 - Experiment: `h1_bfm0_motion_without_prior`
 - Run type: `formal`
@@ -37,4 +37,4 @@
 - The current short-horizon experiment does not validate complete skateboarding.
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.
-- Dynamic score-angle plots use trajectory midpoints for display; CEM constraints and reported maximum angles use every original latent step.
+- Without-prior score-angle plots use the searched constant-latent CEM anchor as their reference.

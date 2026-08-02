@@ -1137,10 +1137,12 @@ def _append_formal_results(
         if path.exists()
         else "# Experiment Results\n"
     )
-    marker = f"# {EXPERIMENT_TYPE}\n\n## {metadata['experiment_name']}"
-    start = content.find(marker)
-    if start >= 0:
-        next_block = content.find(f"\n# {EXPERIMENT_TYPE}\n", start + len(marker))
+    marker = f"## {metadata['experiment_name']}"
+    marker_start = content.find(marker)
+    if marker_start >= 0:
+        heading_start = content.rfind("\n# ", 0, marker_start)
+        start = 0 if heading_start < 0 else heading_start + 1
+        next_block = content.find("\n# ", marker_start + len(marker))
         end = len(content) if next_block < 0 else next_block + 1
         content = content[:start].rstrip() + "\n\n" + block + content[end:].lstrip()
     else:
