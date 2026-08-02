@@ -4,15 +4,36 @@
 
 | Study date | Experiment | Latent proposal | Stable coverage | Main result |
 |---|---|---|---:|---|
-| 2026-07-31 | `h1_bfm0_motion_without_prior` | Target-conditioned retrieval: 256 global sphere samples, then broad CEM from each target's global best | pending rerun | Previous result withdrawn because human-push initialization incorrectly placed the push foot on the deck |
-| 2026-08-01 | `h1_bfm0_motion_with_prior` | Time-aligned expert `z_t`, then trajectory-local CEM | pending rerun | Previous result withdrawn because human-push initialization incorrectly placed the push foot on the deck |
+| 2026-07-31 | `h1_bfm0_motion_without_prior` | Target-conditioned retrieval: 256 global sphere samples, then broad CEM from each target's global best | 6/8 | Retrieved stable short-horizon joint-motion candidates for all six human-push windows without expert latent proposals |
+| 2026-08-01 | `h1_bfm0_motion_with_prior` | Time-aligned expert `z_t`, then trajectory-local CEM | 0/8 | The encoded expert neighborhoods were not robustly maintained by the frozen actor in HUSKY |
 
-Both published result sets below are withdrawn. Their dynamic windows used the
-correct expert qpos/qvel but an incorrect world alignment that moved the
-left push foot onto the skateboard. The corrected initialization aligns the
-right support foot to the static push reference on the deck and preserves the
-left foot's expert-relative position on the ground or in the swing phase.
-Formal reruns are required before reporting coverage.
+Both experiments were rerun after correcting the human-push world alignment.
+For every dynamic window, the right ankle starts at the static push reference
+in board coordinates, approximately `(0.069, -0.002, 0.048)` meters. The left
+ankle starts outside the deck width at `y=0.269-0.564` meters. In the first
+window of each source motion it is near ground level at board-relative
+`z=-0.057/-0.046` meters; later windows preserve the source swing-foot height.
+The complete root trajectory and initial velocity receive the same rigid
+transform.
+
+The without-prior run is goal-directed retrieval over the frozen BFM0 latent
+space. Expert data defines target trajectories, initial states, and scores but
+does not propose latents. Broad CEM found locally robust constant-latent
+candidates for all six dynamic windows, with robust success rates
+`0.75-0.90`; neither static target was stably covered.
+
+The with-prior run uses 24 time-aligned next-frame expert latents for every
+dynamic window. Trajectory-local CEM improved all encoded scores while staying
+within `12.17-14.15` degrees of the expert trajectory, but no target achieved
+robust coverage.
+
+The `6/8` result proves only that short-horizon motions satisfying the current
+23-joint trajectory thresholds can be retrieved from the tested frozen model.
+Video inspection shows that some candidates separate from the skateboard
+during the rollout. Because scoring does not include root trajectory, foot
+contact, or synchronized skateboard state, these candidates are not six
+complete push skills. Failed finite searches also do not establish the
+motion-library limit of BFM0.
 
 # H1 Frozen BFM0 Motion Coverage
 
@@ -108,6 +129,11 @@ The per-target classifications above require the final static pose or full dynam
 - [Push pose: CEM best](res/h1_bfm0_motion_without_prior/videos/push_pose_cem_best.mp4)
 - [Steer pose: CEM best](res/h1_bfm0_motion_without_prior/videos/steer_pose_cem_best.mp4)
 - [Human push 1 window 00: CEM best](res/h1_bfm0_motion_without_prior/videos/human_push_1_window_00_cem_best.mp4)
+- [Human push 1 window 01: CEM best](res/h1_bfm0_motion_without_prior/videos/human_push_1_window_01_cem_best.mp4)
+- [Human push 1 window 02: CEM best](res/h1_bfm0_motion_without_prior/videos/human_push_1_window_02_cem_best.mp4)
+- [Human push 2 window 00: CEM best](res/h1_bfm0_motion_without_prior/videos/human_push_2_window_00_cem_best.mp4)
+- [Human push 2 window 01: CEM best](res/h1_bfm0_motion_without_prior/videos/human_push_2_window_01_cem_best.mp4)
+- [Human push 2 window 02: CEM best](res/h1_bfm0_motion_without_prior/videos/human_push_2_window_02_cem_best.mp4)
 - [Push-steer midpoint](res/h1_bfm0_motion_without_prior/videos/push_steer_midpoint_blend.mp4)
 - [All generated videos](res/h1_bfm0_motion_without_prior/videos/)
 
@@ -122,13 +148,10 @@ The per-target classifications above require the final static pose or full dynam
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.
 - Without-prior score-angle plots use the searched constant-latent CEM anchor as their reference.
+
 # H1 Frozen BFM0 Motion Coverage
 
 ## h1_bfm0_motion_with_prior
-
-> Withdrawn: human-push initialization incorrectly placed the left push foot
-> on the deck. The measurements below are retained only as an invalid-run
-> record until the corrected formal rerun replaces this block.
 
 ### Experiment metadata
 
@@ -136,10 +159,10 @@ The per-target classifications above require the final static pose or full dynam
 - Experiment type: H1 Frozen BFM0 Motion Coverage
 - Study date: 2026-08-01
 - Prior mode: `with_prior`
-- Start time: 2026-08-02T12:01:58.609537+08:00
-- End time: 2026-08-02T12:12:06.311775+08:00
-- Duration: 607.684 seconds
-- Git commit: `7ba5810143986eb378b1a3d6a3d15ceb89aab653`
+- Start time: 2026-08-02T12:55:27.095285+08:00
+- End time: 2026-08-02T13:05:04.721771+08:00
+- Duration: 577.582 seconds
+- Git commit: `24dd9ddab94a0cf5f8239a1eca851e3c01d30107`
 - Checkpoint: `model/bfm-zero-official`
 - Device: `cuda`
 - Result directory: `docs/res/h1_bfm0_motion_with_prior`
@@ -168,7 +191,7 @@ The per-target classifications above require the final static pose or full dynam
 - CEM maximum angle from search reference: 40.0 degrees
 - CEM temporal noise correlation: 0.9
 - Static rollouts start from their reconstructed expert pose
-- Human-push rollouts start from each window's first expert qpos/qvel; global translation and heading are aligned to the skateboard
+- Human-push rollouts start from each window's first expert qpos/qvel; the right support foot is aligned to the push-start deck reference while the left push foot preserves its expert offset
 
 ### Main results
 
@@ -176,30 +199,30 @@ The per-target classifications above require the final static pose or full dynam
 |---|---:|---:|---:|---:|---:|---:|---:|---|
 | push_start_pose | 1 | -0.727388 | 0.000 | -0.662178 | -0.687604 | 13.85 deg | 0.000 | not_covered |
 | steer_start_pose | 1 | -0.608622 | 0.000 | -0.368672 | -0.499037 | 14.15 deg | 0.000 | not_covered |
-| human_push_1_window_00 | 24 | -0.532793 | 0.000 | -0.496919 | -0.497779 | 13.80 deg | 0.250 | fragile |
-| human_push_1_window_01 | 24 | -0.576890 | 0.000 | -0.567508 | -0.518339 | 13.09 deg | 0.000 | not_covered |
-| human_push_1_window_02 | 24 | -0.579753 | 0.000 | -0.541270 | -0.527105 | 14.00 deg | 0.000 | not_covered |
-| human_push_2_window_00 | 24 | -0.583071 | 0.000 | -0.568968 | -0.547325 | 12.15 deg | 0.000 | not_covered |
-| human_push_2_window_01 | 24 | -0.561036 | 0.000 | -0.571243 | -0.524113 | 13.42 deg | 0.000 | not_covered |
-| human_push_2_window_02 | 24 | -0.557242 | 0.000 | -0.359733 | -0.479503 | 14.74 deg | 0.850 | locally_covered |
+| human_push_1_window_00 | 24 | -0.530916 | 0.000 | -0.506456 | -0.500381 | 13.96 deg | 0.000 | not_covered |
+| human_push_1_window_01 | 24 | -0.571654 | 0.000 | -0.556736 | -0.530974 | 12.17 deg | 0.000 | not_covered |
+| human_push_1_window_02 | 24 | -0.568220 | 0.000 | -0.526268 | -0.519531 | 13.37 deg | 0.000 | not_covered |
+| human_push_2_window_00 | 24 | -0.586573 | 0.000 | -0.541474 | -0.534871 | 13.15 deg | 0.000 | not_covered |
+| human_push_2_window_01 | 24 | -0.565684 | 0.000 | -0.566813 | -0.517439 | 13.42 deg | 0.000 | not_covered |
+| human_push_2_window_02 | 24 | -0.546455 | 0.000 | -0.475021 | -0.508025 | 13.18 deg | 0.000 | not_covered |
 
 ### Latent-space results
 
 | Metric | Result |
 |---|---:|
 | Push-steer angular distance (degrees) | 79.63737487792969 |
-| Global stable proposal rate | 0.99755859375 |
+| Global stable proposal rate | 0.98974609375 |
 | Latent-behavior Spearman correlation | 0.038124072015193224 |
 
 ### Main findings
 
 Static goal latents and time-aligned dynamic latent trajectories are produced by the frozen official backward map from reconstructed expert observations. Dynamic execution follows the official next-frame pattern `z_t = project_z(backward_map(obs[t + 1]))`.
 
-Trajectory-local CEM improved the encoded score for 8/8 targets. The per-target maximum trajectory angle ranged 12.15-14.74 degrees.
+Trajectory-local CEM improved the encoded score for 8/8 targets. The per-target maximum trajectory angle ranged 12.17-14.15 degrees.
 
 Random constant-latent sampling is reported only as a baseline. Dynamic CEM starts from the complete encoded expert trajectory and uses time-correlated perturbations under a per-step angular cap.
 
-1/8 targets met the formal coverage criteria. Coverage failure means the selected frozen-BFM0 behavior was not maintained under the adapted actor, coupled skateboard physics, and current thresholds.
+0/8 targets met the formal coverage criteria. Coverage failure means the selected frozen-BFM0 behavior was not maintained under the adapted actor, coupled skateboard physics, and current thresholds.
 
 The per-target classifications above require the final static pose or full dynamic window to meet its threshold; a transient intermediate pose is not counted as success.
 
@@ -232,7 +255,7 @@ The per-target classifications above require the final static pose or full dynam
 - Dynamic expert velocities are reconstructed by finite differences at 50 Hz.
 - Static scoring uses all 30 confirmed robot bodies relative to the skateboard.
 - Dynamic scoring uses only the confirmed common 23 joint positions at 50 Hz.
-- Human-push files do not include synchronized skateboard state; initialization aligns the expert feet to the HUSKY deck while preserving expert pose and velocity.
+- Human-push files do not include synchronized skateboard state; initialization aligns the right support foot to the push-start deck reference and preserves the left push foot's expert-relative position and velocity.
 - The current short-horizon experiment does not validate complete skateboarding.
 - Foot contact metrics are not included in H1 coverage.
 - t-SNE sphere plots are qualitative; quantitative distances use original latents.

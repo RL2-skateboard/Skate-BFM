@@ -3,10 +3,10 @@
   "experiment_type": "H1 Frozen BFM0 Motion Coverage",
   "run_type": "formal",
   "prior_mode": "with_prior",
-  "start_time": "2026-08-02T12:01:58.609537+08:00",
-  "end_time": "2026-08-02T12:12:06.311775+08:00",
-  "duration_seconds": 607.6839882410131,
-  "git_commit": "7ba5810143986eb378b1a3d6a3d15ceb89aab653",
+  "start_time": "2026-08-02T12:55:27.095285+08:00",
+  "end_time": "2026-08-02T13:05:04.721771+08:00",
+  "duration_seconds": 577.5822404290084,
+  "git_commit": "24dd9ddab94a0cf5f8239a1eca851e3c01d30107",
   "git_dirty": false,
   "checkpoint": "model/bfm-zero-official",
   "device": "cuda",
@@ -14,6 +14,6 @@
   "total_rollouts": 12266,
   "successful_rollouts": 12266,
   "failed_rollouts": 0,
-  "fall_count": 14,
+  "fall_count": 39,
   "status": "completed"
 }
