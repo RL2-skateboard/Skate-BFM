@@ -17,7 +17,6 @@ import pickle
 import re
 import shutil
 import sys
-import threading
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -175,57 +174,34 @@ class KeySegmentRecorder:
             writer.writerows(events)
 
 
-class LivePhaseTracker:
-    """State machine for the six phases shown during a live rollout."""
+class OfficialPhaseClock:
+    """The fixed HUSKY phase schedule used by the official environment."""
 
-    def __init__(self, transition_duration: float) -> None:
-        self.transition_duration = transition_duration
-        self.stable_phase = "push"
-        self.phase = "push"
-        self.transition_target: str | None = None
-        self.transition_end = 0.0
-        self.fall_latched = False
+    phase_ratios = (0.0, 0.4, 0.5, 0.95, 1.0)
 
-    @staticmethod
-    def category(phase: str) -> str:
-        return "push" if phase == "push" else "steer"
+    def __init__(self, policy_frequency: int, cycle_time: float = 6.0) -> None:
+        self.step_dt = 1.0 / policy_frequency
+        self.cycle_time = cycle_time
+        self.step_count = 0
 
     def reset(self) -> None:
-        self.stable_phase = "push"
-        self.phase = "push"
-        self.transition_target = None
-        self.transition_end = 0.0
-        self.fall_latched = False
+        self.step_count = 0
 
-    def update(self, target_phase: str, sim_time: float) -> str:
-        if self.fall_latched:
-            return "fall"
-        if self.transition_target is not None:
-            if target_phase == self.stable_phase:
-                self.transition_target = None
-                self.phase = self.stable_phase
-            elif sim_time >= self.transition_end:
-                self.stable_phase = self.transition_target
-                self.phase = self.stable_phase
-                self.transition_target = None
-            return self.phase
-        if target_phase == self.stable_phase:
-            self.phase = self.stable_phase
-            return self.phase
-        if self.category(target_phase) == self.category(self.stable_phase):
-            self.stable_phase = target_phase
-            self.phase = target_phase
-            return self.phase
-        self.transition_target = target_phase
-        self.transition_end = sim_time + self.transition_duration
-        self.phase = "push2steer" if self.stable_phase == "push" else "steer2push"
-        return self.phase
-
-    def mark_fall(self) -> str:
-        self.fall_latched = True
-        self.transition_target = None
-        self.phase = "fall"
-        return self.phase
+    def next(self) -> tuple[str, float]:
+        self.step_count += 1
+        phase_value = (self.step_count * self.step_dt / self.cycle_time) % 1.0
+        p0, p1, p2, p3, p4 = self.phase_ratios
+        if p0 <= phase_value < p1:
+            label = "push"
+        elif p1 <= phase_value < p2:
+            label = "push2steer"
+        elif p2 <= phase_value < p3:
+            label = "steer"
+        elif p3 <= phase_value <= p4:
+            label = "steer2push"
+        else:
+            label = "push"
+        return label, phase_value
 
 
 class LiveFallDetector:
@@ -323,7 +299,7 @@ def load_upstream_sim(robot_xml: Path) -> Any:
 
 
 def run_live(args: argparse.Namespace) -> int:
-    """Run the existing HUSKY controller while reporting phase changes."""
+    """Run the existing HUSKY controller with the official phase clock."""
     robot_xml = args.robot_xml.resolve()
     policy = args.policy.resolve()
     if not robot_xml.is_file():
@@ -332,31 +308,11 @@ def run_live(args: argparse.Namespace) -> int:
         raise FileNotFoundError(policy)
 
     sim_module = load_upstream_sim(robot_xml)
-    phase_target = {"value": "push"}
-    phase_lock = threading.Lock()
-
-    def on_phase_key(key: Any) -> None:
-        phase = None
-        if key == sim_module.keyboard.Key.up:
-            phase = "push"
-        elif key == sim_module.keyboard.Key.down:
-            phase = "push"
-        elif key == sim_module.keyboard.Key.left:
-            phase = "steer_left"
-        elif key == sim_module.keyboard.Key.right:
-            phase = "steer_right"
-        elif key == sim_module.keyboard.Key.enter:
-            phase = "push"
-        elif hasattr(key, "char") and key.char == "5":
-            phase = "push"
-        if phase is not None:
-            with phase_lock:
-                phase_target["value"] = phase
 
     class LiveController(sim_module.RealTimePolicyController):
         def __init__(self, *controller_args: Any, **controller_kwargs: Any) -> None:
             super().__init__(*controller_args, **controller_kwargs)
-            self.phase_tracker = LivePhaseTracker(args.transition_duration)
+            self.phase_clock = OfficialPhaseClock(args.policy_frequency, args.cycle_time)
             confirm_frames = max(1, round(args.fall_confirm_time * args.policy_frequency))
             self.fall_detector = LiveFallDetector(
                 self.model,
@@ -390,7 +346,8 @@ def run_live(args: argparse.Namespace) -> int:
                 f"tilt={details.get('tilt_deg', 0.0):.1f}deg "
                 f"height={details.get('root_height', 0.0):.2f} "
                 f"feet={'board' if details.get('feet_on_board') else 'off'} "
-                f"confirm={details.get('confirm_frames', 0)}"
+                f"confirm={details.get('confirm_frames', 0)} "
+                f"clock={details.get('phase_value', 0.0):.3f}"
             )
             line = (
                 f"[STATUS] t={sim_time:.2f}s phase={phase} "
@@ -404,9 +361,7 @@ def run_live(args: argparse.Namespace) -> int:
 
         def reset_fall_state(self) -> None:
             self.fall_detector.reset()
-            self.phase_tracker.reset()
-            with phase_lock:
-                phase_target["value"] = "push"
+            self.phase_clock.reset()
             self.last_reported_phase = None
             self.last_status_time = -math.inf
 
@@ -414,38 +369,31 @@ def run_live(args: argparse.Namespace) -> int:
             super().reset(init_pos)
             self.reset_fall_state()
             _, _, diagnostics = self.fall_detector.check(self.data)
+            diagnostics["phase_value"] = 0.0
             self.report_phase("push", diagnostics=diagnostics, force=True)
 
         def extract_data(self) -> Any:
             values = super().extract_data()
+            phase, phase_value = self.phase_clock.next()
             fallen, reasons, diagnostics = self.fall_detector.check(self.data)
             if fallen:
-                phase = self.phase_tracker.mark_fall()
-            else:
-                with phase_lock:
-                    target = phase_target["value"]
-                phase = self.phase_tracker.update(target, float(self.data.time))
+                phase = "fall"
+            diagnostics["phase_value"] = phase_value
             self.report_phase(phase, reasons, diagnostics)
             return values
 
-    listener = sim_module.keyboard.Listener(on_press=on_phase_key)
-    listener.daemon = True
-    listener.start()
-    try:
-        controller = LiveController(
-            xml_file=str(robot_xml),
-            policy_path=str(policy),
-            device=args.device,
-            policy_frequency=args.policy_frequency,
-        )
-        print(
-            "[PHASE] live classifier started: "
-            "up/down=push, left=steer_left, right=steer_right, "
-            "fall overrides all phases"
-        )
-        controller.run()
-    finally:
-        listener.stop()
+    controller = LiveController(
+        xml_file=str(robot_xml),
+        policy_path=str(policy),
+        device=args.device,
+        policy_frequency=args.policy_frequency,
+    )
+    print(
+        "[PHASE] official fixed schedule: "
+        "push(0.0-0.4), push2steer(0.4-0.5), "
+        "steer(0.5-0.95), steer2push(0.95-1.0); fall overrides"
+    )
+    controller.run()
     return 0
 
 
@@ -466,7 +414,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--policy-frequency", type=int, default=50)
-    parser.add_argument("--transition-duration", type=float, default=0.5)
+    parser.add_argument("--cycle-time", type=float, default=6.0)
     parser.add_argument("--fall-orientation-deg", type=float, default=70.0)
     parser.add_argument("--fall-root-height-min", type=float, default=0.45)
     parser.add_argument("--fall-confirm-time", type=float, default=0.2)
@@ -488,8 +436,8 @@ def parse_args() -> argparse.Namespace:
             parser.error("--live requires --robot-xml and --policy")
         if args.policy_frequency <= 0:
             parser.error("--policy-frequency must be positive")
-        if args.transition_duration < 0:
-            parser.error("--transition-duration must be non-negative")
+        if args.cycle_time <= 0:
+            parser.error("--cycle-time must be positive")
         if args.fall_root_height_min <= 0:
             parser.error("--fall-root-height-min must be positive")
         if args.fall_confirm_time <= 0:
