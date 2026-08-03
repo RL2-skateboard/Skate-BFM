@@ -204,6 +204,80 @@ class OfficialPhaseClock:
         return label, phase_value
 
 
+class BoardSteerDirection:
+    """Infer left/right/forward from skateboard motion relative to the robot."""
+
+    def __init__(self, model: Any, confirm_frames: int = 5) -> None:
+        import mujoco
+
+        self.model = model
+        self.confirm_frames = max(1, confirm_frames)
+        self.stable_direction = "forward"
+        self.candidate_direction = "forward"
+        self.candidate_frames = 0
+        self.robot_body_id = model.body("robot/pelvis").id
+        self.board_body_id = model.body("skateboard/skateboard_deck").id
+        self.mujoco = mujoco
+
+    def reset(self) -> None:
+        self.stable_direction = "forward"
+        self.candidate_direction = "forward"
+        self.candidate_frames = 0
+
+    @staticmethod
+    def wrap_angle(angle: float) -> float:
+        return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+    def classify(self, data: Any) -> tuple[str, dict[str, float]]:
+        robot_mat = data.xmat[self.robot_body_id].reshape(3, 3)
+        board_mat = data.xmat[self.board_body_id].reshape(3, 3)
+        robot_yaw = math.atan2(robot_mat[1, 0], robot_mat[0, 0])
+        board_yaw = math.atan2(board_mat[1, 0], board_mat[0, 0])
+        relative_yaw = self.wrap_angle(board_yaw - robot_yaw)
+
+        velocity = np.zeros(6, dtype=float)
+        self.mujoco.mj_objectVelocity(
+            self.model,
+            data,
+            self.mujoco.mjtObj.mjOBJ_BODY,
+            self.board_body_id,
+            velocity,
+            0,
+        )
+        board_linear_world = velocity[3:]
+        board_linear_robot = robot_mat.T @ board_linear_world
+        board_yaw_rate = float(velocity[2])
+
+        yaw_threshold = math.radians(4.0)
+        lateral_speed_threshold = 0.05
+        yaw_rate_threshold = 0.05
+        if abs(relative_yaw) >= yaw_threshold:
+            direction = "left" if relative_yaw > 0.0 else "right"
+        elif abs(board_yaw_rate) >= yaw_rate_threshold:
+            direction = "left" if board_yaw_rate > 0.0 else "right"
+        elif abs(board_linear_robot[1]) >= lateral_speed_threshold:
+            direction = "left" if board_linear_robot[1] > 0.0 else "right"
+        else:
+            direction = "forward"
+
+        if direction == self.candidate_direction:
+            self.candidate_frames += 1
+        else:
+            self.candidate_direction = direction
+            self.candidate_frames = 1
+        if self.candidate_frames >= self.confirm_frames:
+            self.stable_direction = self.candidate_direction
+
+        return self.stable_direction, {
+            "board_rel_yaw_deg": math.degrees(relative_yaw),
+            "board_vx_robot": float(board_linear_robot[0]),
+            "board_vy_robot": float(board_linear_robot[1]),
+            "board_yaw_rate": board_yaw_rate,
+            "steer_candidate": direction,
+            "steer_confirm_frames": self.candidate_frames,
+        }
+
+
 class LiveFallDetector:
     """Detect a persistent fall without treating foot lift-off as a fall."""
 
@@ -313,6 +387,10 @@ def run_live(args: argparse.Namespace) -> int:
         def __init__(self, *controller_args: Any, **controller_kwargs: Any) -> None:
             super().__init__(*controller_args, **controller_kwargs)
             self.phase_clock = OfficialPhaseClock(args.policy_frequency, args.cycle_time)
+            direction_confirm_frames = max(
+                1, round(args.steer_confirm_time * args.policy_frequency)
+            )
+            self.steer_direction = BoardSteerDirection(self.model, direction_confirm_frames)
             confirm_frames = max(1, round(args.fall_confirm_time * args.policy_frequency))
             self.fall_detector = LiveFallDetector(
                 self.model,
@@ -347,7 +425,9 @@ def run_live(args: argparse.Namespace) -> int:
                 f"height={details.get('root_height', 0.0):.2f} "
                 f"feet={'board' if details.get('feet_on_board') else 'off'} "
                 f"confirm={details.get('confirm_frames', 0)} "
-                f"clock={details.get('phase_value', 0.0):.3f}"
+                f"clock={details.get('phase_value', 0.0):.3f} "
+                f"steer_dir={details.get('steer_direction', '-')} "
+                f"candidate={details.get('steer_candidate', '-')}"
             )
             line = (
                 f"[STATUS] t={sim_time:.2f}s phase={phase} "
@@ -362,6 +442,7 @@ def run_live(args: argparse.Namespace) -> int:
         def reset_fall_state(self) -> None:
             self.fall_detector.reset()
             self.phase_clock.reset()
+            self.steer_direction.reset()
             self.last_reported_phase = None
             self.last_status_time = -math.inf
 
@@ -369,6 +450,9 @@ def run_live(args: argparse.Namespace) -> int:
             super().reset(init_pos)
             self.reset_fall_state()
             _, _, diagnostics = self.fall_detector.check(self.data)
+            steer_direction, steer_diagnostics = self.steer_direction.classify(self.data)
+            diagnostics.update(steer_diagnostics)
+            diagnostics["steer_direction"] = steer_direction
             diagnostics["phase_value"] = 0.0
             self.report_phase("push", diagnostics=diagnostics, force=True)
 
@@ -376,8 +460,13 @@ def run_live(args: argparse.Namespace) -> int:
             values = super().extract_data()
             phase, phase_value = self.phase_clock.next()
             fallen, reasons, diagnostics = self.fall_detector.check(self.data)
+            steer_direction, steer_diagnostics = self.steer_direction.classify(self.data)
+            diagnostics.update(steer_diagnostics)
             if fallen:
                 phase = "fall"
+            elif phase == "steer":
+                phase = f"steer_{steer_direction}"
+            diagnostics["steer_direction"] = steer_direction
             diagnostics["phase_value"] = phase_value
             self.report_phase(phase, reasons, diagnostics)
             return values
@@ -415,6 +504,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--policy-frequency", type=int, default=50)
     parser.add_argument("--cycle-time", type=float, default=6.0)
+    parser.add_argument("--steer-confirm-time", type=float, default=0.1)
     parser.add_argument("--fall-orientation-deg", type=float, default=70.0)
     parser.add_argument("--fall-root-height-min", type=float, default=0.45)
     parser.add_argument("--fall-confirm-time", type=float, default=0.2)
@@ -438,6 +528,8 @@ def parse_args() -> argparse.Namespace:
             parser.error("--policy-frequency must be positive")
         if args.cycle_time <= 0:
             parser.error("--cycle-time must be positive")
+        if args.steer_confirm_time <= 0:
+            parser.error("--steer-confirm-time must be positive")
         if args.fall_root_height_min <= 0:
             parser.error("--fall-root-height-min must be positive")
         if args.fall_confirm_time <= 0:
