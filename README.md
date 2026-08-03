@@ -8,15 +8,13 @@ priors with the HUSKY skateboard simulator. The project studies closed-loop
 humanoid interaction with a freely rolling, underactuated support, including
 mounting, riding, steering, recovery, and safe departure.
 
-The repository provides the BFM0-HUSKY integration and two matched H1
-experiments for measuring the motion capacity of a frozen official BFM-Zero
-model. `without_prior` performs goal-directed retrieval for skateboard motion
-targets using a global latent scan followed by broad CEM; expert data defines
-the targets, initial states, and scores but never proposes a latent.
-`with_prior` reconstructs official backward observations and executes
-time-aligned expert latent trajectories, followed by trajectory-local CEM.
-These are short-horizon behavior-coverage experiments, not a trained
-Skate-BFM policy or a complete skateboarding controller.
+This `train` branch is reserved for model training, dataset preparation,
+checkpoint management, and learned motion-library development. The `main`
+branch remains the reference branch for the BFM0-HUSKY integration and formal
+H1 evaluation. This branch does not retain the formal experiment documents
+from `main`; training progress is recorded in
+[`train/train_log.md`](train/train_log.md), and training results are recorded
+in [`train/train_res.md`](train/train_res.md).
 
 ## Setup
 
@@ -147,11 +145,9 @@ skate-bfm-h1 \
   --save-video
 ```
 
-Both completed runs are compared in [`docs/exp_res.md`](docs/exp_res.md).
-Their structured results, four latent-space plots, and content-named MuJoCo
-videos are stored under [`docs/res/`](docs/res/). Smoke runs use a temporary
-directory and are deleted automatically; they do not update either experiment
-document.
+Formal H1 records and videos are maintained on the `main` branch. Training
+checkpoints and motion-library outputs for this branch belong under the
+ignored [`model/motion_library/`](model/motion_library/) directory.
 
 H1 reconstructs the official 64-dimensional state and 463-dimensional
 privileged state from confirmed expert fields. Static poses use 29DoF IK and
@@ -196,7 +192,6 @@ ignored artifacts under `model/`.
 ```text
 Skate-BFM/
 ├── configs/                 # Baseline experiment configuration
-├── docs/                    # Experiment log and formal results
 ├── husky_sim/
 │   ├── src/skate_husky/     # Lightweight project runtime
 │   └── upstream/            # Pinned official HUSKY submodule
@@ -209,7 +204,9 @@ Skate-BFM/
 │   └── integration/         # Action and observation adapters
 ├── tests/                   # Development tests
 └── train/
-    └── dataset/             # Local training and preprocessing data
+    ├── dataset/             # Local training and preprocessing data
+    ├── train_log.md         # Dated training-development log
+    └── train_res.md         # Training parameters and results
 ```
 
 ## Research Direction
@@ -238,11 +235,10 @@ flowchart LR
     O --> H
 ```
 
-## Experiment Records
+## Training Records
 
-- [`docs/exp_logs.md`](docs/exp_logs.md): brief dated development log.
-- [`docs/exp_res.md`](docs/exp_res.md): formal experiment parameters and
-  results, plots, and videos.
+- [`train/train_log.md`](train/train_log.md): brief dated training log.
+- [`train/train_res.md`](train/train_res.md): training parameters and results.
 
 ## Upstream Projects
 
