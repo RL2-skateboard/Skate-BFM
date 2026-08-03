@@ -229,16 +229,25 @@ class LivePhaseTracker:
 
 
 class LiveFallDetector:
-    """Mirror the confirmed HUSKY skater termination conditions in MuJoCo."""
+    """Detect a persistent fall without treating foot lift-off as a fall."""
 
     _illegal_geom = re.compile(
         r"(left|right)_(shin|linkage_brace|shoulder_yaw|elbow_yaw|wrist|hand)_collision"
         r"|robot/pelvis_collision$"
     )
 
-    def __init__(self, model: Any, orientation_limit_deg: float) -> None:
+    def __init__(
+        self,
+        model: Any,
+        orientation_limit_deg: float,
+        root_height_min: float,
+        confirm_frames: int,
+    ) -> None:
         self.model = model
         self.orientation_limit_deg = orientation_limit_deg
+        self.root_height_min = root_height_min
+        self.confirm_frames = max(1, confirm_frames)
+        self.bad_frames = 0
         self.foot_geoms: set[int] = set()
         self.board_geoms: set[int] = set()
         self.illegal_geoms: set[int] = set()
@@ -255,7 +264,10 @@ class LiveFallDetector:
             if self._illegal_geom.search(name):
                 self.illegal_geoms.add(geom_id)
 
-    def check(self, data: Any) -> tuple[bool, list[str]]:
+    def reset(self) -> None:
+        self.bad_frames = 0
+
+    def check(self, data: Any) -> tuple[bool, list[str], dict[str, Any]]:
         qw, qx, qy, qz = np.asarray(data.qpos[3:7], dtype=float)
         norm = np.linalg.norm((qw, qx, qy, qz))
         if norm <= 0.0:
@@ -265,9 +277,6 @@ class LiveFallDetector:
             gravity_z = 1.0 - 2.0 * (qx * qx + qy * qy)
             tilt_deg = math.degrees(math.acos(np.clip(gravity_z, -1.0, 1.0)))
 
-        reasons = []
-        if tilt_deg > self.orientation_limit_deg:
-            reasons.append(f"fell_over:{tilt_deg:.1f}deg")
         feet_on_board = False
         illegal_contact = False
         for contact_index in range(data.ncon):
@@ -279,11 +288,25 @@ class LiveFallDetector:
                 feet_on_board = True
             if geom_a in self.illegal_geoms or geom_b in self.illegal_geoms:
                 illegal_contact = True
-        if not feet_on_board:
-            reasons.append("feet_off_board")
-        if illegal_contact:
-            reasons.append("illegal_contact")
-        return bool(reasons), reasons
+        root_height = float(data.qpos[2])
+        severe_tilt = tilt_deg > self.orientation_limit_deg
+        low_contact_fall = root_height < self.root_height_min and illegal_contact
+        candidate = severe_tilt or low_contact_fall
+        self.bad_frames = self.bad_frames + 1 if candidate else 0
+        reasons = []
+        if severe_tilt:
+            reasons.append(f"tilt>{self.orientation_limit_deg:.0f}deg")
+        if low_contact_fall:
+            reasons.append(f"height<{self.root_height_min:.2f}+illegal_contact")
+        diagnostics = {
+            "tilt_deg": tilt_deg,
+            "root_height": root_height,
+            "feet_on_board": feet_on_board,
+            "illegal_contact": illegal_contact,
+            "fall_candidate": candidate,
+            "confirm_frames": self.bad_frames,
+        }
+        return self.bad_frames >= self.confirm_frames, reasons, diagnostics
 
 
 def load_upstream_sim(robot_xml: Path) -> Any:
@@ -334,37 +357,75 @@ def run_live(args: argparse.Namespace) -> int:
         def __init__(self, *controller_args: Any, **controller_kwargs: Any) -> None:
             super().__init__(*controller_args, **controller_kwargs)
             self.phase_tracker = LivePhaseTracker(args.transition_duration)
-            self.fall_detector = LiveFallDetector(self.model, args.fall_orientation_deg)
-            self.last_reported_phase: str | None = None
-
-        def report_phase(self, phase: str, reasons: Sequence[str] = ()) -> None:
-            if phase == self.last_reported_phase:
-                return
-            self.last_reported_phase = phase
-            detail = f" ({', '.join(reasons)})" if reasons else ""
-            print(
-                f"\n[PHASE] t={self.data.time:.3f}s "
-                f"phase={phase} v={sim_module.v:.1f} h={sim_module.h:.2f}{detail}"
+            confirm_frames = max(1, round(args.fall_confirm_time * args.policy_frequency))
+            self.fall_detector = LiveFallDetector(
+                self.model,
+                args.fall_orientation_deg,
+                args.fall_root_height_min,
+                confirm_frames,
             )
+            self.last_reported_phase: str | None = None
+            self.last_status_time = -math.inf
+
+        def report_phase(
+            self,
+            phase: str,
+            reasons: Sequence[str] = (),
+            diagnostics: Mapping[str, Any] | None = None,
+            force: bool = False,
+        ) -> None:
+            sim_time = float(self.data.time)
+            changed = phase != self.last_reported_phase
+            if (
+                not changed
+                and not force
+                and sim_time - self.last_status_time < args.status_interval
+            ):
+                return
+            self.last_status_time = sim_time
+            self.last_reported_phase = phase
+            details = diagnostics or {}
+            detail = f" ({', '.join(reasons)})" if reasons else ""
+            state = (
+                f"tilt={details.get('tilt_deg', 0.0):.1f}deg "
+                f"height={details.get('root_height', 0.0):.2f} "
+                f"feet={'board' if details.get('feet_on_board') else 'off'} "
+                f"confirm={details.get('confirm_frames', 0)}"
+            )
+            line = (
+                f"[STATUS] t={sim_time:.2f}s phase={phase} "
+                f"v={sim_module.v:.1f} h={sim_module.h:.2f} {state}{detail}"
+            )
+            if changed or force:
+                print(f"\n[PHASE] {line}", flush=True)
+            else:
+                sys.stdout.write(f"\r{line.ljust(150)[:150]}")
+                sys.stdout.flush()
+
+        def reset_fall_state(self) -> None:
+            self.fall_detector.reset()
+            self.phase_tracker.reset()
+            with phase_lock:
+                phase_target["value"] = "push"
+            self.last_reported_phase = None
+            self.last_status_time = -math.inf
 
         def reset(self, init_pos: np.ndarray) -> None:
             super().reset(init_pos)
-            with phase_lock:
-                phase_target["value"] = "push"
-            self.phase_tracker.reset()
-            self.last_reported_phase = None
-            self.report_phase("push")
+            self.reset_fall_state()
+            _, _, diagnostics = self.fall_detector.check(self.data)
+            self.report_phase("push", diagnostics=diagnostics, force=True)
 
         def extract_data(self) -> Any:
             values = super().extract_data()
-            fallen, reasons = self.fall_detector.check(self.data)
+            fallen, reasons, diagnostics = self.fall_detector.check(self.data)
             if fallen:
                 phase = self.phase_tracker.mark_fall()
             else:
                 with phase_lock:
                     target = phase_target["value"]
                 phase = self.phase_tracker.update(target, float(self.data.time))
-            self.report_phase(phase, reasons if fallen else ())
+            self.report_phase(phase, reasons, diagnostics)
             return values
 
     listener = sim_module.keyboard.Listener(on_press=on_phase_key)
@@ -407,6 +468,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-frequency", type=int, default=50)
     parser.add_argument("--transition-duration", type=float, default=0.5)
     parser.add_argument("--fall-orientation-deg", type=float, default=70.0)
+    parser.add_argument("--fall-root-height-min", type=float, default=0.45)
+    parser.add_argument("--fall-confirm-time", type=float, default=0.2)
+    parser.add_argument("--status-interval", type=float, default=0.1)
     parser.add_argument("--fps", type=float)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--include-neutral", action="store_true")
@@ -426,6 +490,12 @@ def parse_args() -> argparse.Namespace:
             parser.error("--policy-frequency must be positive")
         if args.transition_duration < 0:
             parser.error("--transition-duration must be non-negative")
+        if args.fall_root_height_min <= 0:
+            parser.error("--fall-root-height-min must be positive")
+        if args.fall_confirm_time <= 0:
+            parser.error("--fall-confirm-time must be positive")
+        if args.status_interval <= 0:
+            parser.error("--status-interval must be positive")
     else:
         missing = [
             option
