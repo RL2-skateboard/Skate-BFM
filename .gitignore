@@ -17,6 +17,9 @@ runs/
 wandb/
 train/dataset/*
 !train/dataset/README.md
+!train/dataset/BFM-Zero/
+train/dataset/BFM-Zero/*
+!train/dataset/BFM-Zero/data_info.md
 *.ckpt
 *.onnx
 *.pt
