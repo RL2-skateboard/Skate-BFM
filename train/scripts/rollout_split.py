@@ -262,17 +262,29 @@ class BoardSteerDirection:
         board_linear_robot = robot_mat.T @ board_linear_world
         board_yaw_rate = float(velocity[2])
 
-        lateral_speed_threshold = 0.05
+        planar_speed = float(np.linalg.norm(board_linear_robot[:2]))
+        relative_velocity_angle = math.atan2(
+            float(board_linear_robot[1]),
+            max(abs(float(board_linear_robot[0])), 1e-6),
+        )
+        speed_threshold = 0.05
+        direction_angle_threshold = math.radians(3.0)
         yaw_rate_threshold = 0.05
-        if abs(board_yaw_rate) >= yaw_rate_threshold:
+        if (
+            planar_speed >= speed_threshold
+            and abs(relative_velocity_angle) >= direction_angle_threshold
+        ):
+            direction = "left" if relative_velocity_angle > 0.0 else "right"
+            source = "board_relative_velocity"
+        elif planar_speed >= speed_threshold:
+            direction = "forward"
+            source = "board_relative_velocity"
+        elif abs(board_yaw_rate) >= yaw_rate_threshold:
             direction = "left" if board_yaw_rate > 0.0 else "right"
             source = "board_yaw_rate"
         elif abs(yaw_delta_rate) >= yaw_rate_threshold:
             direction = "left" if yaw_delta_rate > 0.0 else "right"
             source = "board_yaw_delta"
-        elif abs(board_linear_robot[1]) >= lateral_speed_threshold:
-            direction = "left" if board_linear_robot[1] > 0.0 else "right"
-            source = "board_lateral_velocity"
         elif abs(command_h) >= 0.05:
             direction = "left" if command_h > 0.0 else "right"
             source = "command_h_fallback"
@@ -292,6 +304,8 @@ class BoardSteerDirection:
             "board_rel_yaw_deg": math.degrees(relative_yaw),
             "board_vx_robot": float(board_linear_robot[0]),
             "board_vy_robot": float(board_linear_robot[1]),
+            "board_planar_speed": planar_speed,
+            "board_velocity_direction_deg": math.degrees(relative_velocity_angle),
             "board_yaw_rate": board_yaw_rate,
             "board_yaw_delta_rate": yaw_delta_rate,
             "steer_source": source,
@@ -451,7 +465,7 @@ def run_live(args: argparse.Namespace) -> int:
                 f"steer_dir={details.get('steer_direction', '-')} "
                 f"candidate={details.get('steer_candidate', '-')} "
                 f"source={details.get('steer_source', '-')} "
-                f"yaw_rate={details.get('board_yaw_rate', 0.0):.2f}"
+                f"vel_dir={details.get('board_velocity_direction_deg', 0.0):.1f}deg"
             )
             line = (
                 f"[STATUS] t={sim_time:.2f}s phase={phase} "
