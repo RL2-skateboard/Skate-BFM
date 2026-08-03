@@ -270,24 +270,11 @@ class BoardSteerDirection:
             float(board_linear_robot[1]),
             max(abs(float(board_linear_robot[0])), 1e-6),
         )
-        speed_threshold = 0.05
-        direction_angle_threshold = math.radians(3.0)
-        yaw_rate_threshold = 0.05
-        if (
-            planar_speed >= speed_threshold
-            and abs(relative_velocity_angle) >= direction_angle_threshold
-        ):
-            direction = "left" if relative_velocity_angle > 0.0 else "right"
-            source = "board_relative_velocity"
-        elif planar_speed >= speed_threshold:
-            direction = "forward"
-            source = "board_relative_velocity"
-        elif abs(board_yaw_rate) >= yaw_rate_threshold:
-            direction = "left" if board_yaw_rate > 0.0 else "right"
-            source = "board_yaw_rate"
-        elif abs(yaw_delta_rate) >= yaw_rate_threshold:
-            direction = "left" if yaw_delta_rate > 0.0 else "right"
-            source = "board_yaw_delta"
+        heading_delta_rate = -yaw_delta_rate
+        heading_rate_threshold = math.radians(2.0)
+        if abs(heading_delta_rate) >= heading_rate_threshold:
+            direction = "left" if heading_delta_rate < 0.0 else "right"
+            source = "board_heading_delta_rate"
         elif abs(command_h) >= 0.05:
             direction = "left" if command_h > 0.0 else "right"
             source = "command_h_fallback"
@@ -314,6 +301,7 @@ class BoardSteerDirection:
             "board_velocity_direction_deg": math.degrees(relative_velocity_angle),
             "board_yaw_rate": board_yaw_rate,
             "board_yaw_delta_rate": yaw_delta_rate,
+            "board_heading_delta_rate": heading_delta_rate,
             "board_heading_delta_deg": heading_delta_deg,
             "steer_source": source,
             "steer_candidate": direction,
