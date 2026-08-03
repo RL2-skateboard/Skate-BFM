@@ -12,3 +12,10 @@
 - Date: 2026-08-03
 - Completed: added single-rollout command segmentation, failure/reset cleanup,
   source-format motion export, and synchronized video or MuJoCo pose replay.
+
+## 2. Live HUSKY Phase Inspection
+
+- Date: 2026-08-03
+- Completed: verified the official fixed phase schedule, added live phase
+  output, classified steering from the heading command, tracked skateboard
+  heading changes, and refined fall detection.
