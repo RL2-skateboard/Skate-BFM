@@ -217,6 +217,7 @@ class BoardSteerDirection:
         self.candidate_frames = 0
         self.previous_board_yaw: float | None = None
         self.previous_time: float | None = None
+        self.board_heading_delta = 0.0
         self.robot_body_id = model.body("robot/pelvis").id
         self.board_body_id = model.body("skateboard/skateboard_deck").id
         self.mujoco = mujoco
@@ -227,6 +228,7 @@ class BoardSteerDirection:
         self.candidate_frames = 0
         self.previous_board_yaw = None
         self.previous_time = None
+        self.board_heading_delta = 0.0
 
     @staticmethod
     def wrap_angle(angle: float) -> float:
@@ -241,6 +243,7 @@ class BoardSteerDirection:
         board_yaw_delta = 0.0
         if self.previous_board_yaw is not None:
             board_yaw_delta = self.wrap_angle(board_yaw - self.previous_board_yaw)
+            self.board_heading_delta += board_yaw_delta
         yaw_delta_rate = (
             board_yaw_delta / (float(data.time) - self.previous_time)
             if self.previous_time is not None and float(data.time) > self.previous_time
@@ -300,6 +303,9 @@ class BoardSteerDirection:
         if self.candidate_frames >= self.confirm_frames:
             self.stable_direction = self.candidate_direction
 
+        heading_delta_deg = -math.degrees(self.board_heading_delta)
+        if abs(heading_delta_deg) < 0.005:
+            heading_delta_deg = 0.0
         return self.stable_direction, {
             "board_rel_yaw_deg": math.degrees(relative_yaw),
             "board_vx_robot": float(board_linear_robot[0]),
@@ -308,6 +314,7 @@ class BoardSteerDirection:
             "board_velocity_direction_deg": math.degrees(relative_velocity_angle),
             "board_yaw_rate": board_yaw_rate,
             "board_yaw_delta_rate": yaw_delta_rate,
+            "board_heading_delta_deg": heading_delta_deg,
             "steer_source": source,
             "steer_candidate": direction,
             "steer_confirm_frames": self.candidate_frames,
@@ -440,7 +447,6 @@ def run_live(args: argparse.Namespace) -> int:
         def report_phase(
             self,
             phase: str,
-            reasons: Sequence[str] = (),
             diagnostics: Mapping[str, Any] | None = None,
             force: bool = False,
         ) -> None:
@@ -455,26 +461,14 @@ def run_live(args: argparse.Namespace) -> int:
             self.last_status_time = sim_time
             self.last_reported_phase = phase
             details = diagnostics or {}
-            detail = f" ({', '.join(reasons)})" if reasons else ""
-            state = (
-                f"tilt={details.get('tilt_deg', 0.0):.1f}deg "
-                f"height={details.get('root_height', 0.0):.2f} "
-                f"feet={'board' if details.get('feet_on_board') else 'off'} "
-                f"confirm={details.get('confirm_frames', 0)} "
-                f"clock={details.get('phase_value', 0.0):.3f} "
-                f"steer_dir={details.get('steer_direction', '-')} "
-                f"candidate={details.get('steer_candidate', '-')} "
-                f"source={details.get('steer_source', '-')} "
-                f"vel_dir={details.get('board_velocity_direction_deg', 0.0):.1f}deg"
-            )
             line = (
-                f"[STATUS] t={sim_time:.2f}s phase={phase} "
-                f"v={sim_module.v:.1f} h={sim_module.h:.2f} {state}{detail}"
+                f"t={sim_time:.2f}s phase={phase} "
+                f"board_delta={details.get('board_heading_delta_deg', 0.0):+.2f}deg"
             )
             if changed or force:
                 print(f"\n[PHASE] {line}", flush=True)
             else:
-                sys.stdout.write(f"\r{line.ljust(190)[:190]}")
+                sys.stdout.write(f"\r[STATUS] {line.ljust(80)[:80]}")
                 sys.stdout.flush()
 
         def reset_fall_state(self) -> None:
@@ -499,7 +493,7 @@ def run_live(args: argparse.Namespace) -> int:
         def extract_data(self) -> Any:
             values = super().extract_data()
             phase, phase_value = self.phase_clock.next()
-            fallen, reasons, diagnostics = self.fall_detector.check(self.data)
+            fallen, _, diagnostics = self.fall_detector.check(self.data)
             steer_direction, steer_diagnostics = self.steer_direction.classify(
                 self.data, float(sim_module.h)
             )
@@ -510,7 +504,7 @@ def run_live(args: argparse.Namespace) -> int:
                 phase = f"steer_{steer_direction}"
             diagnostics["steer_direction"] = steer_direction
             diagnostics["phase_value"] = phase_value
-            self.report_phase(phase, reasons, diagnostics)
+            self.report_phase(phase, diagnostics)
             return values
 
     controller = LiveController(
@@ -518,11 +512,6 @@ def run_live(args: argparse.Namespace) -> int:
         policy_path=str(policy),
         device=args.device,
         policy_frequency=args.policy_frequency,
-    )
-    print(
-        "[PHASE] official fixed schedule: "
-        "push(0.0-0.4), push2steer(0.4-0.5), "
-        "steer(0.5-0.95), steer2push(0.95-1.0); fall overrides"
     )
     controller.run()
     return 0
