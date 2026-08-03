@@ -20,6 +20,8 @@ train/dataset/*
 !train/dataset/BFM-Zero/
 train/dataset/BFM-Zero/*
 !train/dataset/BFM-Zero/data_info.md
+!train/dataset/skate-expert-pose/
+!train/dataset/skate-expert-pose/**
 *.ckpt
 *.onnx
 *.pt
