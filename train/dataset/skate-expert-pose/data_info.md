@@ -98,8 +98,6 @@ behavior but does not alter the official arrays.
 - `DYNAMIC_STEER_EXPERT_NOT_FOUND`
 - No independently recorded dynamic transition motion was found.
 - `transition_pose/` is currently empty.
-- `unknown/` is currently empty; all four official files were classified from
-  source usage and array structure.
 - The current data contains no online FB rollout.
 - The current data contains no teacher pseudo-expert.
 - The current data has not been converted into BFM-compatible observations.
