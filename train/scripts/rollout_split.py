@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib.util
 import json
 import math
 import pickle
 import re
 import shutil
 import sys
+import threading
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -173,15 +175,238 @@ class KeySegmentRecorder:
             writer.writerows(events)
 
 
+class LivePhaseTracker:
+    """State machine for the six phases shown during a live rollout."""
+
+    def __init__(self, transition_duration: float) -> None:
+        self.transition_duration = transition_duration
+        self.stable_phase = "push"
+        self.phase = "push"
+        self.transition_target: str | None = None
+        self.transition_end = 0.0
+        self.fall_latched = False
+
+    @staticmethod
+    def category(phase: str) -> str:
+        return "push" if phase == "push" else "steer"
+
+    def reset(self) -> None:
+        self.stable_phase = "push"
+        self.phase = "push"
+        self.transition_target = None
+        self.transition_end = 0.0
+        self.fall_latched = False
+
+    def update(self, target_phase: str, sim_time: float) -> str:
+        if self.fall_latched:
+            return "fall"
+        if self.transition_target is not None:
+            if target_phase == self.stable_phase:
+                self.transition_target = None
+                self.phase = self.stable_phase
+            elif sim_time >= self.transition_end:
+                self.stable_phase = self.transition_target
+                self.phase = self.stable_phase
+                self.transition_target = None
+            return self.phase
+        if target_phase == self.stable_phase:
+            self.phase = self.stable_phase
+            return self.phase
+        if self.category(target_phase) == self.category(self.stable_phase):
+            self.stable_phase = target_phase
+            self.phase = target_phase
+            return self.phase
+        self.transition_target = target_phase
+        self.transition_end = sim_time + self.transition_duration
+        self.phase = "push2steer" if self.stable_phase == "push" else "steer2push"
+        return self.phase
+
+    def mark_fall(self) -> str:
+        self.fall_latched = True
+        self.transition_target = None
+        self.phase = "fall"
+        return self.phase
+
+
+class LiveFallDetector:
+    """Mirror the confirmed HUSKY skater termination conditions in MuJoCo."""
+
+    _illegal_geom = re.compile(
+        r"(left|right)_(shin|linkage_brace|shoulder_yaw|elbow_yaw|wrist|hand)_collision"
+        r"|robot/pelvis_collision$"
+    )
+
+    def __init__(self, model: Any, orientation_limit_deg: float) -> None:
+        self.model = model
+        self.orientation_limit_deg = orientation_limit_deg
+        self.foot_geoms: set[int] = set()
+        self.board_geoms: set[int] = set()
+        self.illegal_geoms: set[int] = set()
+        import mujoco
+
+        for geom_id in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+            if not name:
+                continue
+            if re.search(r"robot/(left|right)_foot[0-9]+_collision$", name):
+                self.foot_geoms.add(geom_id)
+            if name == "skateboard/skateboard_deck_collision":
+                self.board_geoms.add(geom_id)
+            if self._illegal_geom.search(name):
+                self.illegal_geoms.add(geom_id)
+
+    def check(self, data: Any) -> tuple[bool, list[str]]:
+        qw, qx, qy, qz = np.asarray(data.qpos[3:7], dtype=float)
+        norm = np.linalg.norm((qw, qx, qy, qz))
+        if norm <= 0.0:
+            tilt_deg = 180.0
+        else:
+            qw, qx, qy, qz = np.asarray((qw, qx, qy, qz)) / norm
+            gravity_z = 1.0 - 2.0 * (qx * qx + qy * qy)
+            tilt_deg = math.degrees(math.acos(np.clip(gravity_z, -1.0, 1.0)))
+
+        reasons = []
+        if tilt_deg > self.orientation_limit_deg:
+            reasons.append(f"fell_over:{tilt_deg:.1f}deg")
+        feet_on_board = False
+        illegal_contact = False
+        for contact_index in range(data.ncon):
+            contact = data.contact[contact_index]
+            geom_a, geom_b = contact.geom1, contact.geom2
+            if (geom_a in self.foot_geoms and geom_b in self.board_geoms) or (
+                geom_b in self.foot_geoms and geom_a in self.board_geoms
+            ):
+                feet_on_board = True
+            if geom_a in self.illegal_geoms or geom_b in self.illegal_geoms:
+                illegal_contact = True
+        if not feet_on_board:
+            reasons.append("feet_off_board")
+        if illegal_contact:
+            reasons.append("illegal_contact")
+        return bool(reasons), reasons
+
+
+def load_upstream_sim(robot_xml: Path) -> Any:
+    sim_path = robot_xml.resolve().parent / "sim.py"
+    if not sim_path.is_file():
+        raise FileNotFoundError(f"official HUSKY sim.py not found beside {robot_xml}")
+    spec = importlib.util.spec_from_file_location("skate_bfm_upstream_sim", sim_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"unable to load HUSKY sim.py from {sim_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_live(args: argparse.Namespace) -> int:
+    """Run the existing HUSKY controller while reporting phase changes."""
+    robot_xml = args.robot_xml.resolve()
+    policy = args.policy.resolve()
+    if not robot_xml.is_file():
+        raise FileNotFoundError(robot_xml)
+    if not policy.is_file():
+        raise FileNotFoundError(policy)
+
+    sim_module = load_upstream_sim(robot_xml)
+    phase_target = {"value": "push"}
+    phase_lock = threading.Lock()
+
+    def on_phase_key(key: Any) -> None:
+        phase = None
+        if key == sim_module.keyboard.Key.up:
+            phase = "push"
+        elif key == sim_module.keyboard.Key.down:
+            phase = "push"
+        elif key == sim_module.keyboard.Key.left:
+            phase = "steer_left"
+        elif key == sim_module.keyboard.Key.right:
+            phase = "steer_right"
+        elif key == sim_module.keyboard.Key.enter:
+            phase = "push"
+        elif hasattr(key, "char") and key.char == "5":
+            phase = "push"
+        if phase is not None:
+            with phase_lock:
+                phase_target["value"] = phase
+
+    class LiveController(sim_module.RealTimePolicyController):
+        def __init__(self, *controller_args: Any, **controller_kwargs: Any) -> None:
+            super().__init__(*controller_args, **controller_kwargs)
+            self.phase_tracker = LivePhaseTracker(args.transition_duration)
+            self.fall_detector = LiveFallDetector(self.model, args.fall_orientation_deg)
+            self.last_reported_phase: str | None = None
+
+        def report_phase(self, phase: str, reasons: Sequence[str] = ()) -> None:
+            if phase == self.last_reported_phase:
+                return
+            self.last_reported_phase = phase
+            detail = f" ({', '.join(reasons)})" if reasons else ""
+            print(
+                f"\n[PHASE] t={self.data.time:.3f}s "
+                f"phase={phase} v={sim_module.v:.1f} h={sim_module.h:.2f}{detail}"
+            )
+
+        def reset(self, init_pos: np.ndarray) -> None:
+            super().reset(init_pos)
+            with phase_lock:
+                phase_target["value"] = "push"
+            self.phase_tracker.reset()
+            self.last_reported_phase = None
+            self.report_phase("push")
+
+        def extract_data(self) -> Any:
+            values = super().extract_data()
+            fallen, reasons = self.fall_detector.check(self.data)
+            if fallen:
+                phase = self.phase_tracker.mark_fall()
+            else:
+                with phase_lock:
+                    target = phase_target["value"]
+                phase = self.phase_tracker.update(target, float(self.data.time))
+            self.report_phase(phase, reasons if fallen else ())
+            return values
+
+    listener = sim_module.keyboard.Listener(on_press=on_phase_key)
+    listener.daemon = True
+    listener.start()
+    try:
+        controller = LiveController(
+            xml_file=str(robot_xml),
+            policy_path=str(policy),
+            device=args.device,
+            policy_frequency=args.policy_frequency,
+        )
+        print(
+            "[PHASE] live classifier started: "
+            "up/down=push, left=steer_left, right=steer_right, "
+            "fall overrides all phases"
+        )
+        controller.run()
+    finally:
+        listener.stop()
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--rollout", type=Path, required=True)
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Run the official HUSKY controller with real-time phase output.",
+    )
+    parser.add_argument("--rollout", type=Path)
     parser.add_argument("--key-events", type=Path)
     parser.add_argument("--key-map", type=Path)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--episode-id", required=True)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--episode-id")
     parser.add_argument("--video", type=Path)
     parser.add_argument("--robot-xml", type=Path)
+    parser.add_argument("--policy", type=Path)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--policy-frequency", type=int, default=50)
+    parser.add_argument("--transition-duration", type=float, default=0.5)
+    parser.add_argument("--fall-orientation-deg", type=float, default=70.0)
     parser.add_argument("--fps", type=float)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--include-neutral", action="store_true")
@@ -193,7 +418,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-reset-ignore", type=float, default=0.2)
     parser.add_argument("--root-height-min", type=float)
     parser.add_argument("--root-tilt-max-deg", type=float)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.live:
+        if args.robot_xml is None or args.policy is None:
+            parser.error("--live requires --robot-xml and --policy")
+        if args.policy_frequency <= 0:
+            parser.error("--policy-frequency must be positive")
+        if args.transition_duration < 0:
+            parser.error("--transition-duration must be non-negative")
+    else:
+        missing = [
+            option
+            for option, value in (
+                ("--rollout", args.rollout),
+                ("--output-dir", args.output_dir),
+                ("--episode-id", args.episode_id),
+            )
+            if value is None
+        ]
+        if missing:
+            parser.error(f"split mode requires {', '.join(missing)}")
+    return args
 
 
 def sha256(path: Path) -> str:
@@ -1239,16 +1484,8 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
-    for argument_name in ("rollout", "key_events", "key_map", "video", "robot_xml"):
-        input_path = getattr(args, argument_name)
-        if input_path is not None and not input_path.is_file():
-            print(
-                f"Input file for --{argument_name.replace('_', '-')} does not exist: "
-                f"{input_path}\n"
-                "Replace the example path with an actual local file.",
-                file=sys.stderr,
-            )
-            return 2
+    if args.live:
+        return run_live(args)
     source_hash_before = sha256(args.rollout)
     rollout = load_rollout(args.rollout)
     video_info = video_metadata(args.video)
