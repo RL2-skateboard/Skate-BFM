@@ -7,11 +7,16 @@ __pycache__/
 .vscode/
 
 checkpoints/
-model/
+model/*
+!model/motion_library/
+model/motion_library/*
+!model/motion_library/README.md
 data/
 outputs/
 runs/
 wandb/
+train/dataset/*
+!train/dataset/README.md
 *.ckpt
 *.onnx
 *.pt

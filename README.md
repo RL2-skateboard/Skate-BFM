@@ -200,13 +200,16 @@ Skate-BFM/
 ├── husky_sim/
 │   ├── src/skate_husky/     # Lightweight project runtime
 │   └── upstream/            # Pinned official HUSKY submodule
-├── model/                    # Ignored local source and model checkpoints
+├── model/
+│   └── motion_library/       # Ignored trained motion-library outputs
 ├── scripts/                 # Environment setup
 ├── src/skate_bfm/
 │   ├── bfm0/                # BFM0 model interface
 │   ├── exp/                  # Formal experiments
 │   └── integration/         # Action and observation adapters
-└── tests/                   # Development tests
+├── tests/                   # Development tests
+└── train/
+    └── dataset/             # Local training and preprocessing data
 ```
 
 ## Research Direction
