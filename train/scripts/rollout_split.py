@@ -1239,6 +1239,16 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+    for argument_name in ("rollout", "key_events", "key_map", "video", "robot_xml"):
+        input_path = getattr(args, argument_name)
+        if input_path is not None and not input_path.is_file():
+            print(
+                f"Input file for --{argument_name.replace('_', '-')} does not exist: "
+                f"{input_path}\n"
+                "Replace the example path with an actual local file.",
+                file=sys.stderr,
+            )
+            return 2
     source_hash_before = sha256(args.rollout)
     rollout = load_rollout(args.rollout)
     video_info = video_metadata(args.video)
