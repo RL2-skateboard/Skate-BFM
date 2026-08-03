@@ -205,29 +205,15 @@ class OfficialPhaseClock:
 
 
 class BoardSteerDirection:
-    """Infer left/right/forward from skateboard motion relative to the robot."""
+    """Track board heading while deriving steering direction only from h."""
 
-    def __init__(self, model: Any, confirm_frames: int = 5) -> None:
-        import mujoco
-
-        self.model = model
-        self.confirm_frames = max(1, confirm_frames)
-        self.stable_direction = "forward"
-        self.candidate_direction = "forward"
-        self.candidate_frames = 0
+    def __init__(self, model: Any) -> None:
         self.previous_board_yaw: float | None = None
-        self.previous_time: float | None = None
         self.board_heading_delta = 0.0
-        self.robot_body_id = model.body("robot/pelvis").id
         self.board_body_id = model.body("skateboard/skateboard_deck").id
-        self.mujoco = mujoco
 
     def reset(self) -> None:
-        self.stable_direction = "forward"
-        self.candidate_direction = "forward"
-        self.candidate_frames = 0
         self.previous_board_yaw = None
-        self.previous_time = None
         self.board_heading_delta = 0.0
 
     @staticmethod
@@ -235,77 +221,24 @@ class BoardSteerDirection:
         return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
     def classify(self, data: Any, command_h: float = 0.0) -> tuple[str, dict[str, Any]]:
-        robot_mat = data.xmat[self.robot_body_id].reshape(3, 3)
         board_mat = data.xmat[self.board_body_id].reshape(3, 3)
-        robot_yaw = math.atan2(robot_mat[1, 0], robot_mat[0, 0])
         board_yaw = math.atan2(board_mat[1, 0], board_mat[0, 0])
-        relative_yaw = self.wrap_angle(board_yaw - robot_yaw)
-        board_yaw_delta = 0.0
         if self.previous_board_yaw is not None:
-            board_yaw_delta = self.wrap_angle(board_yaw - self.previous_board_yaw)
-            self.board_heading_delta += board_yaw_delta
-        yaw_delta_rate = (
-            board_yaw_delta / (float(data.time) - self.previous_time)
-            if self.previous_time is not None and float(data.time) > self.previous_time
-            else 0.0
-        )
+            self.board_heading_delta += self.wrap_angle(board_yaw - self.previous_board_yaw)
         self.previous_board_yaw = board_yaw
-        self.previous_time = float(data.time)
 
-        velocity = np.zeros(6, dtype=float)
-        self.mujoco.mj_objectVelocity(
-            self.model,
-            data,
-            self.mujoco.mjtObj.mjOBJ_BODY,
-            self.board_body_id,
-            velocity,
-            0,
-        )
-        board_linear_world = velocity[3:]
-        board_linear_robot = robot_mat.T @ board_linear_world
-        board_yaw_rate = float(velocity[2])
-
-        planar_speed = float(np.linalg.norm(board_linear_robot[:2]))
-        relative_velocity_angle = math.atan2(
-            float(board_linear_robot[1]),
-            max(abs(float(board_linear_robot[0])), 1e-6),
-        )
-        heading_delta_rate = -yaw_delta_rate
-        heading_rate_threshold = math.radians(2.0)
-        if abs(heading_delta_rate) >= heading_rate_threshold:
-            direction = "left" if heading_delta_rate < 0.0 else "right"
-            source = "board_heading_delta_rate"
-        elif abs(command_h) >= 0.05:
-            direction = "left" if command_h > 0.0 else "right"
-            source = "command_h_fallback"
+        if command_h > 0.0:
+            direction = "left"
+        elif command_h < 0.0:
+            direction = "right"
         else:
             direction = "forward"
-            source = "forward"
-
-        if direction == self.candidate_direction:
-            self.candidate_frames += 1
-        else:
-            self.candidate_direction = direction
-            self.candidate_frames = 1
-        if self.candidate_frames >= self.confirm_frames:
-            self.stable_direction = self.candidate_direction
 
         heading_delta_deg = -math.degrees(self.board_heading_delta)
         if abs(heading_delta_deg) < 0.005:
             heading_delta_deg = 0.0
-        return self.stable_direction, {
-            "board_rel_yaw_deg": math.degrees(relative_yaw),
-            "board_vx_robot": float(board_linear_robot[0]),
-            "board_vy_robot": float(board_linear_robot[1]),
-            "board_planar_speed": planar_speed,
-            "board_velocity_direction_deg": math.degrees(relative_velocity_angle),
-            "board_yaw_rate": board_yaw_rate,
-            "board_yaw_delta_rate": yaw_delta_rate,
-            "board_heading_delta_rate": heading_delta_rate,
+        return direction, {
             "board_heading_delta_deg": heading_delta_deg,
-            "steer_source": source,
-            "steer_candidate": direction,
-            "steer_confirm_frames": self.candidate_frames,
         }
 
 
@@ -418,10 +351,7 @@ def run_live(args: argparse.Namespace) -> int:
         def __init__(self, *controller_args: Any, **controller_kwargs: Any) -> None:
             super().__init__(*controller_args, **controller_kwargs)
             self.phase_clock = OfficialPhaseClock(args.policy_frequency, args.cycle_time)
-            direction_confirm_frames = max(
-                1, round(args.steer_confirm_time * args.policy_frequency)
-            )
-            self.steer_direction = BoardSteerDirection(self.model, direction_confirm_frames)
+            self.steer_direction = BoardSteerDirection(self.model)
             confirm_frames = max(1, round(args.fall_confirm_time * args.policy_frequency))
             self.fall_detector = LiveFallDetector(
                 self.model,
@@ -431,6 +361,9 @@ def run_live(args: argparse.Namespace) -> int:
             )
             self.last_reported_phase: str | None = None
             self.last_status_time = -math.inf
+            self.last_output_heading: float | None = None
+            self.steer_start_heading: float | None = None
+            self.in_steer_phase = False
 
         def report_phase(
             self,
@@ -449,9 +382,23 @@ def run_live(args: argparse.Namespace) -> int:
             self.last_status_time = sim_time
             self.last_reported_phase = phase
             details = diagnostics or {}
+            current_heading = float(details.get("board_heading_delta_deg", 0.0))
+            previous_delta = (
+                0.0
+                if self.last_output_heading is None
+                else current_heading - self.last_output_heading
+            )
+            self.last_output_heading = current_heading
+            steer_delta = (
+                None
+                if self.steer_start_heading is None
+                else current_heading - self.steer_start_heading
+            )
+            steer_delta_text = "--" if steer_delta is None else f"{steer_delta:+.2f}deg"
             line = (
                 f"t={sim_time:.2f}s phase={phase} "
-                f"board_delta={details.get('board_heading_delta_deg', 0.0):+.2f}deg"
+                f"delta_prev={previous_delta:+.2f}deg "
+                f"delta_steer={steer_delta_text}"
             )
             if changed or force:
                 print(f"\n[PHASE] {line}", flush=True)
@@ -465,6 +412,9 @@ def run_live(args: argparse.Namespace) -> int:
             self.steer_direction.reset()
             self.last_reported_phase = None
             self.last_status_time = -math.inf
+            self.last_output_heading = None
+            self.steer_start_heading = None
+            self.in_steer_phase = False
 
         def reset(self, init_pos: np.ndarray) -> None:
             super().reset(init_pos)
@@ -486,6 +436,13 @@ def run_live(args: argparse.Namespace) -> int:
                 self.data, float(sim_module.h)
             )
             diagnostics.update(steer_diagnostics)
+            in_steer_phase = phase == "steer"
+            current_heading = float(diagnostics["board_heading_delta_deg"])
+            if in_steer_phase and not self.in_steer_phase:
+                self.steer_start_heading = current_heading
+            elif not in_steer_phase:
+                self.steer_start_heading = None
+            self.in_steer_phase = in_steer_phase
             if fallen:
                 phase = "fall"
             elif phase == "steer":
