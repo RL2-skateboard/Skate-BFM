@@ -215,6 +215,8 @@ class BoardSteerDirection:
         self.stable_direction = "forward"
         self.candidate_direction = "forward"
         self.candidate_frames = 0
+        self.previous_board_yaw: float | None = None
+        self.previous_time: float | None = None
         self.robot_body_id = model.body("robot/pelvis").id
         self.board_body_id = model.body("skateboard/skateboard_deck").id
         self.mujoco = mujoco
@@ -223,17 +225,29 @@ class BoardSteerDirection:
         self.stable_direction = "forward"
         self.candidate_direction = "forward"
         self.candidate_frames = 0
+        self.previous_board_yaw = None
+        self.previous_time = None
 
     @staticmethod
     def wrap_angle(angle: float) -> float:
         return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
-    def classify(self, data: Any) -> tuple[str, dict[str, float]]:
+    def classify(self, data: Any, command_h: float = 0.0) -> tuple[str, dict[str, Any]]:
         robot_mat = data.xmat[self.robot_body_id].reshape(3, 3)
         board_mat = data.xmat[self.board_body_id].reshape(3, 3)
         robot_yaw = math.atan2(robot_mat[1, 0], robot_mat[0, 0])
         board_yaw = math.atan2(board_mat[1, 0], board_mat[0, 0])
         relative_yaw = self.wrap_angle(board_yaw - robot_yaw)
+        board_yaw_delta = 0.0
+        if self.previous_board_yaw is not None:
+            board_yaw_delta = self.wrap_angle(board_yaw - self.previous_board_yaw)
+        yaw_delta_rate = (
+            board_yaw_delta / (float(data.time) - self.previous_time)
+            if self.previous_time is not None and float(data.time) > self.previous_time
+            else 0.0
+        )
+        self.previous_board_yaw = board_yaw
+        self.previous_time = float(data.time)
 
         velocity = np.zeros(6, dtype=float)
         self.mujoco.mj_objectVelocity(
@@ -248,17 +262,23 @@ class BoardSteerDirection:
         board_linear_robot = robot_mat.T @ board_linear_world
         board_yaw_rate = float(velocity[2])
 
-        yaw_threshold = math.radians(4.0)
         lateral_speed_threshold = 0.05
         yaw_rate_threshold = 0.05
-        if abs(relative_yaw) >= yaw_threshold:
-            direction = "left" if relative_yaw > 0.0 else "right"
-        elif abs(board_yaw_rate) >= yaw_rate_threshold:
+        if abs(board_yaw_rate) >= yaw_rate_threshold:
             direction = "left" if board_yaw_rate > 0.0 else "right"
+            source = "board_yaw_rate"
+        elif abs(yaw_delta_rate) >= yaw_rate_threshold:
+            direction = "left" if yaw_delta_rate > 0.0 else "right"
+            source = "board_yaw_delta"
         elif abs(board_linear_robot[1]) >= lateral_speed_threshold:
             direction = "left" if board_linear_robot[1] > 0.0 else "right"
+            source = "board_lateral_velocity"
+        elif abs(command_h) >= 0.05:
+            direction = "left" if command_h > 0.0 else "right"
+            source = "command_h_fallback"
         else:
             direction = "forward"
+            source = "forward"
 
         if direction == self.candidate_direction:
             self.candidate_frames += 1
@@ -273,6 +293,8 @@ class BoardSteerDirection:
             "board_vx_robot": float(board_linear_robot[0]),
             "board_vy_robot": float(board_linear_robot[1]),
             "board_yaw_rate": board_yaw_rate,
+            "board_yaw_delta_rate": yaw_delta_rate,
+            "steer_source": source,
             "steer_candidate": direction,
             "steer_confirm_frames": self.candidate_frames,
         }
@@ -427,7 +449,9 @@ def run_live(args: argparse.Namespace) -> int:
                 f"confirm={details.get('confirm_frames', 0)} "
                 f"clock={details.get('phase_value', 0.0):.3f} "
                 f"steer_dir={details.get('steer_direction', '-')} "
-                f"candidate={details.get('steer_candidate', '-')}"
+                f"candidate={details.get('steer_candidate', '-')} "
+                f"source={details.get('steer_source', '-')} "
+                f"yaw_rate={details.get('board_yaw_rate', 0.0):.2f}"
             )
             line = (
                 f"[STATUS] t={sim_time:.2f}s phase={phase} "
@@ -436,7 +460,7 @@ def run_live(args: argparse.Namespace) -> int:
             if changed or force:
                 print(f"\n[PHASE] {line}", flush=True)
             else:
-                sys.stdout.write(f"\r{line.ljust(150)[:150]}")
+                sys.stdout.write(f"\r{line.ljust(190)[:190]}")
                 sys.stdout.flush()
 
         def reset_fall_state(self) -> None:
@@ -450,7 +474,9 @@ def run_live(args: argparse.Namespace) -> int:
             super().reset(init_pos)
             self.reset_fall_state()
             _, _, diagnostics = self.fall_detector.check(self.data)
-            steer_direction, steer_diagnostics = self.steer_direction.classify(self.data)
+            steer_direction, steer_diagnostics = self.steer_direction.classify(
+                self.data, float(sim_module.h)
+            )
             diagnostics.update(steer_diagnostics)
             diagnostics["steer_direction"] = steer_direction
             diagnostics["phase_value"] = 0.0
@@ -460,7 +486,9 @@ def run_live(args: argparse.Namespace) -> int:
             values = super().extract_data()
             phase, phase_value = self.phase_clock.next()
             fallen, reasons, diagnostics = self.fall_detector.check(self.data)
-            steer_direction, steer_diagnostics = self.steer_direction.classify(self.data)
+            steer_direction, steer_diagnostics = self.steer_direction.classify(
+                self.data, float(sim_module.h)
+            )
             diagnostics.update(steer_diagnostics)
             if fallen:
                 phase = "fall"
