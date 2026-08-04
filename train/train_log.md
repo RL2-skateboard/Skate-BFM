@@ -19,3 +19,10 @@
 - Completed: verified the official fixed phase schedule, added live phase
   output, classified steering from the heading command, tracked skateboard
   heading changes, and refined fall detection.
+
+## 3. Large-Scale Collection Preparation
+
+- Date: 2026-08-04
+- Completed: configured the balanced HUSKY command grid, multi-round parallel
+  collection, resumable target-based replacement rollouts, and separate raw
+  rollout and cleaned expert-motion duration reporting.
