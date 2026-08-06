@@ -12,10 +12,13 @@ mounting, riding, steering, recovery, and safe departure.
 
 ![Skate-BFM engineering progress](docs/assets/project_progress.svg)
 
-**Status as of 2026-08-06:** the repository, BFM0-HUSKY integration, frozen
-BFM0 capability experiments, and expert-data pipeline are complete. The current
-focus is the configured 150-minute HUSKY raw-rollout collection. Motion-library
-training follows after raw and cleaned expert durations are audited.
+**Status as of 2026-08-06:** the official BFM0-HUSKY foundation and matched
+frozen-BFM0 capability audit are complete. The project is now developing the
+Skate-BFM Motion Library; its current substage is the configured 150-minute
+HUSKY expert-rollout collection. The data tooling is complete, but the Motion
+Library itself has not been trained. Interaction-JEPA, predictive closed-loop
+planning, and complete skateboarding-task evaluation remain later project
+modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.
