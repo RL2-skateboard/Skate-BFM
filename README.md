@@ -22,13 +22,14 @@ Skate-BFM policy or a complete skateboarding controller.
 
 ![Skate-BFM engineering progress](docs/assets/project_progress.svg)
 
-**Status as of 2026-08-06:** repository setup, BFM0-HUSKY integration, the
-matched frozen-BFM0 H1 experiments, and the expert-data pipeline are complete.
-The current project milestone is the configured 150-minute HUSKY raw-rollout
-collection on the
+**Status as of 2026-08-06:** the official BFM0-HUSKY foundation and matched
+frozen-BFM0 capability audit are complete. The project is now developing the
+Skate-BFM Motion Library; its current substage is the configured 150-minute
+HUSKY expert-rollout collection on the
 [`train` branch](https://github.com/RL2-skateboard/Skate-BFM/tree/train).
-Motion-library training and formal Skate-BFM evaluation follow after raw and
-cleaned expert durations are audited.
+The data tooling is complete, but the Motion Library itself has not been
+trained. Interaction-JEPA, predictive closed-loop planning, and complete
+skateboarding-task evaluation remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, [`docs/exp_logs.md`](docs/exp_logs.md), and the training-branch
