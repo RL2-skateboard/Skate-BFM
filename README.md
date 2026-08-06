@@ -18,6 +18,22 @@ time-aligned expert latent trajectories, followed by trajectory-local CEM.
 These are short-horizon behavior-coverage experiments, not a trained
 Skate-BFM policy or a complete skateboarding controller.
 
+## Engineering Progress
+
+![Skate-BFM engineering progress](docs/assets/project_progress.svg)
+
+**Status as of 2026-08-06:** repository setup, BFM0-HUSKY integration, the
+matched frozen-BFM0 H1 experiments, and the expert-data pipeline are complete.
+The current project milestone is the configured 150-minute HUSKY raw-rollout
+collection on the
+[`train` branch](https://github.com/RL2-skateboard/Skate-BFM/tree/train).
+Motion-library training and formal Skate-BFM evaluation follow after raw and
+cleaned expert durations are audited.
+
+This section is the project-level progress snapshot. Update the date, current
+stage, image, [`docs/exp_logs.md`](docs/exp_logs.md), and the training-branch
+records together whenever a milestone changes.
+
 ## Setup
 
 Clone the repository with the pinned HUSKY submodule:
