@@ -1,6 +1,6 @@
 {
   "round_start": 1,
-  "round_count": 8,
+  "round_count": 10,
   "rollouts_per_round": 15,
   "parallel_workers": 2,
   "rollout_start": 1,
@@ -28,7 +28,7 @@
     1.25,
     1.5
   ],
-  "target_raw_minutes": 120,
+  "target_raw_minutes": 150,
   "max_extra_rounds": 4,
   "plan_seed": 20260804,
   "max_policy_frames": 3000,

@@ -46,21 +46,21 @@ interactive viewer and keyboard controls. A confirmed fall, Enter reset,
 viewer close, or `--max-policy-frames` ends the rollout.
 
 The checked-in [`rollout_config.json`](scripts/rollout_config.json) defines the
-formal 120-minute collection:
+formal 150-minute collection:
 
 ```bash
 python train/scripts/rollout_split.py --parallel-config
 ```
 
-The baseline plan uses eight rounds with 15 rollouts per round. Each rollout
+The baseline plan uses ten rounds with 15 rollouts per round. Each rollout
 targets 3000 frames at 50 Hz, or 60 seconds. Heading commands cover -0.7 through
 0.7 in 0.1 steps, and forward commands cover 0.50, 0.75, 1.00, 1.25, and 1.50.
-The resulting 120-rollout grid assigns eight rollouts to every heading and 24
+The resulting 150-rollout grid assigns ten rollouts to every heading and 30
 rollouts to every velocity. Two workers run concurrently.
 
-The 120-minute target is measured from the actual number of raw frames, not the
+The 150-minute target is measured from the actual number of raw frames, not the
 planned episode count. Early falls therefore reduce accumulated raw duration.
-When the eight baseline rounds do not reach the target, replacement rollouts
+When the ten baseline rounds do not reach the target, replacement rollouts
 are scheduled under additional rounds, up to the configured limit. Motion
 categories are accepted in their natural recorded proportions; no category
 quota or resampling is applied.
@@ -74,7 +74,7 @@ train/dataset/skate-expert-pose/train/
 ├── round_001/
 │   ├── rollout_001/
 │   └── ...
-└── round_008/
+└── round_010/
 ```
 
 `collection_summary.json` reports raw duration separately from cleaned expert
