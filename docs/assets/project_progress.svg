@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="650" viewBox="0 0 1600 650" role="img" aria-labelledby="title desc">
+  <title id="title">Skate-BFM engineering progress as of 2026-08-06</title>
+  <desc id="desc">Four stages complete, expert rollout collection is current, motion-library training is next, and formal evaluation is planned.</desc>
+
+  <rect width="1600" height="650" fill="#f8fafc"/>
+  <rect x="0" y="0" width="1600" height="12" fill="#2563eb"/>
+
+  <text x="48" y="66" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700">Skate-BFM Engineering Progress</text>
+  <text x="48" y="100" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="17">As of 2026-08-06</text>
+
+  <rect x="1060" y="38" width="492" height="72" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="2"/>
+  <text x="1084" y="67" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">CURRENT FOCUS</text>
+  <text x="1084" y="93" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="600">150 min HUSKY raw rollout collection</text>
+
+  <text x="48" y="157" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">4 COMPLETE</text>
+  <text x="166" y="157" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="15">/ 7 ENGINEERING STAGES</text>
+
+  <line x1="100" y1="220" x2="1498" y2="220" stroke="#cbd5e1" stroke-width="8" stroke-linecap="round"/>
+  <line x1="100" y1="220" x2="799" y2="220" stroke="#1f7a4d" stroke-width="8" stroke-linecap="round"/>
+  <line x1="799" y1="220" x2="1032" y2="220" stroke="#d97706" stroke-width="8"/>
+
+  <g font-family="Inter, Arial, sans-serif" text-anchor="middle">
+    <circle cx="100" cy="220" r="18" fill="#1f7a4d"/>
+    <text x="100" y="226" fill="#ffffff" font-size="16" font-weight="700">1</text>
+    <circle cx="333" cy="220" r="18" fill="#1f7a4d"/>
+    <text x="333" y="226" fill="#ffffff" font-size="16" font-weight="700">2</text>
+    <circle cx="566" cy="220" r="18" fill="#1f7a4d"/>
+    <text x="566" y="226" fill="#ffffff" font-size="16" font-weight="700">3</text>
+    <circle cx="799" cy="220" r="18" fill="#1f7a4d"/>
+    <text x="799" y="226" fill="#ffffff" font-size="16" font-weight="700">4</text>
+    <circle cx="1032" cy="220" r="22" fill="#d97706" stroke="#ffedd5" stroke-width="7"/>
+    <text x="1032" y="226" fill="#ffffff" font-size="16" font-weight="700">5</text>
+    <circle cx="1265" cy="220" r="18" fill="#94a3b8"/>
+    <text x="1265" y="226" fill="#ffffff" font-size="16" font-weight="700">6</text>
+    <circle cx="1498" cy="220" r="18" fill="#94a3b8"/>
+    <text x="1498" y="226" fill="#ffffff" font-size="16" font-weight="700">7</text>
+  </g>
+
+  <g font-family="Inter, Arial, sans-serif">
+    <rect x="24" y="278" width="190" height="226" rx="6" fill="#ffffff" stroke="#a7d8be" stroke-width="2"/>
+    <rect x="24" y="278" width="190" height="8" rx="4" fill="#1f7a4d"/>
+    <text x="42" y="319" fill="#1f7a4d" font-size="13" font-weight="700">DONE</text>
+    <text x="42" y="354" fill="#17212b" font-size="20" font-weight="700">Foundation</text>
+    <text x="42" y="385" fill="#475569" font-size="15">Repository</text>
+    <text x="42" y="409" fill="#475569" font-size="15">Conda environment</text>
+    <text x="42" y="433" fill="#475569" font-size="15">Official sources</text>
+
+    <rect x="251" y="278" width="190" height="226" rx="6" fill="#ffffff" stroke="#a7d8be" stroke-width="2"/>
+    <rect x="251" y="278" width="190" height="8" rx="4" fill="#1f7a4d"/>
+    <text x="269" y="319" fill="#1f7a4d" font-size="13" font-weight="700">DONE</text>
+    <text x="269" y="354" fill="#17212b" font-size="20" font-weight="700">Integration</text>
+    <text x="269" y="385" fill="#475569" font-size="15">BFM0 interface</text>
+    <text x="269" y="409" fill="#475569" font-size="15">HUSKY runtime</text>
+    <text x="269" y="433" fill="#475569" font-size="15">Action adapters</text>
+
+    <rect x="478" y="278" width="190" height="226" rx="6" fill="#ffffff" stroke="#a7d8be" stroke-width="2"/>
+    <rect x="478" y="278" width="190" height="8" rx="4" fill="#1f7a4d"/>
+    <text x="496" y="319" fill="#1f7a4d" font-size="13" font-weight="700">DONE</text>
+    <text x="496" y="354" fill="#17212b" font-size="20" font-weight="700">Capability</text>
+    <text x="496" y="385" fill="#475569" font-size="15">Frozen BFM0 H1</text>
+    <text x="496" y="409" fill="#475569" font-size="15">Without prior</text>
+    <text x="496" y="433" fill="#475569" font-size="15">With prior</text>
+
+    <rect x="705" y="278" width="190" height="226" rx="6" fill="#ffffff" stroke="#a7d8be" stroke-width="2"/>
+    <rect x="705" y="278" width="190" height="8" rx="4" fill="#1f7a4d"/>
+    <text x="723" y="319" fill="#1f7a4d" font-size="13" font-weight="700">DONE</text>
+    <text x="723" y="354" fill="#17212b" font-size="20" font-weight="700">Data Pipeline</text>
+    <text x="723" y="385" fill="#475569" font-size="15">Live rollout</text>
+    <text x="723" y="409" fill="#475569" font-size="15">Phase split</text>
+    <text x="723" y="433" fill="#475569" font-size="15">BFM conversion</text>
+
+    <rect x="932" y="270" width="200" height="242" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="3"/>
+    <rect x="932" y="270" width="200" height="10" rx="5" fill="#d97706"/>
+    <text x="950" y="315" fill="#9a4d05" font-size="13" font-weight="700">CURRENT</text>
+    <text x="950" y="350" fill="#17212b" font-size="20" font-weight="700">Collection</text>
+    <text x="950" y="381" fill="#475569" font-size="15">150 min raw target</text>
+    <text x="950" y="405" fill="#475569" font-size="15">10 x 15 rollouts</text>
+    <text x="950" y="429" fill="#475569" font-size="15">Raw / expert audit</text>
+    <text x="950" y="472" fill="#9a4d05" font-size="13" font-weight="700">READY TO RUN</text>
+
+    <rect x="1159" y="278" width="190" height="226" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+    <rect x="1159" y="278" width="190" height="8" rx="4" fill="#64748b"/>
+    <text x="1177" y="319" fill="#64748b" font-size="13" font-weight="700">NEXT</text>
+    <text x="1177" y="354" fill="#17212b" font-size="20" font-weight="700">Training</text>
+    <text x="1177" y="385" fill="#475569" font-size="15">Motion library</text>
+    <text x="1177" y="409" fill="#475569" font-size="15">BFM fine-tuning</text>
+    <text x="1177" y="433" fill="#475569" font-size="15">Checkpoints</text>
+
+    <rect x="1386" y="278" width="190" height="226" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+    <rect x="1386" y="278" width="190" height="8" rx="4" fill="#64748b"/>
+    <text x="1404" y="319" fill="#64748b" font-size="13" font-weight="700">PLANNED</text>
+    <text x="1404" y="354" fill="#17212b" font-size="20" font-weight="700">Evaluation</text>
+    <text x="1404" y="385" fill="#475569" font-size="15">Skate benchmarks</text>
+    <text x="1404" y="409" fill="#475569" font-size="15">Ablations</text>
+    <text x="1404" y="433" fill="#475569" font-size="15">Formal results</text>
+  </g>
+
+  <rect x="24" y="556" width="1552" height="58" rx="6" fill="#eef2ff"/>
+  <text x="48" y="591" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="16">
+    Milestone status is maintained in README, train/train_log.md, train/train_res.md, and main-branch experiment records.
+  </text>
+</svg>

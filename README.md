@@ -8,6 +8,20 @@ priors with the HUSKY skateboard simulator. The project studies closed-loop
 humanoid interaction with a freely rolling, underactuated support, including
 mounting, riding, steering, recovery, and safe departure.
 
+## Engineering Progress
+
+![Skate-BFM engineering progress](docs/assets/project_progress.svg)
+
+**Status as of 2026-08-06:** the repository, BFM0-HUSKY integration, frozen
+BFM0 capability experiments, and expert-data pipeline are complete. The current
+focus is the configured 150-minute HUSKY raw-rollout collection. Motion-library
+training follows after raw and cleaned expert durations are audited.
+
+This section is the project-level progress snapshot. Update the date, current
+stage, image, and branch-specific records together whenever a milestone changes.
+Training details belong in [`train/train_log.md`](train/train_log.md) and
+[`train/train_res.md`](train/train_res.md); formal H1 records remain on `main`.
+
 This `train` branch is reserved for model training, dataset preparation,
 checkpoint management, and learned motion-library development. The `main`
 branch remains the reference branch for the BFM0-HUSKY integration and formal

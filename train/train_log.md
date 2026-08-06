@@ -26,3 +26,9 @@
 - Completed: configured the balanced HUSKY command grid, multi-round parallel
   collection, resumable target-based replacement rollouts, and separate raw
   rollout and cleaned expert-motion duration reporting.
+
+## 4. Engineering Progress Tracking
+
+- Date: 2026-08-06
+- Completed: added a shared project milestone graphic and synchronized
+  progress sections for the `train` and `main` branch documentation.

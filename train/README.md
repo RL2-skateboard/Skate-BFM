@@ -17,6 +17,19 @@ Training records start from zero in:
 Large datasets and generated model files are local artifacts and are ignored by
 Git.
 
+## Engineering Progress
+
+![Skate-BFM engineering progress](../docs/assets/project_progress.svg)
+
+**Status as of 2026-08-06:** data tooling and BFM-compatible conversion are
+complete. The current training-branch milestone is the configured 150-minute
+raw-rollout collection, with cleaned expert duration tracked independently.
+Motion-library training starts after collection integrity and coverage are
+reviewed.
+
+Update this snapshot, [`train_log.md`](train_log.md), and
+[`train_res.md`](train_res.md) together whenever the active milestone changes.
+
 ## Expert rollout collection
 
 Activate the repository environment and run one interactive HUSKY rollout:
