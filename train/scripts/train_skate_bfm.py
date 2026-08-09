@@ -89,6 +89,7 @@ class TrainConfig(BaseConfig):
     motions: str | None = None
     motions_root: str | None = None
     skate_expert_motion_file: str | None = None
+    skate_expert_ratio: float = pydantic.Field(default=0.5, ge=0.0, le=1.0)
 
     env: HumanoidVerseIsaacConfig = pydantic.Field(discriminator="name")
 
@@ -178,6 +179,65 @@ class TrainConfig(BaseConfig):
     def build(self):
         """In case of cluster run, use exca and process instead of explivit build"""
         return Workspace(self)
+
+
+class BaseSkateExpertSampler:
+    """Sample complete expert sequences from the Base and Skate buffers."""
+
+    def __init__(self, expert_base, expert_skate, skate_expert_ratio: float) -> None:
+        if expert_base.seq_length != expert_skate.seq_length:
+            raise ValueError(
+                "Base and Skate expert buffers must use the same sequence length, "
+                f"got {expert_base.seq_length} and {expert_skate.seq_length}."
+            )
+        if not 0.0 < skate_expert_ratio <= 1.0:
+            raise ValueError(
+                "BaseSkateExpertSampler requires 0 < skate_expert_ratio <= 1, "
+                f"got {skate_expert_ratio}."
+            )
+        self.expert_base = expert_base
+        self.expert_skate = expert_skate
+        self.skate_expert_ratio = skate_expert_ratio
+        self.seq_length = expert_base.seq_length
+
+    def sample(self, batch_size: int = 1, seq_length: int | None = None):
+        seq_length = seq_length or self.seq_length
+        if batch_size < seq_length or batch_size % seq_length != 0:
+            raise ValueError(
+                "The batch size must be at least one sequence and divisible by "
+                f"the sequence length, got batch_size={batch_size} and "
+                f"seq_length={seq_length}."
+            )
+
+        sequence_count = batch_size // seq_length
+        skate_sequence_count = min(
+            sequence_count,
+            int(sequence_count * self.skate_expert_ratio + 0.5),
+        )
+        base_sequence_count = sequence_count - skate_sequence_count
+
+        batches = []
+        if base_sequence_count:
+            batches.append(
+                self.expert_base.sample(
+                    base_sequence_count * seq_length,
+                    seq_length=seq_length,
+                )
+            )
+        if skate_sequence_count:
+            batches.append(
+                self.expert_skate.sample(
+                    skate_sequence_count * seq_length,
+                    seq_length=seq_length,
+                )
+            )
+        if len(batches) == 1:
+            return batches[0]
+        return tree_map(lambda base, skate: torch.cat((base, skate), dim=0), *batches)
+
+    def __getattr__(self, name):
+        # Tracking prioritization remains attached to the original Base buffer.
+        return getattr(self.expert_base, name)
 
 
 def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_build_kwargs: dict[str, tp.Any]):
@@ -365,10 +425,17 @@ class Workspace:
                 replay_buffer["train"] = DictBuffer(capacity=self.cfg.buffer_size, device=self.cfg.buffer_device)
         if self.training_with_expert_data:
             replay_buffer["expert_base"] = expert_base
-            # Existing Agent update methods keep consuming Base through this alias.
-            replay_buffer["expert_slicer"] = replay_buffer["expert_base"]
             if expert_skate is not None:
                 replay_buffer["expert_skate"] = expert_skate
+            if expert_skate is not None and self.cfg.skate_expert_ratio > 0.0:
+                replay_buffer["expert_slicer"] = BaseSkateExpertSampler(
+                    expert_base,
+                    expert_skate,
+                    self.cfg.skate_expert_ratio,
+                )
+            else:
+                # Preserve the original BFM-Zero Base-only sampling object.
+                replay_buffer["expert_slicer"] = replay_buffer["expert_base"]
 
         print("Starting training")
         progb = tqdm(total=self.cfg.num_env_steps, disable=self.cfg.disable_tqdm)
@@ -728,6 +795,7 @@ def train_skate_bfm():
         motions='',
         motions_root='',
         skate_expert_motion_file=os.environ.get("SKATE_EXPERT_MOTION_FILE"),
+        skate_expert_ratio=float(os.environ.get("SKATE_EXPERT_RATIO", "0.5")),
         env=HumanoidVerseIsaacConfig(
             name='humanoidverse_isaac',
             device='cuda:0',

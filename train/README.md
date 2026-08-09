@@ -21,12 +21,11 @@ Git.
 
 ![Skate-BFM engineering progress](../docs/assets/project_progress.svg)
 
-**Status as of 2026-08-06:** the project-level BFM0-HUSKY foundation and frozen
-capability audit are complete. The active project module is the Skate-BFM
-Motion Library, currently at expert-rollout acquisition: data tooling and
-BFM-compatible conversion are ready, but post-training has not started.
-Interaction-JEPA and predictive closed-loop control are separate downstream
-modules, not part of the current Motion Library milestone.
+**Status as of 2026-08-09:** the project-level BFM0-HUSKY foundation and frozen
+capability audit are complete. Base and Skate expert sources are integrated,
+and expert sampling integration is complete; model post-training has not
+started. Interaction-JEPA and predictive closed-loop control are separate
+downstream modules, not part of the current Motion Library milestone.
 
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
@@ -52,6 +51,7 @@ Launch the project-owned training entry from the repository root after
 activating that runtime:
 
 ```bash
+SKATE_EXPERT_RATIO=0.5 \
 SKATE_EXPERT_MOTION_FILE=/absolute/path/to/skate_expert.pkl \
 train/scripts/isaac_env/.venv/bin/python train/scripts/train_skate_bfm.py
 ```
@@ -59,6 +59,8 @@ train/scripts/isaac_env/.venv/bin/python train/scripts/train_skate_bfm.py
 `train_skate_bfm.py` imports `humanoidverse` exclusively from the vendored
 runtime. Base LAFAN data remains under `train/dataset/BFM-Zero/`, and Skate
 expert data remains under `train/dataset/skate-expert-pose/`.
+`SKATE_EXPERT_RATIO` controls the proportion of complete expert sequences
+sampled from Skate data and defaults to `0.5`.
 
 ## Expert rollout collection
 

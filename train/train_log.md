@@ -166,3 +166,25 @@
 - Training performed: no. Agent update methods, losses, latent sampling, and
   model architectures were not modified. Temporary validation code was not
   retained.
+
+## 8. M1.3 Expert Sampling Integration
+
+- Date: 2026-08-09
+- Added `skate_expert_ratio`, defaulting to `0.5`, to control the proportion
+  of complete expert sequences sampled from `expert_skate`; the remainder is
+  sampled from `expert_base`.
+- `expert_slicer` uses the project-owned Base/Skate sampler only when Skate
+  expert data is enabled and the ratio is positive. With no Skate source or
+  ratio `0.0`, it remains the original `expert_base` object.
+- Ratio `0.0`: passed Base-only backward-compatibility validation.
+- Ratio `0.5`: passed with 64 Base and 64 Skate sequences for a 1024-frame
+  batch at sequence length 8.
+- Ratio `1.0`: passed with 128 Skate sequences for the same batch shape.
+- Sequence integrity and mixed batch shape/dtype checks passed. Every
+  eight-frame sequence came from exactly one source.
+- The strict-loaded frozen BFM-Zero checkpoint accepted the mixed batch
+  through the unmodified `encode_expert()` path. Output was finite
+  `[1024, 256]` with latent norm 16.
+- Formal training performed: no. B, F, Actor, discriminator, critic,
+  auxiliary critic, sampling mathematics after expert acquisition, and all
+  losses remain unchanged. Temporary validation code was not retained.
