@@ -1,0 +1,43 @@
+{
+  "baseline_rollouts": 1,
+  "baseline_rounds": 1,
+  "headings": [
+    0.0
+  ],
+  "jobs": [
+    {
+      "baseline": true,
+      "command_h": 0.0,
+      "command_v": 1.0,
+      "episode_id": "round096_rollout001_v100_h_zero000",
+      "output": "/home/hm/workspace/skate-bfm/train/scripts/data_collection/round_096/rollout_001",
+      "physics_seed": 2575621849,
+      "rollout_id": "001",
+      "round_id": "096"
+    },
+    {
+      "baseline": false,
+      "command_h": 0.0,
+      "command_v": 1.0,
+      "episode_id": "round097_rollout001_v100_h_zero000",
+      "output": "/home/hm/workspace/skate-bfm/train/scripts/data_collection/round_097/rollout_001",
+      "physics_seed": 3266716899,
+      "rollout_id": "001",
+      "round_id": "097"
+    }
+  ],
+  "max_extra_rounds": 1,
+  "max_policy_frames_per_rollout": 50,
+  "parallel_workers": 1,
+  "plan_seed": 20260804,
+  "planned_rollout_seconds": 1.0,
+  "policy_frequency": 50,
+  "render_previews": false,
+  "rollouts_per_round": 1,
+  "round_start": "096",
+  "target_raw_frames": 100,
+  "target_raw_minutes": 0.0333333333333,
+  "velocities": [
+    1.0
+  ]
+}

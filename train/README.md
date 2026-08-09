@@ -31,6 +31,35 @@ modules, not part of the current Motion Library milestone.
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
 
+## Isaac training runtime
+
+The complete BFM-Zero Isaac/HumanoidVerse runtime used by Skate-BFM is vendored
+under [`scripts/isaac_env/`](scripts/isaac_env/). It includes the Python
+package, Hydra configuration, MotionLib, simulator backends, G1 XML/USD/mesh
+assets, upstream license, dependency manifest, and lockfile. It intentionally
+does not contain LAFAN data, Skate data, checkpoints, or generated outputs.
+
+The root `skatebfm` Python 3.12 environment supports HUSKY collection,
+conversion, MotionLib loading, and expert-buffer validation. Full IsaacSim
+training uses the upstream-locked Python 3.10 runtime:
+
+```bash
+cd /home/hm/workspace/skate-bfm/train/scripts/isaac_env
+uv sync --locked
+```
+
+Launch the project-owned training entry from the repository root after
+activating that runtime:
+
+```bash
+SKATE_EXPERT_MOTION_FILE=/absolute/path/to/skate_expert.pkl \
+train/scripts/isaac_env/.venv/bin/python train/scripts/train_skate_bfm.py
+```
+
+`train_skate_bfm.py` imports `humanoidverse` exclusively from the vendored
+runtime. Base LAFAN data remains under `train/dataset/BFM-Zero/`, and Skate
+expert data remains under `train/dataset/skate-expert-pose/`.
+
 ## Expert rollout collection
 
 Activate the repository environment and run one interactive HUSKY rollout:
@@ -39,7 +68,7 @@ Activate the repository environment and run one interactive HUSKY rollout:
 conda activate skatebfm
 cd /home/hm/workspace/skate-bfm
 
-python train/scripts/rollout_split.py \
+python train/scripts/data_collection/rollout_split.py \
   --live \
   --record \
   --headless \
@@ -59,11 +88,11 @@ With `--headless`, no real-time MuJoCo window is opened, but every phase
 interactive viewer and keyboard controls. A confirmed fall, Enter reset,
 viewer close, or `--max-policy-frames` ends the rollout.
 
-The checked-in [`rollout_config.json`](scripts/rollout_config.json) defines the
+The checked-in [`rollout_config.json`](scripts/data_collection/rollout_config.json) defines the
 formal 150-minute collection:
 
 ```bash
-python train/scripts/rollout_split.py --parallel-config
+python train/scripts/data_collection/rollout_split.py --parallel-config
 ```
 
 The baseline plan uses ten rounds with 15 rollouts per round. Each rollout
@@ -102,15 +131,15 @@ Bounded collection tests must use the ignored temporary directory rather than
 the formal dataset:
 
 ```bash
-python train/scripts/rollout_split.py --parallel-config \
-  --output-dir train/scripts/temp \
+python train/scripts/data_collection/rollout_split.py --parallel-config \
+  --output-dir train/scripts/data_collection \
   --round-id 900 \
   --round-count 1 \
   --rollouts-per-round 2 \
   --target-raw-minutes 2
 ```
 
-Edit [`rollout_config.json`](scripts/rollout_config.json) to change the round,
+Edit [`rollout_config.json`](scripts/data_collection/rollout_config.json) to change the round,
 starting rollout ID, headings, frame limit, or output directory. Command-line
 arguments override values from the JSON file. The parent process prints the
 round, rollout IDs, steering commands, domain-randomization seeds, frame target,
@@ -121,7 +150,7 @@ the postfix.
 Test batches are grouped without splitting a rollout across directories:
 
 ```text
-train/scripts/temp/
+train/scripts/data_collection/
 └── round_001/
     ├── rollout_001/
     └── rollout_002/
@@ -176,9 +205,9 @@ ROLLOUT_DIR=$(find train/dataset/skate-expert-pose \
 
 python train/scripts/convert_husky_to_bfm.py \
   --input-root "$ROLLOUT_DIR/dynamic_motion" \
-  --bfm-repo model/bfm-zero-source \
+  --bfm-repo train/scripts/isaac_env \
   --bfm-reference train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl \
-  --robot-xml model/bfm-zero-source/humanoidverse/data/robots/g1/g1_29dof.xml \
+  --robot-xml train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
   --output "$ROLLOUT_DIR/bfm_motionlib/skate_expert.pkl" \
   --validate-motionlib
 ```

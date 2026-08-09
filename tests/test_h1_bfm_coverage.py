@@ -242,7 +242,7 @@ def test_static_expert_pose_builds_complete_backward_observation() -> None:
 def test_dynamic_targets_start_from_their_own_expert_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("BFM_ZERO_ROOT", str(ROOT / "model/bfm-zero-source"))
+    monkeypatch.setenv("BFM_ZERO_ROOT", str(ROOT / "train/scripts/isaac_env"))
     config = yaml.safe_load(
         (ROOT / "configs/h1_bfm_coverage.yaml").read_text(encoding="utf-8")
     )
@@ -269,7 +269,7 @@ def test_dynamic_targets_start_from_their_own_expert_window(
 def test_dynamic_push_initialization_keeps_push_foot_off_board(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("BFM_ZERO_ROOT", str(ROOT / "model/bfm-zero-source"))
+    monkeypatch.setenv("BFM_ZERO_ROOT", str(ROOT / "train/scripts/isaac_env"))
     config = yaml.safe_load(
         (ROOT / "configs/h1_bfm_coverage.yaml").read_text(encoding="utf-8")
     )

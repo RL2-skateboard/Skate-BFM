@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.venv/
 .idea/
 .vscode/
 
@@ -12,6 +13,8 @@ model/*
 model/motion_library/*
 !model/motion_library/README.md
 data/
+!train/scripts/isaac_env/humanoidverse/data/
+!train/scripts/isaac_env/humanoidverse/data/**
 outputs/
 runs/
 wandb/

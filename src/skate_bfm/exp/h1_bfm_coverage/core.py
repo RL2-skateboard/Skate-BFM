@@ -1053,8 +1053,8 @@ def _load_official_bfm0(
         from humanoidverse.agents.load_utils import MODEL_NAME_TO_CLASS
     except Exception as exc:
         report["error"] = (
-            "Official BFM-Zero inference package is unavailable. Install the official "
-            "repository or set BFM_ZERO_ROOT to its root."
+            "The BFM-Zero inference runtime is unavailable. Set BFM_ZERO_ROOT "
+            "to train/scripts/isaac_env or another compatible runtime root."
         )
         report["import_error"] = f"{type(exc).__name__}: {exc}"
         raise CheckpointCompatibilityError(report["error"], report) from exc

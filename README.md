@@ -64,15 +64,15 @@ Verify the installation:
 python -c "import torch, mujoco; print(torch.__version__, torch.cuda.is_available(), mujoco.__version__)"
 ```
 
-## Official BFM-Zero Model
+## Official BFM-Zero Runtime And Model
 
-Keep all local BFM-Zero source and checkpoints under the ignored `model/`
+The BFM-Zero Isaac/HumanoidVerse runtime is vendored under the tracked training
+scripts, while the large checkpoint remains under the ignored `model/`
 directory:
 
 ```text
-model/
-├── bfm-zero-source/        # LeCAR-Lab/BFM-Zero at revision 318cf44
-└── bfm-zero-official/      # config.json, init_kwargs.json, model.safetensors
+train/scripts/isaac_env/    # LeCAR-Lab/BFM-Zero runtime at revision 318cf44
+model/bfm-zero-official/    # config.json, init_kwargs.json, model.safetensors
 ```
 
 The formal checkpoint is the `LeCAR-Lab/BFM-Zero` Hugging Face bundle at
@@ -137,7 +137,7 @@ skate-bfm-smoke --viewer --steps 300 --action-gain 0.05
 Run the global search without an expert latent prior:
 
 ```bash
-BFM_ZERO_ROOT="$PWD/model/bfm-zero-source" \
+BFM_ZERO_ROOT="$PWD/train/scripts/isaac_env" \
 skate-bfm-h1 \
   --config configs/h1_bfm_coverage.yaml \
   --checkpoint model/bfm-zero-official \
@@ -151,7 +151,7 @@ skate-bfm-h1 \
 Run the time-aligned search with an expert latent prior:
 
 ```bash
-BFM_ZERO_ROOT="$PWD/model/bfm-zero-source" \
+BFM_ZERO_ROOT="$PWD/train/scripts/isaac_env" \
 skate-bfm-h1 \
   --config configs/h1_bfm_coverage.yaml \
   --checkpoint model/bfm-zero-official \
