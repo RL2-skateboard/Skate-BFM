@@ -1,6 +1,6 @@
 # Training Results
 
-## Experiment 0: Original FB + Skate, B/F-only Adaptation
+## Experiment 0A: Base-only Control, Original FB + Skate B/F-only Adaptation
 
 - Date: 2026-08-10
 - Status: `completed_boundary_validation`
@@ -77,12 +77,85 @@ Local experiment artifacts are intentionally excluded from Git by the
 `results/` ignore rule because the three checkpoints and optimizer states are
 multi-gigabyte files.
 
+## Experiment 0B: Base + Skate 50/50 Treatment, Original FB + Skate B/F-only Adaptation
+
+- Date: 2026-08-10
+- Status: `completed_boundary_validation`
+- Objective: rerun the intended Base+Skate expert-mixture treatment with the
+  same B/F-only adaptation boundary as Experiment 0A.
+- Control: Experiment 0A, Base-only expert plus the same Skate replay.
+- Treatment: Base expert plus Skate expert at a complete-sequence ratio of
+  `50/50`, plus the same Skate replay.
+- Pretrained source: `model/bfm-zero-official`
+- Skate expert artifact:
+  `train/dataset/skate-expert-pose/motion_library/skate_expert.pkl`
+- Skate artifact SHA256:
+  `660c18145a21457d3541b49ccc802ba3f99170804836cedaebb9d245b837fd86`
+- Skate artifact schema: 1 motion, 50 frames, 50 Hz, 29 DoF, duration 0.98 s.
+- Expert mixture: 64 complete Base sequences + 64 complete Skate sequences,
+  sequence length 8, total 128 sequences.
+- Training replay: 1024 Skate transitions, 0 evaluation transitions, 0 unseen
+  transitions. The `train` alias remained the same object as `train_skate`.
+- Replay tensor fingerprint:
+  `ad1b476ed5dd266572001050e6db809e90b9eb46e1bd254ec67b4e0101f65fbf`
+- Transition-ID fingerprint:
+  `fcb90076cd23ab76fe273ef7abea44eabd7f83249121847e5f48c9c51e364c96`
+- Dynamics-realization fingerprint:
+  `26999c6e7ea8d62989048951708027c421163f9693f9fe50cbffc28ea683aa69`
+- Update milestones: `1`, `10`, and `100`; each is an independent run from
+  the official checkpoint.
+- Optimizer boundary: direct vendored `update_fb()` only. F/B and target F/B
+  changed; Actor, discriminator, QD, Qaux, and their target modules did not.
+- All three runs: 1024 transitions, 1/10/100 direct `update_fb()` calls,
+  forbidden optimizer calls `0`, evaluation leakage `0`, unseen leakage `0`.
+- Fixed evaluator: `skate-bfm-fixed-eval-v1`, 512 held-out transitions, with
+  the same protocol and evaluator inputs as Experiment 0A.
+
+### Base-only vs Base+Skate Fixed Evaluation
+
+Delta is treatment minus control. Lower is better for FB loss and mean rank;
+higher is better for margin, Top-1, and Top-5. Entropy is a coverage monitor.
+
+| Updates | Group | FB loss | FB diag | FB offdiag | Orth loss | Margin | Top-1 | Top-5 | Mean rank | Median rank | Entropy |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | Base-only control | 934192.1250 | 120.5836 | 20737.3379 | 9133.3418 | 1274.1001 | 0.3750 | 0.7031 | 5.4531 | 2 | 4.853298 |
+| 1 | Base+Skate treatment | 927561.1875 | 117.4835 | 21954.1328 | 9054.8955 | 1294.0538 | 0.4062 | 0.6719 | 4.9844 | 2 | 4.792666 |
+| 10 | Base-only control | 1134625.5000 | 251.0973 | 21534.2480 | 11128.4014 | 769.3938 | 0.3125 | 0.7500 | 4.7031 | 2 | 4.115609 |
+| 10 | Base+Skate treatment | 1310973.5000 | 217.3763 | 16474.6445 | 12942.8154 | 667.7080 | 0.3594 | 0.7812 | 5.0156 | 2 | 4.349761 |
+| 100 | Base-only control | 1793956.3750 | 187.2596 | 10608.6309 | 17831.6055 | 520.5139 | 0.3281 | 0.6875 | 5.2813 | 2 | 3.558375 |
+| 100 | Base+Skate treatment | 1638451.7500 | 180.8057 | 10464.7832 | 16278.0615 | 544.9000 | 0.3281 | 0.8281 | 3.8125 | 2 | 3.591432 |
+
+### Treatment Deltas
+
+| Updates | FB loss | Margin | Top-1 | Top-5 | Mean rank | Entropy |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | -6630.9375 | +19.9537 | +0.0312 | -0.0312 | -0.4688 | -0.060631 |
+| 10 | +176348.0000 | -101.6858 | +0.0469 | +0.0312 | +0.3125 | +0.234153 |
+| 100 | -155504.6250 | +24.3861 | 0.0000 | +0.1406 | -1.4688 | +0.033057 |
+
+### Treatment Conclusion
+
+The treatment is `PASS` as an executed Base+Skate boundary experiment and is
+strictly more auditable than the old run because the expert source, sequence
+mixture, replay tensors, transition IDs, and dynamics realization are
+fingerprinted. The metric result is mixed at update 1/10 and favorable at
+update 100 for FB loss, margin, Top-5, and mean rank. It is not evidence of
+downstream skate-task success: Base retention was not run, native termination,
+Qaux, and command-aligned evaluation remain unresolved. The treatment should
+therefore be described as a promising but non-conclusive representation
+adaptation result, not as a generally better model.
+
+The historical Base-only control has no replay tensor fingerprint, so exact
+historical tensor identity cannot be retroactively proven. Its rollout IDs and
+dynamics seeds remain comparable under the same canonical protocol.
+
 ## M2.2b-2 Baseline Reproducibility + Evaluator Fidelity Audit
 
 - Date: 2026-08-10
 - Status: `completed_with_provenance_correction`
-- Experiment 0 remains the same `Original FB + Skate B/F-only Adaptation`
-  boundary; no Experiment 1 was started and no checkpoint was retrained.
+- Experiment 0A remains the Base-only control boundary. The previously
+  misconfigured Base+Skate treatment was rerun as Experiment 0B in M2.2b-3;
+  no control checkpoint was retrained.
 - FB evaluator matches vendored `FBAgent.update_fb()`: `PASS`
 - Suspected `fb_diag` issue: `NOT CONFIRMED`
 - Canonical evaluator version: `skate-bfm-fixed-eval-v1`
@@ -125,6 +198,6 @@ not changed.
 - Parameter-frozen Actor: `YES`
 - Functionally-frozen policy: `NO`
 - Ready for next adaptation decision: `NO`
-- Blocker: the executed M2.2b-1 checkpoints are Base-only, not the intended
-  Base+Skate expert mixture. A correctly configured Base+Skate boundary run
-  must be decided separately.
+- Historical correction: the executed M2.2b-1 checkpoints were Base-only, not
+  the intended Base+Skate expert mixture. Experiment 0B now records the
+  correctly configured treatment separately.

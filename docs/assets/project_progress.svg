@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="820" viewBox="0 0 1600 820" role="img" aria-labelledby="title desc">
   <title id="title">Skate-BFM overall research program as of 2026-08-10</title>
-  <desc id="desc">The frozen BFM0 and HUSKY baseline, expert motion integration, F/B-only adaptation boundary, and evaluator reproducibility audit are verified. Full FB-CPR-Aux training and downstream planning follow.</desc>
+  <desc id="desc">The frozen BFM0 and HUSKY baseline, expert motion integration, F/B-only adaptation boundary, evaluator reproducibility audit, and Base plus Skate expert-mixture boundary are verified. Full FB-CPR-Aux training and downstream planning follow.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
@@ -19,8 +19,8 @@
 
   <rect x="1038" y="34" width="510" height="82" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="2"/>
     <text x="1062" y="61" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">CURRENT POSITION - 2026-08-10</text>
-    <text x="1062" y="88" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">F/B boundary / evaluator audit</text>
-    <text x="1062" y="107" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">First controlled updates; full FB-CPR-Aux training not started</text>
+    <text x="1062" y="88" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">Base + Skate mixture boundary</text>
+    <text x="1062" y="107" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">50/50 expert source; update 1/10/100; full training not started</text>
 
   <line x1="258" y1="292" x2="374" y2="292" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="670" y1="292" x2="765" y2="292" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
@@ -81,7 +81,7 @@
     <circle cx="613" cy="437" r="10" fill="#94a3b8"/>
     <text x="421" y="469" fill="#1f7a4d" font-size="12" font-weight="700" text-anchor="middle">AUDIT</text>
     <text x="484" y="469" fill="#9a4d05" font-size="12" font-weight="700" text-anchor="middle">DATA</text>
-    <text x="550" y="469" fill="#64748b" font-size="12" font-weight="700" text-anchor="middle">TRAIN</text>
+    <text x="550" y="469" fill="#9a4d05" font-size="12" font-weight="700" text-anchor="middle">BOUNDARY</text>
     <text x="613" y="469" fill="#64748b" font-size="12" font-weight="700" text-anchor="middle">CONES</text>
   </g>
 
@@ -168,9 +168,9 @@
   <text x="1190" y="638" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="15">selects, executes, and replans</text>
 
   <text x="52" y="730" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">EVIDENCE COMPLETE</text>
-  <text x="52" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">Official checkpoint integration and matched frozen-BFM0 H1 retrieval experiments</text>
+  <text x="52" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">Official checkpoint integration, H1 retrieval, and Base + Skate mixture boundary</text>
   <text x="824" y="730" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">ACTIVE MILESTONE</text>
-  <text x="824" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">F/B-only boundary and evaluator fidelity verified; adaptation design next</text>
+  <text x="824" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">50/50 expert mixture evaluated at 1/10/100; full adaptation design next</text>
 
   <text x="52" y="797" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="13">Progress is tracked across main-branch experiment records and train-branch data, training, and result logs.</text>
 </svg>

@@ -21,14 +21,43 @@ frozen-BFM0 capability audit are complete. Base and Skate expert sources,
 M2.1 Skate online replay, and M2.2a official BFM0 initialization plus
 expert/replay merge are complete. M2.2b-1 enabled and validated the first
 controlled F/B-only Skate adaptation boundary. M2.2b-2 completed evaluator
-fidelity and clean-process reproducibility auditing. Full FB-CPR-Aux training
-has not started. Interaction-JEPA, predictive closed-loop planning, and
-complete skateboarding-task evaluation remain later project modules.
+fidelity and clean-process reproducibility auditing. M2.2b-3 completed the
+auditable Base+Skate 50/50 expert-mixture boundary experiment at independent
+1/10/100 update milestones. Its representation metrics are mixed at 1/10 and
+favorable at 100, so it is not yet a downstream task-success claim. Full
+FB-CPR-Aux training has not started. Interaction-JEPA, predictive closed-loop
+planning, and complete skateboarding-task evaluation remain later project
+modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.
 Training details belong in [`train/train_log.md`](train/train_log.md) and
 [`train/train_res.md`](train/train_res.md); formal H1 records remain on `main`.
+
+The current M2.2b-3 treatment can be reproduced with the vendored training
+entrypoint after the official checkpoint and Skate artifact are available:
+
+```bash
+for updates in 1 10 100; do
+  SKATE_ONLINE_ENV=skate \
+  SKATE_UPDATE_MODE=fb_only \
+  SKATE_ADAPTATION_UPDATES=$updates \
+  SKATE_MAX_STEPS=1024 \
+  SKATE_EXPERT_RATIO=0.5 \
+  SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+  SKATE_WORK_DIR=$PWD/results/m2.2b-3/base_skate_50_50/update_$updates \
+  CUDA_VISIBLE_DEVICES=0 \
+  python train/scripts/train_skate_bfm.py
+done
+```
+
+Evaluate one produced checkpoint with the fixed protocol:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_bfm.py \
+  --checkpoint results/m2.2b-3/base_skate_50_50/update_100/checkpoint \
+  --output-dir results/m2.2b-3/base_skate_50_50/eval_100
+```
 
 This `train` branch is reserved for model training, dataset preparation,
 checkpoint management, and learned motion-library development. The `main`

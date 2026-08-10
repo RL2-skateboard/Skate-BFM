@@ -31,11 +31,34 @@ online replay, and M2.2a official BFM0 initialization plus expert/replay merge
 are complete. M2.2b-1 completed the first controlled F/B-only Skate adaptation
 boundary, and M2.2b-2 completed evaluator fidelity and clean-process
 reproducibility auditing. Full FB-CPR-Aux training has not started.
+M2.2b-3 completed the intended Base+Skate 50/50 expert-mixture treatment at
+independent update 1/10/100 boundaries. The result is mixed at early
+milestones and favorable on several representation metrics at update 100, but
+is not a downstream skate-task success claim.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
+
+Re-run the three independent treatment boundaries:
+
+```bash
+for updates in 1 10 100; do
+  SKATE_ONLINE_ENV=skate SKATE_UPDATE_MODE=fb_only \
+  SKATE_ADAPTATION_UPDATES=$updates SKATE_MAX_STEPS=1024 \
+  SKATE_EXPERT_RATIO=0.5 \
+  SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+  SKATE_WORK_DIR=$PWD/results/m2.2b-3/base_skate_50_50/update_$updates \
+  CUDA_VISIBLE_DEVICES=0 \
+  python train/scripts/train_skate_bfm.py
+done
+```
+
+The canonical Skate artifact is a one-motion, 29-DoF, 50-frame, 50 Hz
+MotionLib file. Its SHA256 and the 64/64 complete-sequence mixture are
+recorded in [`train_res.md`](train_res.md). The generated checkpoints and
+evaluation results remain local under `results/`.
 
 ## Isaac training runtime
 

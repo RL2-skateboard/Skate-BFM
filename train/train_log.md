@@ -506,3 +506,34 @@
 - Corrected v1 canonical metrics for update `0/1/10/100` are unchanged from
   the measured M2.2b-1 values and are recorded in `train_res.md` with the
   complete provenance policy. No training was rerun.
+
+## 15. M2.2b-3 Base + Skate Expert Mixture Boundary
+
+- Date: 2026-08-10
+- Completed the intended Base+Skate 50/50 expert-mixture experiment as
+  Experiment 0B, while retaining the historical Base-only Experiment 0A as
+  the control.
+- Used the official BFM0 checkpoint for three independent milestones:
+  `update_1`, `update_10`, and `update_100`.
+- Added fail-closed configuration validation so a nonzero Skate expert ratio
+  cannot silently run without a configured Skate MotionLib artifact.
+- Loaded 64 complete Base sequences and 64 complete Skate sequences with
+  sequence length 8. The Skate artifact is
+  `train/dataset/skate-expert-pose/motion_library/skate_expert.pkl`,
+  SHA256
+  `660c18145a21457d3541b49ccc802ba3f99170804836cedaebb9d245b837fd86`.
+- Used 1024 Skate replay transitions for every milestone. The fixed replay
+  tensor, transition IDs, and sampled HUSKY dynamics have fingerprints
+  recorded in `train_res.md`.
+- Directly invoked the vendored `update_fb()` only. F/B and target F/B
+  changed; Actor, discriminator, QD, Qaux, and all forbidden optimizer calls
+  remained unchanged.
+- Evaluated all treatment checkpoints with
+  `skate-bfm-fixed-eval-v1` on 512 held-out transitions. No training or
+  evaluation leakage was detected.
+- Result: mixed at updates 1 and 10, favorable at update 100 on FB loss,
+  margin, Top-5, and mean rank. This is a representation-boundary result,
+  not a downstream skate-task success claim.
+- Base retention remains `NOT RUN`; native termination, Qaux, and
+  command-aligned downstream evaluation remain unresolved. Full FB-CPR-Aux
+  training remains `NO`.
