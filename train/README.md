@@ -26,10 +26,11 @@ Git.
 ![Skate-BFM development substages](../docs/assets/development_substage.svg)
 
 **Status as of 2026-08-10:** the project-level BFM0-HUSKY foundation and frozen
-capability audit are complete. Base and Skate expert sources and M2.1 Skate
-online replay integration are complete; frozen-BFM0 post-training has not
-started. Interaction-JEPA and predictive closed-loop control are separate
-downstream modules, not part of the current Motion Library milestone.
+capability audit are complete. Base and Skate expert sources, M2.1 Skate
+online replay, and M2.2a official BFM0 initialization plus expert/replay merge
+are complete. No optimizer step or formal Skate post-training has started.
+Interaction-JEPA and predictive closed-loop control are separate downstream
+modules, not part of the current Motion Library milestone.
 
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
@@ -72,15 +73,28 @@ Run the formal HUSKY Workspace path without model updates:
 SKATE_ONLINE_ENV=skate \
 SKATE_COLLECT_ONLY=1 \
 SKATE_MAX_STEPS=64 \
-SKATE_WORK_DIR=/tmp/skate-bfm-m21b \
+SKATE_WORK_DIR=/tmp/skate-bfm-m22a \
+BFM0_PRETRAINED_CHECKPOINT=/home/hm/workspace/skate-bfm/model/bfm-zero-official \
+SKATE_EXPERT_MOTION_FILE=/absolute/path/to/skate_expert.pkl \
+SKATE_EXPERT_RATIO=0.5 \
 train/scripts/isaac_env/.venv/bin/python train/scripts/train_skate_bfm.py
 ```
 
 This mode uses one `HuskyBfmOnlineEnv`, writes real transitions to
 `train_skate`, and keeps `train` as the same-object compatibility alias. It
-uses the current model parameters and `sample_z()` baseline but blocks
-`agent.update()`. Pretrained initialization, Skate auxiliary rewards, and
-native physical termination remain later dependencies.
+loads the complete official BFM0 model strictly from
+`BFM0_PRETRAINED_CHECKPOINT`, builds Base and configured Skate expert buffers
+through an independent one-environment MotionLib context, and runs the merged
+expert/replay forward preflight. A Skate resume checkpoint under
+`SKATE_WORK_DIR/checkpoint/` takes precedence over pretrained initialization.
+New Skate workdirs cannot fall back to random initialization.
+
+The collect-only path keeps the pretrained model in evaluation mode, compares
+parameter and buffer fingerprints before and after the run, and blocks
+`agent.update()`. The official model-only bundle has no optimizer state, so
+current-config optimizers remain fresh and unused. Skate auxiliary rewards,
+native physical termination, and the first FB adaptation protocol remain
+later dependencies.
 
 ## Expert rollout collection
 

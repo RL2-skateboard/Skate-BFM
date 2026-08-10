@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
   <title id="title">Skate-BFM development substage pipeline as of 2026-08-10</title>
-  <desc id="desc">M0 baseline, M1 expert motion, and the M2.1 formal HUSKY online replay path are complete. Pretrained initialization and training preflight follow before model training and motion library evaluation.</desc>
+  <desc id="desc">M0 baseline, M1 expert motion, M2.1 formal HUSKY online replay, and M2.2a pretrained expert/replay merge are complete. The first Skate FB adaptation protocol follows before model training and motion library evaluation.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -19,8 +19,8 @@
 
   <rect x="1010" y="32" width="438" height="84" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="2"/>
   <text x="1032" y="59" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">LATEST COMPLETION - 2026-08-10</text>
-  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.1b Formal HUSKY path</text>
-  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Workspace -> train_skate; optimizer disabled</text>
+  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.2a Pretrained merge</text>
+  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Official BFM0 + experts + train_skate</text>
 
   <line x1="302" y1="224" x2="365" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="690" y1="224" x2="753" y2="224" stroke="#d97706" stroke-width="5" marker-end="url(#arrow-active)"/>
@@ -50,9 +50,9 @@
     <text x="916" y="197" fill="#17212b" font-size="24" font-weight="700" text-anchor="middle">M2 Training Integration</text>
     <rect x="779" y="215" width="273" height="35" rx="5" fill="#fed7aa"/>
     <circle cx="797" cy="232" r="7" fill="#d97706"/>
-    <text x="814" y="237" fill="#9a4d05" font-size="14" font-weight="700">M2.1 Online replay</text>
-    <text x="916" y="270" fill="#64748b" font-size="13" text-anchor="middle">HUSKY -> BFM transition contract</text>
-    <text x="916" y="291" fill="#64748b" font-size="13" text-anchor="middle">Forward / backward preflight</text>
+    <text x="814" y="237" fill="#9a4d05" font-size="14" font-weight="700">M2.2a Pretrained merge</text>
+    <text x="916" y="270" fill="#64748b" font-size="13" text-anchor="middle">Official BFM0 strict initialization</text>
+    <text x="916" y="291" fill="#64748b" font-size="13" text-anchor="middle">Expert + HUSKY replay preflight</text>
 
     <rect x="1140" y="145" width="308" height="160" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
     <rect x="1160" y="164" width="76" height="26" rx="13" fill="#64748b"/>
@@ -74,21 +74,21 @@
 
     <line x1="460" y1="509" x2="500" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
 
-    <rect x="500" y="432" width="408" height="155" rx="7" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
-    <text x="526" y="471" fill="#64748b" font-size="14" font-weight="700">M2.2  NEXT</text>
-    <text x="526" y="505" fill="#17212b" font-size="20" font-weight="700">Training preflight</text>
-    <text x="526" y="532" fill="#475569" font-size="14">Replay sampling and B/F contract checks</text>
-    <text x="526" y="555" fill="#475569" font-size="14">Auxiliary reward dependency resolution</text>
-    <circle cx="863" cy="505" r="19" fill="#94a3b8"/>
-    <path d="M855 505 L871 505" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+    <rect x="500" y="432" width="408" height="155" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="3"/>
+    <text x="526" y="471" fill="#1f7a4d" font-size="14" font-weight="700">M2.2a  COMPLETE</text>
+    <text x="526" y="505" fill="#17212b" font-size="20" font-weight="700">Pretrained merge preflight</text>
+    <text x="526" y="532" fill="#475569" font-size="14">Strict BFM0 load; Base + Skate experts</text>
+    <text x="526" y="555" fill="#475569" font-size="14">64-step replay; frozen state verified</text>
+    <circle cx="863" cy="505" r="19" fill="#1f7a4d"/>
+    <path d="M853 505 L860 512 L873 497" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
 
     <line x1="908" y1="509" x2="948" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
 
     <rect x="948" y="432" width="500" height="155" rx="7" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
-    <text x="974" y="471" fill="#64748b" font-size="14" font-weight="700">M2.3  LATER</text>
-    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Frozen-BFM0 post-training</text>
-    <text x="974" y="532" fill="#475569" font-size="14">Skate online replay enters official update path</text>
-    <text x="974" y="555" fill="#475569" font-size="14">No BFB, RFB, MEBE, or formal training yet</text>
+    <text x="974" y="471" fill="#64748b" font-size="14" font-weight="700">M2.2b  NEXT</text>
+    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">First FB adaptation protocol</text>
+    <text x="974" y="532" fill="#475569" font-size="14">Resolve Qaux and physical termination</text>
+    <text x="974" y="555" fill="#475569" font-size="14">No optimizer step or formal training yet</text>
     <circle cx="1402" cy="505" r="19" fill="#94a3b8"/>
     <path d="M1394 505 L1410 505" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
 

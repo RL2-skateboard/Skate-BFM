@@ -17,10 +17,11 @@ mounting, riding, steering, recovery, and safe departure.
 ![Skate-BFM development substages](docs/assets/development_substage.svg)
 
 **Status as of 2026-08-10:** the official BFM0-HUSKY foundation and matched
-frozen-BFM0 capability audit are complete. Base and Skate expert sources and
-M2.1 Skate online replay integration are complete; frozen-BFM0 post-training
-has not started. Interaction-JEPA, predictive closed-loop planning, and
-complete skateboarding-task evaluation remain later project modules.
+frozen-BFM0 capability audit are complete. Base and Skate expert sources,
+M2.1 Skate online replay, and M2.2a official BFM0 initialization plus
+expert/replay merge are complete. No optimizer step or formal Skate
+post-training has started. Interaction-JEPA, predictive closed-loop planning,
+and complete skateboarding-task evaluation remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.

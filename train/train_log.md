@@ -264,3 +264,52 @@
   observation contract. The Base training loop was not run.
 - Known blockers before training: pretrained BFM0 initialization, Skate
   auxiliary reward/Q_aux definition, and native HUSKY physical termination.
+
+## 11. M2.2a Pretrained BFM0 Initialization and Expert/Replay Merge
+
+- Date: 2026-08-10
+- Pretrained source:
+  `model/bfm-zero-official/`, configured through
+  `BFM0_PRETRAINED_CHECKPOINT`.
+- Checkpoint format: model-only BFM0 directory containing `config.json`,
+  `init_kwargs.json`, and `model.safetensors`; 537 tensors were inspected.
+  The bundle does not contain an agent config, optimizer file, replay buffer,
+  or training status.
+- Strict compatibility: passed for the complete model config, observation
+  space (`state[64]`, `privileged_state[463]`, `last_action[29]`,
+  `history_actor[372]`), action dimension 29, all state keys, and every tensor
+  shape. Missing model components: none.
+- Loaded components: B, target B, F, target F, Actor, discriminator, critic,
+  target critic, auxiliary critic, target auxiliary critic, observation
+  normalizer, and auxiliary reward normalizer.
+- Resume precedence:
+  `work_dir/checkpoint/` Skate resume first, official BFM0 pretrained
+  initialization second. A new Skate workdir fails closed if no pretrained
+  checkpoint is configured; random initialization is not allowed.
+- Checkpoint optimizer states: no. Pretrained initialization therefore keeps
+  the fresh optimizers created from the current Skate config, but does not
+  restore momentum or execute any optimizer step. The first adaptation
+  optimizer-state policy remains to be defined.
+- Expert loading is independent from the online environment. The online
+  environment remains `HuskyBfmOnlineEnv`; one minimal HumanoidVerse context
+  is constructed only to load Base and Skate MotionLib expert buffers and is
+  never stepped for online replay.
+- Skate Workspace buffers: `expert_base` yes, `expert_skate` yes when
+  configured, `expert_slicer` yes, `expert_tracking` is the Base buffer,
+  `train_skate` yes, and `train` is the same-object alias of `train_skate`.
+- Mixed expert validation used ratio 0.5 and sequence length 8. A 1024-frame
+  sample contained 64 complete Base sequences and 64 complete Skate
+  sequences. Tracking sampling remained Base-only.
+- Formal pretrained HUSKY dry run: passed for 64 steps using actions and
+  latents from the strict-loaded official BFM0 model. The replay retained the
+  29D stored action, 23D executed HUSKY action, and 256D latent contract.
+- Combined preflight: expert encoding produced finite `[1024, 256]` latents;
+  Skate replay forward outputs were finite with F `[2, 16, 256]`, B
+  `[16, 256]`, and a compatible discriminator forward.
+- Parameter fingerprint changed: no. Model buffer fingerprint changed: no.
+  The collect-only model remained frozen in inference mode.
+- `agent.update()` calls: 0. `backward()` calls: 0. Optimizer steps: 0.
+  Formal training: no. No checkpoint or metrics were generated, so
+  `train_res.md` remains unchanged.
+- Known remaining blockers: Skate auxiliary reward/Q_aux, native HUSKY
+  physical termination, and the first Skate FB adaptation protocol.

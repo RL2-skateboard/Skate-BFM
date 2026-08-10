@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import copy
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -28,10 +29,13 @@ from humanoidverse.agents.evaluations.humanoidverse_isaac import (
     HumanoidVerseIsaacTrackingEvaluation,
     HumanoidVerseIsaacTrackingEvaluationConfig,
 )
+from humanoidverse.agents.envs.utils.gym_spaces import json_to_space
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import torch
+import safetensors.torch
+from safetensors import safe_open
 
 torch.set_float32_matmul_precision("high")
 
@@ -108,6 +112,7 @@ class TrainConfig(BaseConfig):
     online_env: tp.Literal["base", "skate"] = "base"
     collect_only: bool = False
     skate_max_steps: int = pydantic.Field(default=64, gt=0)
+    pretrained_checkpoint: str | None = None
 
     env: HumanoidVerseIsaacConfig = pydantic.Field(discriminator="name")
 
@@ -167,6 +172,11 @@ class TrainConfig(BaseConfig):
         if self.skate_expert_motion_file is not None and not self.load_isaac_expert_data:
             raise ValueError("Skate expert MotionLib data requires load_isaac_expert_data=True")
         if self.online_env == "skate":
+            if not self.load_isaac_expert_data:
+                raise ValueError(
+                    "Skate Workspace expert integration requires "
+                    "load_isaac_expert_data=True."
+                )
             if not self.collect_only:
                 raise ValueError(
                     "Skate online mode currently requires collect_only=True; "
@@ -326,6 +336,159 @@ def collect_skate_online_replay(
     return replay_buffer, transitions
 
 
+def _checkpoint_model_path(checkpoint_dir: Path) -> Path:
+    direct_path = checkpoint_dir / "model.safetensors"
+    nested_path = checkpoint_dir / "model" / "model.safetensors"
+    if direct_path.is_file():
+        return direct_path
+    if nested_path.is_file():
+        return nested_path
+    raise FileNotFoundError(
+        f"Pretrained BFM0 checkpoint must contain {direct_path} or {nested_path}."
+    )
+
+
+def _state_fingerprint(module: torch.nn.Module, *, parameters: bool) -> str:
+    """Hash model state incrementally without creating a second full model copy."""
+
+    digest = hashlib.sha256()
+    tensors = module.named_parameters() if parameters else module.named_buffers()
+    for name, tensor in tensors:
+        digest.update(name.encode("utf-8"))
+        digest.update(str(tuple(tensor.shape)).encode("ascii"))
+        digest.update(str(tensor.dtype).encode("ascii"))
+        digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _space_signature(space: gymnasium.spaces.Space) -> dict[str, tuple[int, ...]]:
+    if not isinstance(space, gymnasium.spaces.Dict):
+        raise TypeError(f"Expected a Dict observation space, got {type(space).__name__}.")
+    return {
+        key: tuple(value.shape)
+        for key, value in sorted(space.spaces.items())
+    }
+
+
+def load_pretrained_bfm0_agent(
+    agent,
+    checkpoint_dir: Path,
+) -> dict[str, tp.Any]:
+    """Strictly load the complete official BFM0 model into the built agent."""
+
+    checkpoint_dir = checkpoint_dir.expanduser().resolve()
+    if not checkpoint_dir.is_dir():
+        raise FileNotFoundError(f"Official BFM0 checkpoint directory not found: {checkpoint_dir}")
+    model_path = _checkpoint_model_path(checkpoint_dir)
+    config_path = model_path.parent / "config.json"
+    init_kwargs_path = model_path.parent / "init_kwargs.json"
+    if not config_path.is_file() or not init_kwargs_path.is_file():
+        raise FileNotFoundError(
+            f"Checkpoint metadata is incomplete beside {model_path}; "
+            "expected config.json and init_kwargs.json."
+        )
+
+    with config_path.open() as handle:
+        checkpoint_config = json.load(handle)
+    with init_kwargs_path.open() as handle:
+        checkpoint_init_kwargs = json.load(handle)
+    if checkpoint_config.get("name") != agent._model.cfg.name:
+        raise RuntimeError(
+            "Pretrained BFM0 model config does not match the configured agent: "
+            f"{checkpoint_config.get('name')!r} != {agent._model.cfg.name!r}."
+        )
+    current_model_config = agent._model.cfg.model_dump()
+    if checkpoint_config != current_model_config:
+        raise RuntimeError(
+            "Pretrained BFM0 model configuration differs from the configured "
+            "Skate agent."
+        )
+    checkpoint_action_dim = checkpoint_init_kwargs.get("action_dim")
+    if checkpoint_action_dim != agent.action_dim:
+        raise RuntimeError(
+            f"Pretrained action dimension mismatch: checkpoint={checkpoint_action_dim}, "
+            f"agent={agent.action_dim}."
+        )
+    checkpoint_obs_space = json_to_space(checkpoint_init_kwargs["obs_space"])
+    if _space_signature(checkpoint_obs_space) != _space_signature(agent.obs_space):
+        raise RuntimeError(
+            "Pretrained observation-space mismatch: "
+            f"checkpoint={_space_signature(checkpoint_obs_space)}, "
+            f"agent={_space_signature(agent.obs_space)}."
+        )
+
+    with safe_open(str(model_path), framework="pt", device="cpu") as handle:
+        checkpoint_keys = set(handle.keys())
+        checkpoint_shapes = {
+            key: tuple(handle.get_slice(key).get_shape())
+            for key in checkpoint_keys
+        }
+
+    expected_state = agent._model.state_dict()
+    expected_keys = set(expected_state.keys())
+    missing = sorted(expected_keys - checkpoint_keys)
+    unexpected = sorted(checkpoint_keys - expected_keys)
+    shape_mismatches = sorted(
+        key
+        for key in expected_keys & checkpoint_keys
+        if tuple(expected_state[key].shape) != checkpoint_shapes[key]
+    )
+    if missing or unexpected or shape_mismatches:
+        raise RuntimeError(
+            "Strict pretrained BFM0 architecture validation failed: "
+            f"missing={missing[:8]}, unexpected={unexpected[:8]}, "
+            f"shape_mismatches={shape_mismatches[:8]}."
+        )
+
+    safetensors.torch.load_model(
+        agent._model,
+        str(model_path),
+        strict=True,
+        device=agent.device,
+    )
+
+    component_prefixes = {
+        "B": "_backward_map.",
+        "target B": "_target_backward_map.",
+        "F": "_forward_map.",
+        "target F": "_target_forward_map.",
+        "Actor": "_actor.",
+        "discriminator": "_discriminator.",
+        "critic": "_critic.",
+        "target critic": "_target_critic.",
+        "aux critic": "_aux_critic.",
+        "target aux critic": "_target_aux_critic.",
+        "observation normalizer": "_obs_normalizer.",
+        "reward normalizer": "_aux_reward_normalizer.",
+    }
+    loaded_components = [
+        name
+        for name, prefix in component_prefixes.items()
+        if any(key.startswith(prefix) for key in checkpoint_keys)
+    ]
+    missing_components = [
+        name
+        for name, prefix in component_prefixes.items()
+        if not any(key.startswith(prefix) for key in checkpoint_keys)
+    ]
+    optimizer_present = (checkpoint_dir / "optimizers.pth").is_file()
+    return {
+        "source": str(checkpoint_dir),
+        "model_file": str(model_path),
+        "checkpoint_config": str(config_path),
+        "checkpoint_init_kwargs": str(init_kwargs_path),
+        "checkpoint_keys": len(checkpoint_keys),
+        "loaded_components": loaded_components,
+        "missing_components": missing_components,
+        "optimizer_states": optimizer_present,
+        "optimizer_policy": (
+            "not restored; official pretrained bundle has no optimizer state"
+            if not optimizer_present
+            else "not restored for pretrained initialization; current-config optimizers are fresh"
+        ),
+    }
+
+
 def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_build_kwargs: dict[str, tp.Any]):
     checkpoint_dir = work_dir / CHECKPOINT_DIR_NAME
     checkpoint_time = 0
@@ -336,8 +499,27 @@ def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_buil
 
         print(f"Loading the agent at time {checkpoint_time}")
         agent = cfg.agent.object_class.load(checkpoint_dir, device=cfg.agent.model.device)
+        checkpoint_source = "skate_resume"
     else:
+        if cfg.online_env == "skate":
+            if cfg.pretrained_checkpoint is None:
+                raise RuntimeError(
+                    "Skate Workspace requires an official pretrained BFM0 checkpoint "
+                    "when no Skate resume checkpoint exists."
+                )
         agent = cfg.agent.build(**agent_build_kwargs)
+        checkpoint_source = "random_initialization"
+        if cfg.online_env == "skate":
+            agent.pretrained_load_report = load_pretrained_bfm0_agent(
+                agent,
+                Path(cfg.pretrained_checkpoint),
+            )
+            checkpoint_source = "official_bfm0_pretrained"
+            print(
+                "Loaded official pretrained BFM0: "
+                f"{agent.pretrained_load_report['source']}"
+            )
+    agent.checkpoint_source = checkpoint_source
     return agent, cfg, checkpoint_time
 
 
@@ -410,7 +592,13 @@ class Workspace:
         self.agent, self.cfg, self._checkpoint_time = create_agent_or_load_checkpoint(
             self.work_dir, self.cfg, agent_build_kwargs=dict(obs_space=self.obs_space, action_dim=self.action_dim)
         )
-        self.agent._model.train()
+        if self.cfg.online_env == "skate" and self.cfg.collect_only:
+            # Collect-only is an inference preflight. Keep BatchNorm and all
+            # other stateful modules in inference mode and freeze the model.
+            self.agent._model.eval()
+            self.agent._model.requires_grad_(False)
+        else:
+            self.agent._model.train()
 
         if isinstance(self.cfg.evaluations, list):
             self.evaluations = {eval_cfg.name_in_logs: eval_cfg.build() for eval_cfg in self.cfg.evaluations}
@@ -435,13 +623,16 @@ class Workspace:
             if self.priorization_eval_name is None:
                 raise ValueError("Prioritization requires tracking evaluation to be enabled")
 
-        self.training_with_expert_data = self.uses_base_online_env
+        # Online environment and expert source are independent. Skate uses
+        # HUSKY online while its expert buffers still come from MotionLib.
+        self.training_with_expert_data = True
 
         self.manager = None
         self.last_replay_buffer = None
         self.last_skate_transitions = []
         self.last_skate_sample = None
         self.agent_update_calls = 0
+        self.preflight_report = {}
 
     def train(self):
         self.start_time = time.time()
@@ -449,10 +640,22 @@ class Workspace:
 
     def train_online(self) -> dict | None:
         if self.training_with_expert_data:
+            expert_loader_env = None
+            expert_loader_env_owner = None
+            if self.uses_base_online_env:
+                expert_loader_env = self.train_env._env
+            elif isinstance(self.cfg.env, HumanoidVerseIsaacConfig):
+                print("Building minimal HumanoidVerse context for expert MotionLib only")
+                expert_loader_env_owner, _ = self.cfg.env.build(num_envs=1)
+                expert_loader_env = expert_loader_env_owner._env
+            else:
+                raise RuntimeError(
+                    "MotionLib expert loading requires HumanoidVerseIsaacConfig."
+                )
             if self.cfg.load_isaac_expert_data:
                 print("Loading Base expert trajectories")
                 expert_base = load_expert_trajectories_from_motion_lib(
-                    self.train_env._env,
+                    expert_loader_env,
                     self.cfg.agent,
                     device=self.cfg.buffer_device,
                 )
@@ -478,20 +681,20 @@ class Workspace:
                 skate_motion_path = Path(self.cfg.skate_expert_motion_file).expanduser().resolve()
                 if not skate_motion_path.is_file():
                     raise FileNotFoundError(f"Skate expert motion file not found: {skate_motion_path}")
-                skate_motion_cfg = copy.deepcopy(self.train_env._env.config.robot.motion)
+                skate_motion_cfg = copy.deepcopy(expert_loader_env.config.robot.motion)
                 skate_motion_cfg.motion_file = str(skate_motion_path)
-                skate_motion_lib = type(self.train_env._env._motion_lib)(
+                skate_motion_lib = type(expert_loader_env._motion_lib)(
                     skate_motion_cfg,
-                    num_envs=self.train_env._env.num_envs,
-                    device=self.train_env._env.device,
+                    num_envs=expert_loader_env.num_envs,
+                    device=expert_loader_env.device,
                 )
                 skate_expert_env = SimpleNamespace(
                     _motion_lib=skate_motion_lib,
-                    dt=self.train_env._env.dt,
-                    device=self.train_env._env.device,
-                    default_dof_pos=self.train_env._env.default_dof_pos,
-                    gravity_vec=self.train_env._env.gravity_vec,
-                    config=self.train_env._env.config,
+                    dt=expert_loader_env.dt,
+                    device=expert_loader_env.device,
+                    default_dof_pos=expert_loader_env.default_dof_pos,
+                    gravity_vec=expert_loader_env.gravity_vec,
+                    config=expert_loader_env.config,
                 )
                 print(f"Loading Skate expert trajectories from {skate_motion_path}")
                 expert_skate = load_expert_trajectories_from_motion_lib(
@@ -500,6 +703,8 @@ class Workspace:
                     device=self.cfg.buffer_device,
                 )
                 expert_skate.source = "skate"
+            if expert_loader_env_owner is not None:
+                expert_loader_env_owner.close()
         print("Creating the training environment")
 
         if self.uses_base_online_env and isinstance(self.cfg.env, HumanoidVerseIsaacConfig):
@@ -791,12 +996,132 @@ class Workspace:
             info = new_info
         train_env.close()
 
+    def _run_skate_preflight(self, replay_buffer: dict) -> None:
+        if "expert_base" not in replay_buffer or "expert_slicer" not in replay_buffer:
+            raise RuntimeError("Skate Workspace must build Base expert and expert_slicer buffers.")
+        if "expert_tracking" not in replay_buffer:
+            raise RuntimeError("Skate Workspace must build Base-only expert_tracking.")
+        if replay_buffer["expert_tracking"] is not replay_buffer["expert_base"]:
+            raise RuntimeError("expert_tracking must remain the Base expert buffer.")
+        if (
+            self.cfg.skate_expert_motion_file is not None
+            and self.cfg.skate_expert_ratio > 0.0
+        ):
+            if "expert_skate" not in replay_buffer:
+                raise RuntimeError("Configured Skate expert buffer was not created.")
+            if not isinstance(
+                replay_buffer["expert_slicer"],
+                BaseSkateExpertSampler,
+            ):
+                raise RuntimeError(
+                    "Configured Skate expert must participate through "
+                    "BaseSkateExpertSampler."
+                )
+
+        expert_batch_size = self.agent.cfg.train.batch_size
+        sequence_length = self.agent.cfg.model.seq_length
+        sequence_count = expert_batch_size // sequence_length
+        if isinstance(replay_buffer["expert_slicer"], BaseSkateExpertSampler):
+            skate_sequence_count = min(
+                sequence_count,
+                int(
+                    sequence_count
+                    * replay_buffer["expert_slicer"].skate_expert_ratio
+                    + 0.5
+                ),
+            )
+        else:
+            skate_sequence_count = 0
+        base_sequence_count = sequence_count - skate_sequence_count
+        expert_batch = replay_buffer["expert_slicer"].sample(expert_batch_size)
+        tracking_batch = replay_buffer["expert_tracking"].sample(
+            expert_batch_size,
+            seq_length=self.agent.cfg.model.seq_length,
+        )
+        train_batch = replay_buffer["train_skate"].sample(
+            min(16, len(replay_buffer["train_skate"]))
+        )
+        device = self.agent.device
+        expert_next_obs = tree_map(
+            lambda value: value.to(device),
+            expert_batch["next"]["observation"],
+        )
+        train_obs = tree_map(
+            lambda value: value.to(device),
+            train_batch["observation"],
+        )
+        train_next_obs = tree_map(
+            lambda value: value.to(device),
+            train_batch["next"]["observation"],
+        )
+        train_action = train_batch["action"].to(device)
+        train_z = train_batch["z"].to(device)
+
+        with torch.no_grad():
+            expert_z = self.agent.encode_expert(next_obs=expert_next_obs)
+            forward_output = self.agent._model.forward_map(
+                train_obs,
+                train_z,
+                train_action,
+            )
+            backward_output = self.agent._model.backward_map(train_next_obs)
+            normalized_train_obs = self.agent._model._normalize(train_obs)
+            discriminator_output = self.agent._model._discriminator.compute_logits(
+                normalized_train_obs,
+                train_z,
+            )
+
+        outputs = {
+            "expert_z": expert_z,
+            "forward": forward_output,
+            "backward": backward_output,
+            "discriminator": discriminator_output,
+        }
+        for name, value in outputs.items():
+            if not torch.isfinite(value).all():
+                raise RuntimeError(f"Pretrained {name} forward produced NaN or Inf.")
+        if expert_z.shape != (expert_batch_size, self.agent.cfg.model.archi.z_dim):
+            raise RuntimeError(f"Unexpected expert latent shape: {expert_z.shape}")
+        if train_z.shape[-1] != self.agent.cfg.model.archi.z_dim:
+            raise RuntimeError(f"Unexpected replay latent shape: {train_z.shape}")
+
+        self.preflight_report.update(
+            {
+                "expert_base": True,
+                "expert_skate": "expert_skate" in replay_buffer,
+                "expert_slicer": True,
+                "expert_tracking_base_only": replay_buffer["expert_tracking"]
+                is replay_buffer["expert_base"],
+                "expert_batch_shape": tuple(expert_z.shape),
+                "expert_z_norm": float(torch.linalg.vector_norm(expert_z, dim=-1).mean()),
+                "expert_base_sequences": base_sequence_count,
+                "expert_skate_sequences": skate_sequence_count,
+                "train_batch_size": len(train_batch["action"]),
+                "forward_shape": tuple(forward_output.shape),
+                "backward_shape": tuple(backward_output.shape),
+                "discriminator_shape": tuple(discriminator_output.shape),
+                "tracking_batch_shape": tuple(tracking_batch["observation"]["state"].shape),
+            }
+        )
+
     def _collect_skate_online(self, replay_buffer: dict) -> dict:
         if not self.cfg.collect_only:
             raise RuntimeError("Skate online updates are disabled in M2.1b.")
         if not isinstance(self.train_env, HuskyBfmOnlineEnv):
             raise RuntimeError("Skate online mode must use HuskyBfmOnlineEnv.")
 
+        self.preflight_report.update(
+            {
+                "model_parameters_before": _state_fingerprint(
+                    self.agent._model,
+                    parameters=True,
+                ),
+                "model_buffers_before": _state_fingerprint(
+                    self.agent._model,
+                    parameters=False,
+                ),
+            }
+        )
         print(
             f"Starting formal {type(self.train_env).__name__} collect-only path "
             f"for {self.cfg.skate_max_steps} steps"
@@ -872,6 +1197,33 @@ class Workspace:
             raise RuntimeError("Skate replay must store the 256D rollout latent.")
         if self.agent_update_calls != 0:
             raise RuntimeError("Collect-only mode must not call agent.update().")
+        self._run_skate_preflight(replay_buffer)
+        model_parameters_after = _state_fingerprint(self.agent._model, parameters=True)
+        model_buffers_after = _state_fingerprint(self.agent._model, parameters=False)
+        if model_parameters_after != self.preflight_report["model_parameters_before"]:
+            raise RuntimeError("Pretrained model parameters changed during collect-only preflight.")
+        if model_buffers_after != self.preflight_report["model_buffers_before"]:
+            raise RuntimeError("Pretrained model buffers changed during collect-only preflight.")
+        self.preflight_report.update(
+            {
+                "model_parameters_after": model_parameters_after,
+                "model_buffers_after": model_buffers_after,
+                "parameter_mutation": False,
+                "buffer_mutation": False,
+                "agent_update_calls": self.agent_update_calls,
+                "optimizer_steps": 0,
+            }
+        )
+        print(
+            "M2.2a preflight complete: "
+            f"expert Base/Skate sequences "
+            f"{self.preflight_report['expert_base_sequences']}/"
+            f"{self.preflight_report['expert_skate_sequences']}, "
+            f"expert_z {self.preflight_report['expert_batch_shape']}, "
+            f"F {self.preflight_report['forward_shape']}, "
+            f"B {self.preflight_report['backward_shape']}, "
+            "parameter mutation false, buffer mutation false"
+        )
         print(
             "HUSKY collect-only complete: "
             f"{len(replay_buffer['train_skate'])} transitions, "
@@ -1031,6 +1383,10 @@ def build_train_config() -> TrainConfig:
         online_env=online_env,
         collect_only=collect_only,
         skate_max_steps=skate_max_steps,
+        pretrained_checkpoint=os.environ.get(
+            "BFM0_PRETRAINED_CHECKPOINT",
+            str(REPOSITORY_ROOT / "model" / "bfm-zero-official"),
+        ),
         env=HumanoidVerseIsaacConfig(
             name='humanoidverse_isaac',
             device='cuda:0',
@@ -1082,7 +1438,7 @@ def build_train_config() -> TrainConfig:
         wandb_ename='yitangl',  # your wandb entity (username/team), empty = default from wandb login
         wandb_gname='bfmzero-isaac',  # run group
         wandb_pname='bfmzero-isaac',  # your wandb project name
-        load_isaac_expert_data=False if skate_mode else True,
+        load_isaac_expert_data=True,
         buffer_device='cpu' if skate_mode else 'cuda',
         disable_tqdm=True,
         evaluations=[] if skate_mode else [HumanoidVerseIsaacTrackingEvaluationConfig(name='HumanoidVerseIsaacTrackingEvaluationConfig', generate_videos=False, videos_dir='videos', video_name_prefix='unknown_agent', name_in_logs='humanoidverse_tracking_eval', env=None, num_envs=1024, n_episodes_per_motion=1)],
