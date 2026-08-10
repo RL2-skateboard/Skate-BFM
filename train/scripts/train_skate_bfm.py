@@ -6,6 +6,7 @@
 import copy
 import hashlib
 import os
+import random
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "husky_sim" / "src"))
 sys.path.insert(0, str(ISAAC_ENV_ROOT))
 
 from humanoidverse.agents.envs.humanoidverse_isaac import (
+    HYDRA_CONFIG_DIR,
     HumanoidVerseIsaacConfig,
     load_expert_trajectories_from_motion_lib,
 )
@@ -30,9 +32,11 @@ from humanoidverse.agents.evaluations.humanoidverse_isaac import (
     HumanoidVerseIsaacTrackingEvaluationConfig,
 )
 from humanoidverse.agents.envs.utils.gym_spaces import json_to_space
+from humanoidverse.agents.nn_models import _soft_update_params, eval_mode
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
+import mujoco
 import torch
 import safetensors.torch
 from safetensors import safe_open
@@ -65,6 +69,7 @@ from humanoidverse.agents.fb_cpr.agent import FBcprAgentConfig
 from humanoidverse.agents.fb_cpr_aux.agent import FBcprAuxAgentConfig
 from humanoidverse.agents.misc.loggers import CSVLogger
 from humanoidverse.agents.utils import EveryNStepsChecker, get_local_workdir, set_seed_everywhere
+from data_collection.rollout_split import randomize_husky_play_physics
 from skate_bfm.integration import HuskyBfmOnlineEnv
 
 TRAIN_LOG_FILENAME = "train_log.txt"
@@ -111,6 +116,9 @@ class TrainConfig(BaseConfig):
     skate_expert_ratio: float = pydantic.Field(default=0.5, ge=0.0, le=1.0)
     online_env: tp.Literal["base", "skate"] = "base"
     collect_only: bool = False
+    skate_update_mode: tp.Literal["none", "fb_only"] = "none"
+    adaptation_updates: int = pydantic.Field(default=0, ge=0)
+    adaptation_protocol: str | None = None
     skate_max_steps: int = pydantic.Field(default=64, gt=0)
     pretrained_checkpoint: str | None = None
 
@@ -177,19 +185,38 @@ class TrainConfig(BaseConfig):
                     "Skate Workspace expert integration requires "
                     "load_isaac_expert_data=True."
                 )
-            if not self.collect_only:
+            if self.skate_update_mode == "none" and not self.collect_only:
                 raise ValueError(
-                    "Skate online mode currently requires collect_only=True; "
-                    "optimizer updates are blocked until later dependencies are resolved."
+                    "skate_update_mode='none' requires collect_only=True."
+                )
+            if self.skate_update_mode == "fb_only" and self.collect_only:
+                raise ValueError(
+                    "skate_update_mode='fb_only' requires collect_only=False."
+                )
+            if self.skate_update_mode == "none" and self.adaptation_updates != 0:
+                raise ValueError(
+                    "skate_update_mode='none' requires adaptation_updates=0."
+                )
+            if (
+                self.skate_update_mode == "fb_only"
+                and self.adaptation_updates not in {1, 10, 100}
+            ):
+                raise ValueError(
+                    "B/F-only adaptation_updates must be one of 1, 10, or 100."
+                )
+            if self.skate_update_mode == "fb_only" and self.adaptation_protocol is None:
+                raise ValueError(
+                    "B/F-only adaptation requires the fixed evaluation protocol "
+                    "to define seen dynamics."
                 )
             if self.online_parallel_envs != 1:
                 raise ValueError("Skate online mode currently supports exactly one environment.")
             if self.use_trajectory_buffer:
                 raise ValueError("Skate online mode currently requires DictBuffer.")
             if self.prioritization:
-                raise ValueError("Skate collect-only mode does not support prioritization.")
+                raise ValueError("Skate online mode does not support prioritization.")
             if self.evaluations:
-                raise ValueError("Skate collect-only mode does not run Isaac evaluations.")
+                raise ValueError("Skate online mode does not run Isaac evaluations.")
 
         if self.prioritization:
             has_prioritization_eval = False
@@ -361,6 +388,45 @@ def _state_fingerprint(module: torch.nn.Module, *, parameters: bool) -> str:
     return digest.hexdigest()
 
 
+def _tensor_fingerprint(tensor: torch.Tensor) -> str:
+    digest = hashlib.sha256()
+    digest.update(str(tuple(tensor.shape)).encode("ascii"))
+    digest.update(str(tensor.dtype).encode("ascii"))
+    digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _component_fingerprints(agent) -> dict[str, str]:
+    model = agent._model
+    return {
+        "F": _state_fingerprint(model._forward_map, parameters=True),
+        "B": _state_fingerprint(model._backward_map, parameters=True),
+        "target_F": _state_fingerprint(
+            model._target_forward_map,
+            parameters=True,
+        ),
+        "target_B": _state_fingerprint(
+            model._target_backward_map,
+            parameters=True,
+        ),
+        "Actor": _state_fingerprint(model._actor, parameters=True),
+        "discriminator": _state_fingerprint(
+            model._discriminator,
+            parameters=True,
+        ),
+        "QD": _state_fingerprint(model._critic, parameters=True),
+        "target_QD": _state_fingerprint(
+            model._target_critic,
+            parameters=True,
+        ),
+        "Qaux": _state_fingerprint(model._aux_critic, parameters=True),
+        "target_Qaux": _state_fingerprint(
+            model._target_aux_critic,
+            parameters=True,
+        ),
+    }
+
+
 def _space_signature(space: gymnasium.spaces.Space) -> dict[str, tuple[int, ...]]:
     if not isinstance(space, gymnasium.spaces.Dict):
         raise TypeError(f"Expected a Dict observation space, got {type(space).__name__}.")
@@ -489,10 +555,74 @@ def load_pretrained_bfm0_agent(
     }
 
 
+def build_motion_only_expert_context(env_cfg: HumanoidVerseIsaacConfig):
+    """Build the vendored MotionLib expert context without IsaacLab."""
+
+    import hydra
+    from humanoidverse.utils.helpers import pre_process_config
+    from humanoidverse.utils.motion_lib.motion_lib_robot import MotionLibRobot
+    from omegaconf import OmegaConf
+
+    with hydra.initialize_config_dir(config_dir=HYDRA_CONFIG_DIR):
+        cfg = hydra.compose(
+            config_name=env_cfg.relative_config_path,
+            overrides=env_cfg.hydra_overrides or [],
+        )
+    cfg.num_envs = 1
+    cfg.exp_base = "__no_exp_base__"
+    cfg.robot.asset.asset_root = cfg.robot.asset.asset_root.replace(
+        "humanoidverse",
+        str(ISAAC_ENV_ROOT / "humanoidverse"),
+    )
+    cfg.robot.motion.asset.assetRoot = cfg.robot.motion.asset.assetRoot.replace(
+        "humanoidverse",
+        str(ISAAC_ENV_ROOT / "humanoidverse"),
+    )
+    cfg.robot.motion.motion_file = env_cfg.lafan_tail_path
+    cfg.obs.root_height_obs = env_cfg.root_height_obs
+    pre_process_config(cfg)
+    OmegaConf.set_struct(cfg, False)
+    motion_lib = MotionLibRobot(
+        cfg.robot.motion,
+        num_envs=1,
+        device=env_cfg.device,
+    )
+    motion_lib.load_motions_for_training()
+    default_dof_pos = torch.tensor(
+        [
+            cfg.robot.init_state.default_joint_angles[name]
+            for name in cfg.robot.dof_names
+        ],
+        dtype=torch.float32,
+        device=env_cfg.device,
+    ).unsqueeze(0)
+    dt = (
+        float(cfg.simulator.config.sim.control_decimation)
+        / float(cfg.simulator.config.sim.fps)
+    )
+    return SimpleNamespace(
+        _motion_lib=motion_lib,
+        dt=dt,
+        device=env_cfg.device,
+        default_dof_pos=default_dof_pos,
+        gravity_vec=torch.tensor(
+            [[0.0, 0.0, -1.0]],
+            dtype=torch.float32,
+            device=env_cfg.device,
+        ),
+        config=cfg.env.config,
+    )
+
+
 def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_build_kwargs: dict[str, tp.Any]):
     checkpoint_dir = work_dir / CHECKPOINT_DIR_NAME
     checkpoint_time = 0
     if checkpoint_dir.exists():
+        if cfg.online_env == "skate" and cfg.skate_update_mode == "fb_only":
+            raise RuntimeError(
+                "B/F-only diagnostic milestones must start from the official "
+                "BFM0 checkpoint in an empty work directory."
+            )
         with (checkpoint_dir / "train_status.json").open("r") as f:
             train_status = json.load(f)
         checkpoint_time = train_status["time"]
@@ -597,6 +727,11 @@ class Workspace:
             # other stateful modules in inference mode and freeze the model.
             self.agent._model.eval()
             self.agent._model.requires_grad_(False)
+        elif (
+            self.cfg.online_env == "skate"
+            and self.cfg.skate_update_mode == "fb_only"
+        ):
+            self._configure_fb_only_boundary()
         else:
             self.agent._model.train()
 
@@ -632,6 +767,7 @@ class Workspace:
         self.last_skate_transitions = []
         self.last_skate_sample = None
         self.agent_update_calls = 0
+        self.fb_update_calls = 0
         self.preflight_report = {}
 
     def train(self):
@@ -646,8 +782,20 @@ class Workspace:
                 expert_loader_env = self.train_env._env
             elif isinstance(self.cfg.env, HumanoidVerseIsaacConfig):
                 print("Building minimal HumanoidVerse context for expert MotionLib only")
-                expert_loader_env_owner, _ = self.cfg.env.build(num_envs=1)
-                expert_loader_env = expert_loader_env_owner._env
+                try:
+                    expert_loader_env_owner, _ = self.cfg.env.build(num_envs=1)
+                    expert_loader_env = expert_loader_env_owner._env
+                except ModuleNotFoundError as error:
+                    if error.name != "isaaclab":
+                        raise
+                    print(
+                        "IsaacLab is unavailable; using the vendored MotionLib "
+                        "data-only expert context."
+                    )
+                    expert_loader_env_owner = None
+                    expert_loader_env = build_motion_only_expert_context(
+                        self.cfg.env,
+                    )
             else:
                 raise RuntimeError(
                     "MotionLib expert loading requires HumanoidVerseIsaacConfig."
@@ -769,6 +917,8 @@ class Workspace:
                 replay_buffer["expert_slicer"] = replay_buffer["expert_base"]
 
         if not self.uses_base_online_env:
+            if self.cfg.skate_update_mode == "fb_only":
+                return self._adapt_skate_fb(replay_buffer)
             return self._collect_skate_online(replay_buffer)
 
         print("Starting training")
@@ -1104,6 +1254,396 @@ class Workspace:
             }
         )
 
+    def _configure_fb_only_boundary(self) -> None:
+        model = self.agent._model
+        model.train()
+        model.requires_grad_(False)
+        model._forward_map.requires_grad_(True)
+        model._backward_map.requires_grad_(True)
+        model._obs_normalizer.train()
+
+    def _load_seen_training_conditions(self) -> list[dict[str, tp.Any]]:
+        protocol_path = Path(self.cfg.adaptation_protocol).expanduser().resolve()
+        with protocol_path.open(encoding="utf-8") as handle:
+            protocol = json.load(handle)
+        if protocol.get("evaluator_version") != "skate-bfm-fixed-eval-v1":
+            raise ValueError("Unsupported adaptation protocol version.")
+        seen = [
+            condition
+            for condition in protocol["rollouts"]
+            if condition["dynamics_split"] == "seen"
+        ]
+        if not seen:
+            raise ValueError("Adaptation protocol does not define seen dynamics.")
+        return [
+            {
+                **condition,
+                "rollout_id": condition["rollout_id"].replace(
+                    "eval_seen_",
+                    "train_seen_",
+                ),
+                "rollout_seed": int(condition["rollout_seed"]) + 100_000,
+                "latent_seed": int(condition["latent_seed"]) + 100_000,
+            }
+            for condition in seen
+        ]
+
+    def _collect_seen_skate_replay(
+        self,
+        replay_buffer: dict,
+    ) -> tuple[list, list[dict[str, tp.Any]]]:
+        conditions = self._load_seen_training_conditions()
+        base_steps, remainder = divmod(self.cfg.skate_max_steps, len(conditions))
+        transitions = []
+        rollout_reports = []
+        self.train_env.close()
+
+        for index, condition in enumerate(conditions):
+            rollout_steps = base_steps + int(index < remainder)
+            random.seed(condition["rollout_seed"])
+            np.random.seed(condition["rollout_seed"])
+            torch.manual_seed(condition["rollout_seed"])
+            env = HuskyBfmOnlineEnv()
+            dynamics_report, joint_offsets = randomize_husky_play_physics(
+                env.env.model,
+                condition["rollout_id"],
+                condition["dynamics_seed"],
+            )
+            env.env.set_reset_joint_offsets(joint_offsets)
+            mujoco.mj_setConst(env.env.model, env.env.data)
+            observation = env.reset()
+            z = None
+            transition_ids = []
+            try:
+                for step in range(rollout_steps):
+                    if (
+                        z is None
+                        or step % self.cfg.agent.train.update_z_every_step == 0
+                    ):
+                        torch.manual_seed(condition["latent_seed"] + step)
+                        z = self.agent._model.sample_z(
+                            1,
+                            device=self.agent.device,
+                        )[0]
+                    model_observation = {
+                        key: value.unsqueeze(0).to(self.agent.device)
+                        for key, value in observation.items()
+                    }
+                    with torch.no_grad():
+                        action_bfm = self.agent.act(
+                            obs=model_observation,
+                            z=z.unsqueeze(0),
+                            mean=True,
+                        )[0]
+                    transition = env.step(
+                        action_bfm,
+                        z,
+                        truncated=step == rollout_steps - 1,
+                    )
+                    replay_buffer["train_skate"].extend(
+                        transition.as_buffer_data()
+                    )
+                    transitions.append(transition)
+                    transition_ids.append(
+                        f"{condition['rollout_id']}:{step:04d}"
+                    )
+                    observation = transition.next_observation
+            finally:
+                env.close()
+            rollout_reports.append(
+                {
+                    "rollout_id": condition["rollout_id"],
+                    "source_eval_rollout_id": condition["rollout_id"].replace(
+                        "train_seen_",
+                        "eval_seen_",
+                    ),
+                    "dynamics_split": "seen",
+                    "rollout_seed": condition["rollout_seed"],
+                    "dynamics_seed": condition["dynamics_seed"],
+                    "latent_seed": condition["latent_seed"],
+                    "transition_count": rollout_steps,
+                    "transition_ids": transition_ids,
+                    "dynamics_realization": dynamics_report,
+                }
+            )
+        return transitions, rollout_reports
+
+    def _fb_only_update(self, replay_buffer: dict) -> dict[str, torch.Tensor]:
+        expert_batch = replay_buffer["expert_slicer"].sample(
+            self.agent.cfg.train.batch_size
+        )
+        train_batch = replay_buffer["train_skate"].sample(
+            self.agent.cfg.train.batch_size
+        )
+        device = self.agent.device
+        train_obs = tree_map(
+            lambda value: value.to(device),
+            train_batch["observation"],
+        )
+        train_action = train_batch["action"].to(device)
+        train_next_obs = tree_map(
+            lambda value: value.to(device),
+            train_batch["next"]["observation"],
+        )
+        discount = (
+            self.agent.cfg.train.discount
+            * ~train_batch["next"]["terminated"].to(device)
+        )
+        expert_obs = tree_map(
+            lambda value: value.to(device),
+            expert_batch["observation"],
+        )
+        expert_next_obs = tree_map(
+            lambda value: value.to(device),
+            expert_batch["next"]["observation"],
+        )
+
+        self.agent._model._obs_normalizer(train_obs)
+        self.agent._model._obs_normalizer(train_next_obs)
+        with torch.no_grad(), eval_mode(self.agent._model._obs_normalizer):
+            train_obs = self.agent._model._obs_normalizer(train_obs)
+            train_next_obs = self.agent._model._obs_normalizer(train_next_obs)
+            expert_obs = self.agent._model._obs_normalizer(expert_obs)
+            expert_next_obs = self.agent._model._obs_normalizer(
+                expert_next_obs
+            )
+
+        torch.compiler.cudagraph_mark_step_begin()
+        expert_z = self.agent.encode_expert(next_obs=expert_next_obs)
+        train_z = train_batch["z"].to(device)
+        mixed_z = self.agent.sample_mixed_z(
+            train_goal=train_next_obs,
+            expert_encodings=expert_z,
+        ).clone()
+        self.agent.z_buffer.add(mixed_z)
+        if self.agent.cfg.train.relabel_ratio is not None:
+            mask = (
+                torch.rand(
+                    (self.agent.cfg.train.batch_size, 1),
+                    device=device,
+                )
+                <= self.agent.cfg.train.relabel_ratio
+            )
+            train_z = torch.where(mask, mixed_z, train_z)
+
+        q_loss_coef = (
+            self.agent.cfg.train.q_loss_coef
+            if self.agent.cfg.train.q_loss_coef > 0
+            else None
+        )
+        clip_grad_norm = (
+            self.agent.cfg.train.clip_grad_norm
+            if self.agent.cfg.train.clip_grad_norm > 0
+            else None
+        )
+        metrics = self.agent.update_fb(
+            obs=train_obs,
+            action=train_action,
+            discount=discount,
+            next_obs=train_next_obs,
+            goal=train_next_obs,
+            z=train_z,
+            q_loss_coef=q_loss_coef,
+            clip_grad_norm=clip_grad_norm,
+        )
+        with torch.no_grad():
+            _soft_update_params(
+                self.agent._forward_map_paramlist,
+                self.agent._target_forward_map_paramlist,
+                self.agent.cfg.train.fb_target_tau,
+            )
+            _soft_update_params(
+                self.agent._backward_map_paramlist,
+                self.agent._target_backward_map_paramlist,
+                self.agent.cfg.train.fb_target_tau,
+            )
+        return metrics
+
+    def _adapt_skate_fb(self, replay_buffer: dict) -> dict:
+        if self.cfg.collect_only:
+            raise RuntimeError("B/F-only adaptation cannot run collect-only.")
+        if self.cfg.skate_update_mode != "fb_only":
+            raise RuntimeError("Full Skate agent updates remain prohibited.")
+        if replay_buffer["train"] is not replay_buffer["train_skate"]:
+            raise RuntimeError("train must remain an alias of train_skate.")
+
+        transitions, rollout_reports = self._collect_seen_skate_replay(
+            replay_buffer
+        )
+        if len(transitions) != self.cfg.skate_max_steps:
+            raise RuntimeError("Seen Skate replay collection was incomplete.")
+        if any(
+            report["dynamics_split"] != "seen"
+            for report in rollout_reports
+        ):
+            raise RuntimeError("Unseen dynamics entered Skate training replay.")
+        if any(
+            transition_id.startswith("eval_")
+            for report in rollout_reports
+            for transition_id in report["transition_ids"]
+        ):
+            raise RuntimeError("Evaluation transitions entered training replay.")
+
+        self._run_skate_preflight(replay_buffer)
+        before = _component_fingerprints(self.agent)
+        normalizer_before = _state_fingerprint(
+            self.agent._model._obs_normalizer,
+            parameters=False,
+        )
+        z_buffer_before = _tensor_fingerprint(self.agent.z_buffer._storage)
+        metric_history = []
+        max_gradient = {"F": 0.0, "B": 0.0}
+
+        for update_index in range(self.cfg.adaptation_updates):
+            metrics = self._fb_only_update(replay_buffer)
+            scalar_metrics = {
+                name: float(value.detach().mean().cpu())
+                for name, value in metrics.items()
+            }
+            if not all(np.isfinite(value) for value in scalar_metrics.values()):
+                raise RuntimeError(
+                    f"Non-finite B/F metric at update {update_index + 1}."
+                )
+            for name, module in (
+                ("F", self.agent._model._forward_map),
+                ("B", self.agent._model._backward_map),
+            ):
+                gradients = [
+                    parameter.grad
+                    for parameter in module.parameters()
+                    if parameter.grad is not None
+                ]
+                if not gradients or not all(
+                    torch.isfinite(gradient).all() for gradient in gradients
+                ):
+                    raise RuntimeError(
+                        f"{name} gradients are missing or non-finite at "
+                        f"update {update_index + 1}."
+                    )
+                max_gradient[name] = max(
+                    max_gradient[name],
+                    max(float(gradient.detach().abs().max()) for gradient in gradients),
+                )
+            metric_history.append(scalar_metrics)
+            self.fb_update_calls += 1
+
+        after = _component_fingerprints(self.agent)
+        changed = {
+            name: before[name] != after[name]
+            for name in before
+        }
+        expected_changed = {"F", "B", "target_F", "target_B"}
+        for name in expected_changed:
+            if not changed[name]:
+                raise RuntimeError(f"Expected {name} to change during adaptation.")
+        for name in set(changed) - expected_changed:
+            if changed[name]:
+                raise RuntimeError(f"Forbidden component changed: {name}.")
+
+        normalizer_after = _state_fingerprint(
+            self.agent._model._obs_normalizer,
+            parameters=False,
+        )
+        z_buffer_after = _tensor_fingerprint(self.agent.z_buffer._storage)
+        report = {
+            "stage": "M2.2b-1",
+            "method": "Original FB + Skate",
+            "adaptation": "experimental B/F-only adaptation",
+            "pretrained_checkpoint": self.agent.pretrained_load_report,
+            "training_replay": {
+                "buffer": "train_skate",
+                "train_alias_is_train_skate": replay_buffer["train"]
+                is replay_buffer["train_skate"],
+                "transition_count": len(replay_buffer["train_skate"]),
+                "rollouts": rollout_reports,
+                "skate_only": True,
+                "unseen_transition_count": 0,
+                "eval_transition_count": 0,
+            },
+            "expert": {
+                "source": "Base + Skate",
+                "skate_expert_ratio": self.cfg.skate_expert_ratio,
+            },
+            "updates": self.cfg.adaptation_updates,
+            "optimizer": {
+                "F_learning_rate": self.agent.cfg.train.lr_f,
+                "B_learning_rate": self.agent.cfg.train.lr_b,
+                "fresh_optimizer_state": True,
+                "allowed": ["forward_optimizer", "backward_optimizer"],
+                "forbidden": [
+                    "actor_optimizer",
+                    "discriminator_optimizer",
+                    "critic_optimizer",
+                    "aux_critic_optimizer",
+                ],
+            },
+            "fb_config": {
+                "discount": self.agent.cfg.train.discount,
+                "fb_target_tau": self.agent.cfg.train.fb_target_tau,
+                "ortho_coef": self.agent.cfg.train.ortho_coef,
+                "q_loss_coef": self.agent.cfg.train.q_loss_coef,
+                "clip_grad_norm": self.agent.cfg.train.clip_grad_norm,
+                "train_goal_ratio": self.agent.cfg.train.train_goal_ratio,
+                "expert_asm_ratio": self.agent.cfg.train.expert_asm_ratio,
+                "relabel_ratio": self.agent.cfg.train.relabel_ratio,
+            },
+            "parameter_fingerprints": {
+                name: {
+                    "before": before[name],
+                    "after": after[name],
+                    "changed": changed[name],
+                }
+                for name in before
+            },
+            "normalizer": {
+                "before": normalizer_before,
+                "after": normalizer_after,
+                "changed": normalizer_before != normalizer_after,
+                "semantics": (
+                    "updated from train_obs and train_next_obs exactly as in "
+                    "the vendored FBcprAuxAgent.update path"
+                ),
+            },
+            "z_buffer": {
+                "before": z_buffer_before,
+                "after": z_buffer_after,
+                "changed": z_buffer_before != z_buffer_after,
+                "size": len(self.agent.z_buffer),
+            },
+            "gradients": {
+                "all_finite": True,
+                "maximum_absolute": max_gradient,
+            },
+            "losses": {
+                "all_finite": True,
+                "first": metric_history[0],
+                "last": metric_history[-1],
+            },
+            "agent_update_calls": self.agent_update_calls,
+            "direct_update_fb_calls": self.fb_update_calls,
+            "native_termination": "unresolved",
+            "Qaux": "unresolved",
+            "command_aligned_downstream": "unresolved",
+        }
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        with (self.work_dir / "adaptation_report.json").open(
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(report, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        self.save(self.cfg.adaptation_updates, replay_buffer)
+        self.last_replay_buffer = replay_buffer
+        self.last_skate_transitions = transitions
+        self.preflight_report = report
+        print(
+            "M2.2b-1 B/F-only adaptation complete: "
+            f"{len(replay_buffer['train_skate'])} Skate transitions, "
+            f"{self.cfg.adaptation_updates} direct update_fb calls, "
+            "forbidden optimizer calls 0"
+        )
+        return replay_buffer
+
     def _collect_skate_online(self, replay_buffer: dict) -> dict:
         if not self.cfg.collect_only:
             raise RuntimeError("Skate online updates are disabled in M2.1b.")
@@ -1297,9 +1837,25 @@ def build_train_config() -> TrainConfig:
         raise ValueError(
             f"SKATE_ONLINE_ENV must be 'base' or 'skate', got {online_env!r}."
         )
-    collect_only = _environment_flag("SKATE_COLLECT_ONLY", default=False)
     skate_mode = online_env == "skate"
-    skate_max_steps = int(os.environ.get("SKATE_MAX_STEPS", "64"))
+    skate_update_mode = os.environ.get(
+        "SKATE_UPDATE_MODE",
+        "none",
+    ).strip().lower()
+    if skate_update_mode not in {"none", "fb_only"}:
+        raise ValueError(
+            "SKATE_UPDATE_MODE must be 'none' or 'fb_only', "
+            f"got {skate_update_mode!r}."
+        )
+    collect_only = _environment_flag(
+        "SKATE_COLLECT_ONLY",
+        default=skate_mode and skate_update_mode == "none",
+    )
+    adaptation_updates = int(os.environ.get("SKATE_ADAPTATION_UPDATES", "0"))
+    default_skate_steps = "1024" if skate_update_mode == "fb_only" else "64"
+    skate_max_steps = int(
+        os.environ.get("SKATE_MAX_STEPS", default_skate_steps)
+    )
 
     cfg = TrainConfig(
         name='TrainConfig',
@@ -1382,6 +1938,12 @@ def build_train_config() -> TrainConfig:
         skate_expert_ratio=float(os.environ.get("SKATE_EXPERT_RATIO", "0.5")),
         online_env=online_env,
         collect_only=collect_only,
+        skate_update_mode=skate_update_mode,
+        adaptation_updates=adaptation_updates,
+        adaptation_protocol=os.environ.get(
+            "SKATE_ADAPTATION_PROTOCOL",
+            str(REPOSITORY_ROOT / "train" / "evaluation_protocol.json"),
+        ),
         skate_max_steps=skate_max_steps,
         pretrained_checkpoint=os.environ.get(
             "BFM0_PRETRAINED_CHECKPOINT",

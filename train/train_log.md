@@ -395,3 +395,50 @@
   0.8` after enough estimator data. No MEBE estimator or 0.8 branch was added
   to Skate-BFM.
 - Q_aux mapping to FB-MEBE behavior regularization remains unresolved.
+
+## 13. M2.2b-1 First B/F-only Skate Adaptation
+
+- Date: 2026-08-10
+- Added a fail-closed `skate_update_mode` with `none` and `fb_only`.
+  `none` preserves the M2.2a collect-only behavior. `fb_only` is the only
+  accepted Skate adaptation path and never calls the full
+  `FBcprAuxAgent.update()`.
+- Training used the official pretrained BFM0 initialization from
+  `model/bfm-zero-official`. Each milestone was an independent run from that
+  same initialization; no run resumed from another milestone.
+- The training replay contained 1024 transitions from two `train_seen_*`
+  HUSKY rollouts. It used Skate dynamics only, reused the two protocol-defined
+  seen dynamics seeds, and contained zero unseen or evaluation transitions.
+  `replay_buffer["train"]` remained the same object as
+  `replay_buffer["train_skate"]`.
+- Expert sampling remained Base + Skate with `skate_expert_ratio=0.5`.
+  Expert latents were produced by `encode_expert()` and the final training
+  latent used the vendored `sample_mixed_z()` and `relabel_ratio=0.8`
+  semantics. No RFB, BFB, MEBE, dynamics context, or new exploration branch
+  was added.
+- The adaptation path directly called the vendored `update_fb()`. Only
+  `forward_optimizer` and `backward_optimizer` stepped. F, B, target F, and
+  target B changed; Actor, discriminator, QD, Qaux, and their target modules
+  remained unchanged. The observation normalizer changed according to the
+  original update semantics, and the z-buffer changed after each update.
+- Fixed evaluator version: `skate-bfm-fixed-eval-v1`, 512 held-out
+  transitions, with evaluation and unseen dynamics isolated from training.
+  Results:
+
+  | Updates | FB loss | Top-1 | Top-5 | Mean rank | Median rank | Margin | Entropy (nats) |
+  | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 0 | 1692189.5000 | 0.2656 | 0.7344 | 5.2969 | 3 | 846.7319 | 4.703526 |
+  | 1 | 934192.1250 | 0.3750 | 0.7031 | 5.4531 | 2 | 1274.1001 | 4.853298 |
+  | 10 | 1134625.5000 | 0.3125 | 0.7500 | 4.7031 | 2 | 769.3938 | 4.115609 |
+  | 100 | 1793956.3750 | 0.3281 | 0.6875 | 5.2813 | 2 | 520.5139 | 3.558375 |
+
+- The fixed BFM0 evaluator was repeated and produced identical metrics. The
+  `update_1`, `update_10`, and `update_100` checkpoints are stored locally
+  under `results/m2.2b-1/` and are not committed to Git.
+- Base retention was not assigned a score. The official entrypoint starts
+  without IsaacLab on this server; a one-environment MuJoCo fallback was
+  started but stopped because it is not the protocol's 1024-environment
+  evaluation and would not provide a comparable Base retention result.
+- Native HUSKY termination, Qaux, and command-aligned downstream evaluation
+  remain unresolved. Formal full training, Actor updates, BFB, RFB, and
+  FB-MEBE remain disabled.

@@ -18,6 +18,7 @@ data/
 outputs/
 runs/
 wandb/
+results/
 train/dataset/*
 !train/dataset/README.md
 !train/dataset/BFM-Zero/
