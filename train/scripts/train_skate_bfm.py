@@ -74,6 +74,18 @@ _ENC_CONFIG_TO_EXPERT_DATA_OBS_MAPPER = {
 }
 
 
+def _environment_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value, got {value!r}.")
+
+
 
 Evaluation = tp.Annotated[
     tp.Union[
@@ -93,6 +105,9 @@ class TrainConfig(BaseConfig):
     motions_root: str | None = None
     skate_expert_motion_file: str | None = None
     skate_expert_ratio: float = pydantic.Field(default=0.5, ge=0.0, le=1.0)
+    online_env: tp.Literal["base", "skate"] = "base"
+    collect_only: bool = False
+    skate_max_steps: int = pydantic.Field(default=64, gt=0)
 
     env: HumanoidVerseIsaacConfig = pydantic.Field(discriminator="name")
 
@@ -151,6 +166,20 @@ class TrainConfig(BaseConfig):
             raise ValueError("Loading expert isaac data is only supported for HumanoidVerseIsaacConfig")
         if self.skate_expert_motion_file is not None and not self.load_isaac_expert_data:
             raise ValueError("Skate expert MotionLib data requires load_isaac_expert_data=True")
+        if self.online_env == "skate":
+            if not self.collect_only:
+                raise ValueError(
+                    "Skate online mode currently requires collect_only=True; "
+                    "optimizer updates are blocked until later dependencies are resolved."
+                )
+            if self.online_parallel_envs != 1:
+                raise ValueError("Skate online mode currently supports exactly one environment.")
+            if self.use_trajectory_buffer:
+                raise ValueError("Skate online mode currently requires DictBuffer.")
+            if self.prioritization:
+                raise ValueError("Skate collect-only mode does not support prioritization.")
+            if self.evaluations:
+                raise ValueError("Skate collect-only mode does not run Isaac evaluations.")
 
         if self.prioritization:
             has_prioritization_eval = False
@@ -322,25 +351,47 @@ def init_wandb(cfg: TrainConfig):
 class Workspace:
     def __init__(self, cfg: TrainConfig) -> None:
         self.cfg = cfg
+        self.uses_base_online_env = cfg.online_env == "base"
 
         # HACK with Isaac, we can not recreate environments with current code, so we need to
         #      create the environment with desired number of envs here
-        if isinstance(cfg.env, HumanoidVerseIsaacConfig):
+        if self.uses_base_online_env and isinstance(cfg.env, HumanoidVerseIsaacConfig):
             from omegaconf import OmegaConf
 
             self.train_env, self.train_env_info = cfg.env.build(num_envs=cfg.online_parallel_envs)
             self.obs_space = self.train_env.single_observation_space
             self.action_space = self.train_env.single_action_space
-        else:
+        elif self.uses_base_online_env:
             sample_env, _ = cfg.env.build(num_envs=1)
             self.obs_space = sample_env.observation_space
             self.action_space = sample_env.action_space
+        else:
+            self.train_env = HuskyBfmOnlineEnv()
+            sample_observation = self.train_env.reset()
+            self.train_env_info = {"online_env": "skate"}
+            self.obs_space = gymnasium.spaces.Dict(
+                {
+                    key: gymnasium.spaces.Box(
+                        low=-np.inf,
+                        high=np.inf,
+                        shape=tuple(value.shape),
+                        dtype=np.float32,
+                    )
+                    for key, value in sample_observation.items()
+                }
+            )
+            self.action_space = gymnasium.spaces.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(29,),
+                dtype=np.float32,
+            )
 
-        assert "time" in self.obs_space.keys(), "Observation space must contain 'obs' and 'time' (TimeAwareObservation wrapper)"
+        if self.uses_base_online_env:
+            assert "time" in self.obs_space.keys(), "Observation space must contain 'obs' and 'time' (TimeAwareObservation wrapper)"
+            # Original BFM agents do not consume the TimeAwareObservation field.
+            del self.obs_space.spaces["time"]
         assert len(self.action_space.shape) == 1, "Only 1D action space is supported (first dim should be vector env)"
-        # TODO for backwards consistency, we do not pass "time" to the agent, so we remove it from the obs_space we pass to the agent/model
-        #      but would we need it at some point?
-        del self.obs_space.spaces["time"]
 
         self.action_dim = self.action_space.shape[0]
 
@@ -348,7 +399,7 @@ class Workspace:
         self.work_dir = Path(self.cfg.work_dir)
         self.work_dir.mkdir(exist_ok=True, parents=True)
 
-        if isinstance(cfg.env, HumanoidVerseIsaacConfig):
+        if self.uses_base_online_env and isinstance(cfg.env, HumanoidVerseIsaacConfig):
             with open(self.work_dir / "config.yaml", "w") as file:
                 OmegaConf.save(self.train_env_info["unresolved_conf"], file)
 
@@ -384,15 +435,19 @@ class Workspace:
             if self.priorization_eval_name is None:
                 raise ValueError("Prioritization requires tracking evaluation to be enabled")
 
-        self.training_with_expert_data = True
+        self.training_with_expert_data = self.uses_base_online_env
 
         self.manager = None
+        self.last_replay_buffer = None
+        self.last_skate_transitions = []
+        self.last_skate_sample = None
+        self.agent_update_calls = 0
 
     def train(self):
         self.start_time = time.time()
-        self.train_online()
+        return self.train_online()
 
-    def train_online(self) -> None:
+    def train_online(self) -> dict | None:
         if self.training_with_expert_data:
             if self.cfg.load_isaac_expert_data:
                 print("Loading Base expert trajectories")
@@ -447,11 +502,14 @@ class Workspace:
                 expert_skate.source = "skate"
         print("Creating the training environment")
 
-        if isinstance(self.cfg.env, HumanoidVerseIsaacConfig):
+        if self.uses_base_online_env and isinstance(self.cfg.env, HumanoidVerseIsaacConfig):
             train_env = self.train_env
             train_env_info = self.train_env_info
-        else:
+        elif self.uses_base_online_env:
             train_env, train_env_info = self.cfg.env.build(num_envs=self.cfg.online_parallel_envs)
+        else:
+            train_env = self.train_env
+            train_env_info = self.train_env_info
 
         print("Allocating buffers")
         replay_buffer = {}
@@ -504,6 +562,9 @@ class Workspace:
             else:
                 # Preserve the original BFM-Zero Base-only sampling object.
                 replay_buffer["expert_slicer"] = replay_buffer["expert_base"]
+
+        if not self.uses_base_online_env:
+            return self._collect_skate_online(replay_buffer)
 
         print("Starting training")
         progb = tqdm(total=self.cfg.num_env_steps, disable=self.cfg.disable_tqdm)
@@ -686,9 +747,15 @@ class Workspace:
                 raise NotImplementedError("still some work to do for gymnasium < 1.0")
             replay_buffer["train"].extend(data)
 
-            if len(replay_buffer["train"]) > 0 and t > self.cfg.num_seed_steps and update_agent_time_checker.check(t):
+            if (
+                not self.cfg.collect_only
+                and len(replay_buffer["train"]) > 0
+                and t > self.cfg.num_seed_steps
+                and update_agent_time_checker.check(t)
+            ):
                 update_agent_time_checker.update_last_step(t)
                 for _ in range(self.cfg.num_agent_updates):
+                    self.agent_update_calls += 1
                     metrics = self.agent.update(replay_buffer, t)
                     if total_metrics is None:
                         num_metrics_updates = 1
@@ -723,6 +790,94 @@ class Workspace:
             done = np.logical_or(new_terminated.ravel(), new_truncated.ravel())
             info = new_info
         train_env.close()
+
+    def _collect_skate_online(self, replay_buffer: dict) -> dict:
+        if not self.cfg.collect_only:
+            raise RuntimeError("Skate online updates are disabled in M2.1b.")
+        if not isinstance(self.train_env, HuskyBfmOnlineEnv):
+            raise RuntimeError("Skate online mode must use HuskyBfmOnlineEnv.")
+
+        print(
+            f"Starting formal {type(self.train_env).__name__} collect-only path "
+            f"for {self.cfg.skate_max_steps} steps"
+        )
+        observation = self.train_env.reset()
+        transitions = []
+        z = None
+        try:
+            for step in range(self.cfg.skate_max_steps):
+                if z is None or step % self.cfg.agent.train.update_z_every_step == 0:
+                    z = self.agent._model.sample_z(1, device=self.agent.device)[0]
+                model_observation = {
+                    key: value.unsqueeze(0).to(self.agent.device)
+                    for key, value in observation.items()
+                }
+                with torch.no_grad():
+                    action_bfm = self.agent.act(
+                        obs=model_observation,
+                        z=z.unsqueeze(0),
+                        mean=True,
+                    )[0]
+                transition = self.train_env.step(
+                    action_bfm,
+                    z,
+                    truncated=step == self.cfg.skate_max_steps - 1,
+                )
+                replay_buffer["train_skate"].extend(
+                    transition.as_buffer_data()
+                )
+                transitions.append(transition)
+
+                if transition.terminated or transition.truncated:
+                    if step != self.cfg.skate_max_steps - 1:
+                        observation = self.train_env.reset()
+                    else:
+                        observation = transition.next_observation
+                else:
+                    observation = transition.next_observation
+        finally:
+            self.train_env.close()
+
+        self.last_replay_buffer = replay_buffer
+        self.last_skate_transitions = transitions
+        if replay_buffer["train"] is not replay_buffer["train_skate"]:
+            raise RuntimeError("train must remain an alias of train_skate.")
+        if len(transitions) != self.cfg.skate_max_steps:
+            raise RuntimeError(
+                f"Expected {self.cfg.skate_max_steps} transitions, got {len(transitions)}."
+            )
+        if not transitions[-1].truncated:
+            raise RuntimeError("The bounded Skate rollout must end with truncation.")
+        if any(
+            transition.action_bfm.shape != (29,)
+            or transition.action_husky.shape != (23,)
+            for transition in transitions
+        ):
+            raise RuntimeError("Skate action contract must remain 29D stored / 23D executed.")
+        self.last_skate_sample = replay_buffer["train_skate"].sample(
+            min(16, len(replay_buffer["train_skate"]))
+        )
+        expected_observation_shapes = {
+            "state": 64,
+            "privileged_state": 463,
+            "last_action": 29,
+            "history_actor": 372,
+        }
+        for key, width in expected_observation_shapes.items():
+            if self.last_skate_sample["observation"][key].shape[-1] != width:
+                raise RuntimeError(f"Invalid Skate replay observation field: {key}.")
+        if self.last_skate_sample["action"].shape[-1] != 29:
+            raise RuntimeError("Skate replay must store the 29D BFM action.")
+        if self.last_skate_sample["z"].shape[-1] != 256:
+            raise RuntimeError("Skate replay must store the 256D rollout latent.")
+        if self.agent_update_calls != 0:
+            raise RuntimeError("Collect-only mode must not call agent.update().")
+        print(
+            "HUSKY collect-only complete: "
+            f"{len(replay_buffer['train_skate'])} transitions, "
+            "optimizer updates 0"
+        )
+        return replay_buffer
 
     def eval(self, t, replay_buffer):
         print(f"Starting evaluation at time {t}")
@@ -778,12 +933,21 @@ class Workspace:
             json.dump({"time": time}, f, indent=4)
 
 
-def train_skate_bfm():
+def build_train_config() -> TrainConfig:
     from humanoidverse.agents.fb_cpr_aux.model import FBcprAuxModelArchiConfig, FBcprAuxModelConfig
     from humanoidverse.agents.fb_cpr_aux.agent import FBcprAuxAgentTrainConfig
     from humanoidverse.agents.nn_models import ForwardArchiConfig, BackwardArchiConfig, ActorArchiConfig, DiscriminatorArchiConfig, RewardNormalizerConfig
     from humanoidverse.agents.normalizers import ObsNormalizerConfig, BatchNormNormalizerConfig
     from humanoidverse.agents.nn_filters import DictInputFilterConfig
+
+    online_env = os.environ.get("SKATE_ONLINE_ENV", "base").strip().lower()
+    if online_env not in {"base", "skate"}:
+        raise ValueError(
+            f"SKATE_ONLINE_ENV must be 'base' or 'skate', got {online_env!r}."
+        )
+    collect_only = _environment_flag("SKATE_COLLECT_ONLY", default=False)
+    skate_mode = online_env == "skate"
+    skate_max_steps = int(os.environ.get("SKATE_MAX_STEPS", "64"))
 
     cfg = TrainConfig(
         name='TrainConfig',
@@ -858,12 +1022,15 @@ def train_skate_bfm():
             aux_rewards=['penalty_torques', 'penalty_action_rate', 'limits_dof_pos', 'limits_torque', 'penalty_undesired_contact', 'penalty_feet_ori', 'penalty_ankle_roll', 'penalty_slippage'],
             aux_rewards_scaling={'penalty_action_rate': -0.1, 'penalty_feet_ori': -0.4, 'penalty_ankle_roll': -4.0, 'limits_dof_pos': -10.0, 'penalty_slippage': -2.0, 'penalty_undesired_contact': -1.0, 'penalty_torques': 0.0, 'limits_torque': 0.0},
             cudagraphs=False,
-            compile=True
+            compile=not skate_mode
         ),
         motions='',
         motions_root='',
         skate_expert_motion_file=os.environ.get("SKATE_EXPERT_MOTION_FILE"),
         skate_expert_ratio=float(os.environ.get("SKATE_EXPERT_RATIO", "0.5")),
+        online_env=online_env,
+        collect_only=collect_only,
+        skate_max_steps=skate_max_steps,
         env=HumanoidVerseIsaacConfig(
             name='humanoidverse_isaac',
             device='cuda:0',
@@ -891,36 +1058,43 @@ def train_skate_bfm():
             make_config_g1env_compatible=False,
             root_height_obs=True
         ),
-        work_dir='results/bfmzero-isaac',
+        work_dir=os.environ.get(
+            "SKATE_WORK_DIR",
+            "results/skate-online-dry-run" if skate_mode else "results/bfmzero-isaac",
+        ),
         seed=4728,
-        online_parallel_envs=1024,
+        online_parallel_envs=1 if skate_mode else 1024,
         log_every_updates=384000,
-        num_env_steps=384000000,
+        num_env_steps=skate_max_steps if skate_mode else 384000000,
         update_agent_every=1024,
         num_seed_steps=10240,
         num_agent_updates=16,
         checkpoint_every_steps=9600000,
-        checkpoint_buffer=True,
-        prioritization=True,
+        checkpoint_buffer=not skate_mode,
+        prioritization=False if skate_mode else True,
         prioritization_min_val=0.5,
         prioritization_max_val=2.0,
         prioritization_scale=2.0,
         prioritization_mode='exp',
-        use_trajectory_buffer=True,
-        buffer_size=5120000,
+        use_trajectory_buffer=False if skate_mode else True,
+        buffer_size=max(skate_max_steps, 1024) if skate_mode else 5120000,
         use_wandb=False,
         wandb_ename='yitangl',  # your wandb entity (username/team), empty = default from wandb login
         wandb_gname='bfmzero-isaac',  # run group
         wandb_pname='bfmzero-isaac',  # your wandb project name
-        load_isaac_expert_data=True,
-        buffer_device='cuda',
+        load_isaac_expert_data=False if skate_mode else True,
+        buffer_device='cpu' if skate_mode else 'cuda',
         disable_tqdm=True,
-        evaluations=[HumanoidVerseIsaacTrackingEvaluationConfig(name='HumanoidVerseIsaacTrackingEvaluationConfig', generate_videos=False, videos_dir='videos', video_name_prefix='unknown_agent', name_in_logs='humanoidverse_tracking_eval', env=None, num_envs=1024, n_episodes_per_motion=1)],
+        evaluations=[] if skate_mode else [HumanoidVerseIsaacTrackingEvaluationConfig(name='HumanoidVerseIsaacTrackingEvaluationConfig', generate_videos=False, videos_dir='videos', video_name_prefix='unknown_agent', name_in_logs='humanoidverse_tracking_eval', env=None, num_envs=1024, n_episodes_per_motion=1)],
         eval_every_steps=9600000,
         tags={},
     )
-    workspace = cfg.build()
-    workspace.train()
+    return cfg
+
+
+def train_skate_bfm():
+    workspace = build_train_config().build()
+    return workspace.train()
 
 
 if __name__ == "__main__":

@@ -66,6 +66,22 @@ expert data remains under `train/dataset/skate-expert-pose/`.
 `SKATE_EXPERT_RATIO` controls the proportion of complete expert sequences
 sampled from Skate data and defaults to `0.5`.
 
+Run the formal HUSKY Workspace path without model updates:
+
+```bash
+SKATE_ONLINE_ENV=skate \
+SKATE_COLLECT_ONLY=1 \
+SKATE_MAX_STEPS=64 \
+SKATE_WORK_DIR=/tmp/skate-bfm-m21b \
+train/scripts/isaac_env/.venv/bin/python train/scripts/train_skate_bfm.py
+```
+
+This mode uses one `HuskyBfmOnlineEnv`, writes real transitions to
+`train_skate`, and keeps `train` as the same-object compatibility alias. It
+uses the current model parameters and `sample_z()` baseline but blocks
+`agent.update()`. Pretrained initialization, Skate auxiliary rewards, and
+native physical termination remain later dependencies.
+
 ## Expert rollout collection
 
 Activate the repository environment and run one interactive HUSKY rollout:

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
   <title id="title">Skate-BFM development substage pipeline as of 2026-08-10</title>
-  <desc id="desc">M0 baseline and M1 expert motion are complete. M2.1 Skate online replay integration is active, followed by training preflight, model training, and motion library evaluation.</desc>
+  <desc id="desc">M0 baseline, M1 expert motion, and the M2.1 formal HUSKY online replay path are complete. Pretrained initialization and training preflight follow before model training and motion library evaluation.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -17,10 +17,10 @@
   <text x="52" y="66" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700">Skate-BFM Development Substages</text>
   <text x="52" y="100" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="17">From verified integration to a trained, queryable skate motion library</text>
 
-  <rect x="1010" y="32" width="438" height="84" rx="7" fill="#fff7ed" stroke="#d97706" stroke-width="2"/>
-  <text x="1032" y="59" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">CURRENT SUBSTAGE - 2026-08-10</text>
-  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.1 Skate online replay</text>
-  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Frozen BFM0 rollout; no optimizer step</text>
+  <rect x="1010" y="32" width="438" height="84" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="2"/>
+  <text x="1032" y="59" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">LATEST COMPLETION - 2026-08-10</text>
+  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.1b Formal HUSKY path</text>
+  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Workspace -> train_skate; optimizer disabled</text>
 
   <line x1="302" y1="224" x2="365" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="690" y1="224" x2="753" y2="224" stroke="#d97706" stroke-width="5" marker-end="url(#arrow-active)"/>
@@ -64,12 +64,12 @@
     <text x="52" y="382" fill="#3730a3" font-size="14" font-weight="700">M2 DETAIL</text>
     <line x1="52" y1="400" x2="1448" y2="400" stroke="#cbd5e1" stroke-width="2"/>
 
-    <rect x="52" y="432" width="408" height="155" rx="7" fill="#fff7ed" stroke="#d97706" stroke-width="3"/>
-    <text x="78" y="471" fill="#9a4d05" font-size="14" font-weight="700">M2.1  ACTIVE</text>
+    <rect x="52" y="432" width="408" height="155" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="3"/>
+    <text x="78" y="471" fill="#1f7a4d" font-size="14" font-weight="700">M2.1  COMPLETE</text>
     <text x="78" y="505" fill="#17212b" font-size="20" font-weight="700">Skate online replay</text>
     <text x="78" y="532" fill="#475569" font-size="14">29D stored action, 23D executed action</text>
     <text x="78" y="555" fill="#475569" font-size="14">BFM observations, z, reset-safe transitions</text>
-    <circle cx="415" cy="505" r="19" fill="#d97706"/>
+    <circle cx="415" cy="505" r="19" fill="#1f7a4d"/>
     <path d="M405 505 L412 512 L425 497" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
 
     <line x1="460" y1="509" x2="500" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>

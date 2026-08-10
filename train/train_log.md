@@ -233,3 +233,34 @@
 - Known later dependencies: native HUSKY termination semantics for the full
   training runtime, auxiliary reward/Q_aux mapping, Base online replay
   retention, and any later BFB/RFB/MEBE work. These are outside M2.1.
+
+## 10. M2.1b Formal HUSKY Online Training Path
+
+- Date: 2026-08-10
+- Added the explicit `online_env` configuration with `base` and `skate`
+  choices. `base` preserves the original HumanoidVerse Isaac path; `skate`
+  makes the formal `Workspace` construct and step `HuskyBfmOnlineEnv`.
+- Skate mode is currently restricted to `collect_only=True`, one environment,
+  `DictBuffer`, no prioritization, and no Isaac evaluation. This fail-closed
+  boundary prevents optimizer updates before later training dependencies are
+  resolved.
+- Formal online environment: HUSKY MuJoCo through the existing
+  `HuskyBfmOnlineEnv`, existing 29D-to-23D action adapter, and existing
+  BFM-compatible observation adapter.
+- Replay: `train_skate`; `train` is the same-object compatibility alias.
+- Workspace dry run: passed with 64 real HUSKY transitions. Workspace sampled
+  and checked the resulting replay fields, 29D stored action, 23D executed
+  action, 256D rollout latent, and observation widths 64/463/29/372.
+- Latent baseline: `model.sample_z()` with the original
+  `update_z_every_step` period. This is a temporary single-HUSKY baseline, not
+  a full reproduction of the original vectorized rollout-context logic.
+- Reset boundary: the bounded final transition is truncated, and the existing
+  HUSKY online wrapper requires reset before another step. No cross-reset
+  transition is written.
+- Optimizer step: no. Workspace recorded zero `agent.update()` calls, and
+  Skate mode rejects `collect_only=False`.
+- Base backward compatibility: passed by constructing a one-environment
+  HumanoidVerse Isaac Workspace with the original 29D action and BFM
+  observation contract. The Base training loop was not run.
+- Known blockers before training: pretrained BFM0 initialization, Skate
+  auxiliary reward/Q_aux definition, and native HUSKY physical termination.
