@@ -209,6 +209,25 @@ class TrainConfig(BaseConfig):
                     "B/F-only adaptation requires the fixed evaluation protocol "
                     "to define seen dynamics."
                 )
+            if (
+                self.skate_update_mode == "fb_only"
+                and self.skate_expert_ratio > 0.0
+                and self.skate_expert_motion_file is None
+            ):
+                raise ValueError(
+                    "B/F-only adaptation with skate_expert_ratio > 0 requires "
+                    "skate_expert_motion_file. Set SKATE_EXPERT_RATIO=0 for "
+                    "an explicit Base-only control."
+                )
+            if (
+                self.skate_update_mode == "fb_only"
+                and self.skate_expert_motion_file is not None
+                and not Path(self.skate_expert_motion_file).expanduser().is_file()
+            ):
+                raise ValueError(
+                    "Configured Skate expert motion file does not exist: "
+                    f"{self.skate_expert_motion_file}"
+                )
             if self.online_parallel_envs != 1:
                 raise ValueError("Skate online mode currently supports exactly one environment.")
             if self.use_trajectory_buffer:
@@ -393,6 +412,50 @@ def _tensor_fingerprint(tensor: torch.Tensor) -> str:
     digest.update(str(tuple(tensor.shape)).encode("ascii"))
     digest.update(str(tensor.dtype).encode("ascii"))
     digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _data_fingerprint(payload: tp.Any) -> str:
+    digest = hashlib.sha256()
+
+    def update(value: tp.Any, path: str) -> None:
+        digest.update(path.encode("utf-8"))
+        if isinstance(value, dict):
+            digest.update(b"dict")
+            for key in sorted(value):
+                update(value[key], f"{path}/{key}")
+            return
+        if isinstance(value, (list, tuple)):
+            digest.update(type(value).__name__.encode("ascii"))
+            for index, item in enumerate(value):
+                update(item, f"{path}/{index}")
+            return
+        if torch.is_tensor(value):
+            array = value.detach().cpu().contiguous().numpy()
+        elif isinstance(value, np.ndarray):
+            array = np.ascontiguousarray(value)
+        else:
+            digest.update(
+                json.dumps(
+                    value,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            return
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(str(array.dtype).encode("ascii"))
+        digest.update(array.tobytes())
+
+    update(payload, "root")
+    return digest.hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -602,6 +665,7 @@ def build_motion_only_expert_context(env_cfg: HumanoidVerseIsaacConfig):
     )
     return SimpleNamespace(
         _motion_lib=motion_lib,
+        num_envs=1,
         dt=dt,
         device=env_cfg.device,
         default_dof_pos=default_dof_pos,
@@ -851,6 +915,22 @@ class Workspace:
                     device=self.cfg.buffer_device,
                 )
                 expert_skate.source = "skate"
+                motion_records = skate_motion_lib._motion_data_load
+                expert_skate.source_metadata = {
+                    "resolved_path": str(skate_motion_path),
+                    "sha256": _file_sha256(skate_motion_path),
+                    "motion_count": len(motion_records),
+                    "frame_count": sum(
+                        int(record["dof"].shape[0])
+                        for record in motion_records.values()
+                    ),
+                    "fps": sorted(
+                        {
+                            float(record["fps"])
+                            for record in motion_records.values()
+                        }
+                    ),
+                }
             if expert_loader_env_owner is not None:
                 expert_loader_env_owner.close()
         print("Creating the training environment")
@@ -1246,6 +1326,12 @@ class Workspace:
                 "expert_z_norm": float(torch.linalg.vector_norm(expert_z, dim=-1).mean()),
                 "expert_base_sequences": base_sequence_count,
                 "expert_skate_sequences": skate_sequence_count,
+                "expert_sequence_count": sequence_count,
+                "expert_sequence_length": sequence_length,
+                "expert_complete_sequence_mixture": True,
+                "expert_effective_skate_ratio": (
+                    skate_sequence_count / sequence_count
+                ),
                 "train_batch_size": len(train_batch["action"]),
                 "forward_shape": tuple(forward_output.shape),
                 "backward_shape": tuple(backward_output.shape),
@@ -1253,6 +1339,32 @@ class Workspace:
                 "tracking_batch_shape": tuple(tracking_batch["observation"]["state"].shape),
             }
         )
+        if (
+            self.cfg.skate_update_mode == "fb_only"
+            and self.cfg.skate_expert_ratio > 0.0
+        ):
+            if "expert_skate" not in replay_buffer:
+                raise RuntimeError("B/F-only mixture requires expert_skate.")
+            if not isinstance(
+                replay_buffer["expert_slicer"],
+                BaseSkateExpertSampler,
+            ):
+                raise RuntimeError(
+                    "B/F-only mixture requires BaseSkateExpertSampler."
+                )
+            if (
+                replay_buffer["expert_slicer"].skate_expert_ratio
+                != self.cfg.skate_expert_ratio
+            ):
+                raise RuntimeError("Effective Skate expert ratio is incorrect.")
+            if self.cfg.skate_expert_ratio == 0.5 and (
+                base_sequence_count != 64
+                or skate_sequence_count != 64
+                or sequence_count != 128
+            ):
+                raise RuntimeError(
+                    "Expected 64 Base and 64 Skate complete sequences."
+                )
 
     def _configure_fb_only_boundary(self) -> None:
         model = self.agent._model
@@ -1485,6 +1597,21 @@ class Workspace:
             raise RuntimeError("Evaluation transitions entered training replay.")
 
         self._run_skate_preflight(replay_buffer)
+        transition_ids = [
+            transition_id
+            for rollout in rollout_reports
+            for transition_id in rollout["transition_ids"]
+        ]
+        replay_fingerprint = _data_fingerprint(
+            replay_buffer["train_skate"].get_full_buffer()
+        )
+        transition_ids_fingerprint = _data_fingerprint(transition_ids)
+        dynamics_fingerprint = _data_fingerprint(
+            [
+                rollout["dynamics_realization"]
+                for rollout in rollout_reports
+            ]
+        )
         before = _component_fingerprints(self.agent)
         normalizer_before = _state_fingerprint(
             self.agent._model._obs_normalizer,
@@ -1556,6 +1683,9 @@ class Workspace:
                 is replay_buffer["train_skate"],
                 "transition_count": len(replay_buffer["train_skate"]),
                 "rollouts": rollout_reports,
+                "transition_ids_fingerprint": transition_ids_fingerprint,
+                "replay_tensor_fingerprint": replay_fingerprint,
+                "dynamics_realization_fingerprint": dynamics_fingerprint,
                 "skate_only": True,
                 "unseen_transition_count": 0,
                 "eval_transition_count": 0,
@@ -1568,6 +1698,26 @@ class Workspace:
                 ),
                 "skate_buffer_present": "expert_skate" in replay_buffer,
                 "skate_expert_ratio": self.cfg.skate_expert_ratio,
+                "base_sequences": self.preflight_report[
+                    "expert_base_sequences"
+                ],
+                "skate_sequences": self.preflight_report[
+                    "expert_skate_sequences"
+                ],
+                "total_sequences": self.preflight_report[
+                    "expert_sequence_count"
+                ],
+                "sequence_length": self.preflight_report[
+                    "expert_sequence_length"
+                ],
+                "complete_sequence_mixture": self.preflight_report[
+                    "expert_complete_sequence_mixture"
+                ],
+                "skate_artifact": (
+                    replay_buffer["expert_skate"].source_metadata
+                    if "expert_skate" in replay_buffer
+                    else None
+                ),
             },
             "updates": self.cfg.adaptation_updates,
             "optimizer": {
