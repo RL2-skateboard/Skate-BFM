@@ -467,12 +467,12 @@
   `init_kwargs.json` SHA256 is
   `b8df2d6006fbeda9a0bb9a9eb3f21dcccadf165f2252fce108714f81655a0094`.
 - Current canonical provenance was generated at git commit
-  `bfd45c1da9983be893dbdb73855c45d7f4408ff7`. The protocol SHA256 is
+  `68548c999138e20d92563378ac13eb4f9e9e09ce`. The protocol SHA256 is
   `ebc20a7c22849d7ce9e27ec627f226d30fcce6bdbd94d5903862e03719efc16a`;
   the evaluator source SHA256 is
-  `1566c6af5d7e30485984ede47ebf3cdd72cc59126e69780cfbca07c75c1f5e3e`;
+  `ea65dd5447e660c2f5e0972feb49620cb76d9325947b5437114e25958135150a`;
   the training entry SHA256 is
-  `a0da54404b9aa10b87f836deb83d945e1c63e27427ce1d9179e817d4ff037b63`.
+  `8fb9f17ad225781218cc1da2316cd44954e2ac122cef6842b82959d538bc3349`.
   Runtime fingerprint is
   `db91a56663a0512dabc981a9d1398d8b69c0e3348f5a159ba3c94f3e78feb7ba`
   (Python 3.12.13, PyTorch 2.5.1, CUDA 12.4, MuJoCo 3.11.0,
