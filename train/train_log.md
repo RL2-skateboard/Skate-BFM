@@ -411,11 +411,13 @@
   seen dynamics seeds, and contained zero unseen or evaluation transitions.
   `replay_buffer["train"]` remained the same object as
   `replay_buffer["train_skate"]`.
-- Expert sampling remained Base + Skate with `skate_expert_ratio=0.5`.
-  Expert latents were produced by `encode_expert()` and the final training
-  latent used the vendored `sample_mixed_z()` and `relabel_ratio=0.8`
-  semantics. No RFB, BFB, MEBE, dynamics context, or new exploration branch
-  was added.
+- The executed M2.2b-1 checkpoints had `skate_expert_motion_file=null`, so
+  their actual expert sampler was Base-only. The configured
+  `skate_expert_ratio=0.5` had no effect without an `expert_skate` buffer.
+  This is a provenance correction; the checkpoints were not retrained in the
+  M2.2b-2 audit. Expert latents still used `encode_expert()`, the vendored
+  `sample_mixed_z()`, and `relabel_ratio=0.8` semantics. No RFB, BFB, MEBE,
+  dynamics context, or new exploration branch was added.
 - The adaptation path directly called the vendored `update_fb()`. Only
   `forward_optimizer` and `backward_optimizer` stepped. F, B, target F, and
   target B changed; Actor, discriminator, QD, Qaux, and their target modules
@@ -442,3 +444,65 @@
 - Native HUSKY termination, Qaux, and command-aligned downstream evaluation
   remain unresolved. Formal full training, Actor updates, BFB, RFB, and
   FB-MEBE remain disabled.
+
+## 14. M2.2b-2 Baseline Reproducibility and Evaluator Fidelity Audit
+
+- Date: 2026-08-10
+- Evaluator fidelity: `PASS`. The current evaluator equations for
+  `target_F`, `target_B`, `target_M`, `F`, `B`, `M`, `diff`, `fb_offdiag`,
+  `fb_diag`, orthonormality terms, discount, and inactive `q_loss` match the
+  vendored `FBAgent.update_fb()` source. The suspected `fb_diag` discrepancy
+  was not confirmed: upstream uses
+  `-diagonal(diff).mean() * num_parallel`, and the evaluator uses the same
+  equation. Training loss was not modified.
+- Canonical evaluator version remains `skate-bfm-fixed-eval-v1`; protocol
+  conditions, seeds, rollout IDs, horizon, dynamics split, projection,
+  entropy bins, context lengths, and Base evaluator configuration were not
+  changed.
+- Current official checkpoint identity:
+  `model.safetensors` SHA256
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+  `config.json` SHA256 is
+  `52f94d2946ed8912fc12ac9c25b4bf0e68ccdc669a05ea104e8b6c178e91fb46`;
+  `init_kwargs.json` SHA256 is
+  `b8df2d6006fbeda9a0bb9a9eb3f21dcccadf165f2252fce108714f81655a0094`.
+- Current canonical provenance was generated at git commit
+  `bfd45c1da9983be893dbdb73855c45d7f4408ff7`. The protocol SHA256 is
+  `ebc20a7c22849d7ce9e27ec627f226d30fcce6bdbd94d5903862e03719efc16a`;
+  the evaluator source SHA256 is
+  `1566c6af5d7e30485984ede47ebf3cdd72cc59126e69780cfbca07c75c1f5e3e`;
+  the training entry SHA256 is
+  `a0da54404b9aa10b87f836deb83d945e1c63e27427ce1d9179e817d4ff037b63`.
+  Runtime fingerprint is
+  `db91a56663a0512dabc981a9d1398d8b69c0e3348f5a159ba3c94f3e78feb7ba`
+  (Python 3.12.13, PyTorch 2.5.1, CUDA 12.4, MuJoCo 3.11.0,
+  NVIDIA GeForce RTX 4060 Ti, torch device CUDA, TF32 enabled, deterministic
+  algorithms disabled).
+- Clean-process reproducibility: `PASS`. Two fresh Python runs produced
+  identical behavior coverage, eval buffer, buffer config, manifest, and
+  metrics artifacts. The fixed held-out set remained 512 transitions.
+- Historical revision reproduction: `PARTIAL`. A temporary worktree at
+  `d4dccc13f760ebdc068ecbd24e57cc6bb67ced0a` ran successfully using the
+  current official checkpoint bytes and the same HUSKY scene. Its metrics and
+  coverage matched the current v1 evaluator, but it did not reproduce the
+  old logged values `1775099.875 / 0.25 / 0.6875 / 5.703125 /
+  4.6439129236`.
+- Historical checkpoint identity is `UNVERIFIABLE`: M2.2b-0 did not record a
+  checkpoint hash. The earliest auditable drift level is therefore Level 1,
+  checkpoint identity; later levels cannot prove the original run used the
+  same model bytes. The old recorded baseline is superseded for canonical
+  provenance comparison, not deleted.
+- The provenance now records loaded parameter and buffer fingerprints,
+  resolved agent configuration hash, HUSKY source/scene/randomization hashes,
+  rollout initial observation/first z/first action fingerprints, complete
+  eval-buffer fingerprint, transition-ID fingerprint, fixed diagnostic
+  indices, and diagnostic-batch fingerprint.
+- Behavior entropy changes across B/F-only checkpoints even though Actor
+  parameters are unchanged. The first z and initial observation fingerprints
+  are the same, while first-action fingerprints differ; adaptation reports
+  show the shared observation normalizer changed. Therefore the result is:
+  parameter-frozen Actor `!=` functionally-frozen policy. The normalizer was
+  not frozen because that would change upstream update semantics.
+- Corrected v1 canonical metrics for update `0/1/10/100` are unchanged from
+  the measured M2.2b-1 values and are recorded in `train_res.md` with the
+  complete provenance policy. No training was rerun.

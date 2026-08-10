@@ -1561,7 +1561,12 @@ class Workspace:
                 "eval_transition_count": 0,
             },
             "expert": {
-                "source": "Base + Skate",
+                "source": (
+                    "Base + Skate"
+                    if "expert_skate" in replay_buffer
+                    else "Base only"
+                ),
+                "skate_buffer_present": "expert_skate" in replay_buffer,
                 "skate_expert_ratio": self.cfg.skate_expert_ratio,
             },
             "updates": self.cfg.adaptation_updates,

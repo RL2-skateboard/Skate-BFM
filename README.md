@@ -19,11 +19,11 @@ mounting, riding, steering, recovery, and safe departure.
 **Status as of 2026-08-10:** the official BFM0-HUSKY foundation and matched
 frozen-BFM0 capability audit are complete. Base and Skate expert sources,
 M2.1 Skate online replay, and M2.2a official BFM0 initialization plus
-expert/replay merge are complete. M2.2b-0 now fixes the source-grounded
-held-out evaluation protocol before adaptation. No optimizer step or formal
-Skate post-training has started. Interaction-JEPA, predictive closed-loop
-planning, and complete skateboarding-task evaluation remain later project
-modules.
+expert/replay merge are complete. M2.2b-1 enabled and validated the first
+controlled F/B-only Skate adaptation boundary. M2.2b-2 completed evaluator
+fidelity and clean-process reproducibility auditing. Full FB-CPR-Aux training
+has not started. Interaction-JEPA, predictive closed-loop planning, and
+complete skateboarding-task evaluation remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.

@@ -28,10 +28,11 @@ Git.
 **Status as of 2026-08-10:** the project-level BFM0-HUSKY foundation and frozen
 capability audit are complete. Base and Skate expert sources, M2.1 Skate
 online replay, and M2.2a official BFM0 initialization plus expert/replay merge
-are complete. M2.2b-0 now fixes the source-grounded held-out evaluation
-protocol before adaptation. No optimizer step or formal Skate post-training
-has started. Interaction-JEPA and predictive closed-loop control are separate
-downstream modules, not part of the current Motion Library milestone.
+are complete. M2.2b-1 completed the first controlled F/B-only Skate adaptation
+boundary, and M2.2b-2 completed evaluator fidelity and clean-process
+reproducibility auditing. Full FB-CPR-Aux training has not started.
+Interaction-JEPA and predictive closed-loop control are separate downstream
+modules, not part of the current Motion Library milestone.
 
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
@@ -92,10 +93,10 @@ New Skate workdirs cannot fall back to random initialization.
 
 The collect-only path keeps the pretrained model in evaluation mode, compares
 parameter and buffer fingerprints before and after the run, and blocks
-`agent.update()`. The official model-only bundle has no optimizer state, so
-current-config optimizers remain fresh and unused. Skate auxiliary rewards,
-native physical termination, and the first FB adaptation protocol remain
-later dependencies.
+`agent.update()`. The `fb_only` adaptation mode is fail-closed: it directly
+calls the vendored `update_fb()` and allows only F/B optimizer steps. Actor,
+discriminator, QD, and Qaux updates remain disabled. Skate auxiliary rewards
+and native physical termination remain later dependencies.
 
 ## Fixed evaluation protocol
 
@@ -119,7 +120,10 @@ manifest, metrics JSON, and behavior occupancy data. It computes held-out FB
 objective diagnostics directly from the current BFM-Zero equations without
 calling `backward()` or an optimizer, plus Skate-BFM matching/retrieval,
 physical rollout metrics, seen/unseen dynamics summaries, and fixed
-achieved-behavior entropy.
+achieved-behavior entropy. Each result also records checkpoint, source,
+runtime, resolved-config, rollout-input, and diagnostic-batch fingerprints.
+The canonical protocol remains `skate-bfm-fixed-eval-v1`; the M2.2b-2 audit
+confirmed that its FB equations match the vendored `update_fb()` equations.
 
 The current lightweight runtime has no reliable native termination, contact,
 slippage, force, or command-to-BFM-latent alignment. Those metrics are
