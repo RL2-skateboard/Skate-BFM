@@ -537,3 +537,37 @@
 - Base retention remains `NOT RUN`; native termination, Qaux, and
   command-aligned downstream evaluation remain unresolved. Full FB-CPR-Aux
   training remains `NO`.
+
+## 16. M2.3a-0 Target Bank and Command Alignment Audit
+
+- Date: 2026-08-11
+- Audited the canonical 50-frame raw HUSKY rollout behind
+  `skate_expert.pkl`, including robot root state, board state, joints, action,
+  phase, timestamps, and command fields.
+- Confirmed the raw rollout has 50 frames at 50 Hz, 0.98 s duration, finite
+  values, no fall/reset frames, and one continuous `push` phase. No physically
+  distinguishable steer-left, steer-right, or transition segment was found.
+- Confirmed command semantics from the HUSKY source: `command_v` is the
+  forward linear-velocity command scalar and is multiplied by `2.0` in the
+  test-scene ONNX observation; `command_h` is the relative heading/steering
+  command in radians, positive for left and negative for right.
+- Confirmed both commands are present in raw metadata and every raw frame:
+  `command_v=1.0`, `command_h=0.0`.
+- Built one auditable 8-frame target, `skate_target_00`, frames `24-31`
+  (`0.48-0.62 s`). It was selected from disjoint 8-frame candidates by
+  highest board forward velocity subject to low lateral velocity, low board
+  yaw change, and no fall.
+- Physical evidence for the target: mean board forward velocity
+  `0.8116 m/s`, mean lateral velocity `-0.0023 m/s`, board yaw delta
+  `+0.3580 deg`, and no fall/reset frames. The target is `aligned` with the
+  recorded forward/zero-heading command.
+- Computed target latent inference for official BFM0, Base-only update100,
+  and Base+Skate update100. All latent norms are approximately `16.0`.
+  Base-only vs Base+Skate cosine similarity is `0.999963`; latent similarity
+  was recorded as a diagnostic and was not used to assign the physical label.
+- No training, rollout, Actor execution, or optimizer step was performed.
+- Output:
+  `train/dataset/skate-expert-pose/target_bank/target_bank.json`
+- Full field inventory, raw hashes, checkpoint hashes, latent fingerprints,
+  candidate windows, selection rule, and command evidence are recorded in the
+  target bank JSON.

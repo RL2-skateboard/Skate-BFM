@@ -102,4 +102,18 @@ behavior but does not alter the official arrays.
 - The current data contains no teacher pseudo-expert.
 - The current data has not been converted into BFM-compatible observations.
 - No action, contact label, interpolation, derived trajectory, or merged file
-  was generated.
+  was generated from the official HUSKY files above.
+
+## Skate-BFM Target Bank
+
+`target_bank/target_bank.json` is a project-owned, read-only M2.3a-0 audit
+artifact derived from the canonical recorded HUSKY rollout that produced
+`motion_library/skate_expert.pkl`. It does not modify or reinterpret any of
+the four official HUSKY `.npy` files documented above.
+
+The target bank contains one 8-frame forward-push target with raw physical
+descriptors, command evidence, checkpoint-specific latent vectors, hashes,
+and selection provenance. It is not a new trajectory, not an official HUSKY
+motion, not an online FB rollout, and not a training result. No steer target
+is claimed because the audited rollout contains only a continuous push phase
+with `command_h=0.0`.

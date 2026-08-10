@@ -16,7 +16,7 @@ mounting, riding, steering, recovery, and safe departure.
 
 ![Skate-BFM development substages](docs/assets/development_substage.svg)
 
-**Status as of 2026-08-10:** the official BFM0-HUSKY foundation and matched
+**Status as of 2026-08-11:** the official BFM0-HUSKY foundation and matched
 frozen-BFM0 capability audit are complete. Base and Skate expert sources,
 M2.1 Skate online replay, and M2.2a official BFM0 initialization plus
 expert/replay merge are complete. M2.2b-1 enabled and validated the first
@@ -25,9 +25,11 @@ fidelity and clean-process reproducibility auditing. M2.2b-3 completed the
 auditable Base+Skate 50/50 expert-mixture boundary experiment at independent
 1/10/100 update milestones. Its representation metrics are mixed at 1/10 and
 favorable at 100, so it is not yet a downstream task-success claim. Full
-FB-CPR-Aux training has not started. Interaction-JEPA, predictive closed-loop
-planning, and complete skateboarding-task evaluation remain later project
-modules.
+FB-CPR-Aux training has not started. M2.3a-0 completed a read-only target-bank
+and command-alignment audit: the current artifact supports one aligned
+forward-push target, while steer targets remain unverified. Interaction-JEPA,
+predictive closed-loop planning, and complete skateboarding-task evaluation
+remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.
@@ -58,6 +60,18 @@ CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_bfm.py \
   --checkpoint results/m2.2b-3/base_skate_50_50/update_100/checkpoint \
   --output-dir results/m2.2b-3/base_skate_50_50/eval_100
 ```
+
+Audit the current expert target bank without training or rollout:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_skate_target_bank.py \
+  --raw-rollout /absolute/path/to/raw_rollout.npz
+```
+
+The audit writes
+`train/dataset/skate-expert-pose/target_bank/target_bank.json`. It uses
+8-frame windows, raw HUSKY physical state for labels, and the existing
+`encode_expert()` latent equations only for inference diagnostics.
 
 This `train` branch is reserved for model training, dataset preparation,
 checkpoint management, and learned motion-library development. The `main`

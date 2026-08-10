@@ -201,3 +201,70 @@ not changed.
 - Historical correction: the executed M2.2b-1 checkpoints were Base-only, not
   the intended Base+Skate expert mixture. Experiment 0B now records the
   correctly configured treatment separately.
+
+## M2.3a-0 Target Bank + Command Alignment Audit
+
+- Date: 2026-08-11
+- Status: `completed_read_only_audit`
+- Training: `NO`
+- Rollout: `NO`
+- Actor execution: `NO`
+- Optimizer steps: `0`
+- Target bank schema: `skate-bfm-target-bank-v1`
+- Target bank output:
+  `train/dataset/skate-expert-pose/target_bank/target_bank.json`
+- Source raw rollout:
+  `/tmp/skate_bfm_m1_1.0L6F7i/round_901/rollout_001/raw_rollout/m1_1_rollout_001.npz`
+- Raw rollout SHA256:
+  `5476a280ec013f3834dbb4a5cef1a9d80c0df6728fe7ebc98dc3a2e3e1f11c53`
+- Raw metadata SHA256:
+  `72fdde180d753744645a7da77fb7e388e7e16165b7eb4853cb146825dc9ebc58`
+- Expert MotionLib SHA256:
+  `660c18145a21457d3541b49ccc802ba3f99170804836cedaebb9d245b837fd86`
+- Raw source fields audited: robot root pose/velocity, board pose/velocity,
+  23-DoF joint pose/velocity, 23-DoF action, phase, timestamps, fall/reset,
+  and per-frame `command_v`/`command_h`. All required fields are present,
+  frame-aligned, finite, and no unavailable field was substituted.
+- Global physical behavior: one continuous `push` phase over 50 frames,
+  board displacement `[0.6941, 0.0027, -0.0005] m`, mean forward board
+  velocity `0.7001 m/s`, mean lateral velocity `0.0029 m/s`, and board
+  heading delta `+1.1642 deg`. No fall or reset occurred.
+- Command audit: `command_v=1.0` is the forward linear-velocity command
+  scalar; `command_h=0.0` is the relative heading/steering command in radians.
+  Both are present in metadata and every frame. The physical behavior is
+  `aligned` for forward motion with zero heading command.
+- No steer-left/right target was created. `steer_left`, `steer_right`, and
+  dynamic turning are `NOT_FOUND` in this artifact.
+
+### Target Bank
+
+| Target | Frames | Time | Physical target | Alignment |
+| :--- | ---: | ---: | :--- | :--- |
+| `skate_target_00` | 24-31 | 0.48-0.62 s | Forward board acceleration / push | `aligned` |
+
+Selection used disjoint 8-frame windows, excluded fall windows, and selected
+the highest forward board velocity subject to mean lateral velocity at most
+`0.01 m/s` and board yaw change at most `1 deg`. The selected window has mean
+forward velocity `0.8116 m/s`, mean lateral velocity `-0.0023 m/s`, and yaw
+delta `+0.3580 deg`.
+
+Target latent inference used the exact `encode_expert()` mathematical path:
+normalized expert next observations, `B` per frame, sequence mean over 8
+frames, then `project_z`. It was run independently for three frozen
+checkpoints:
+
+| Checkpoint | z norm | Latent fingerprint |
+| :--- | ---: | :--- |
+| Official BFM0 | 16.000000 | `097548cb634b08a1e688ea0565c692c0c084b381fbd1ef819a9e144678ec2d75` |
+| Base-only update100 | 15.999999 | `8cd703835dbca2f350e2a087de976938e3c038648070980057fbab4d79cb25b7` |
+| Base+Skate update100 | 16.000000 | `fc203e2097ec26cc3c3b9187aa994efa2bf5b161175c8685ac8667491e325228` |
+
+Cosine similarities are diagnostics only:
+
+- Official vs Base-only: `0.102484`
+- Official vs Base+Skate: `0.102463`
+- Base-only vs Base+Skate: `0.999963`
+
+The target label was assigned from raw physical state and command metadata,
+never from latent similarity. The target bank is a definition/audit artifact,
+not evidence of command-aligned downstream task success.

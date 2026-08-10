@@ -25,7 +25,7 @@ Git.
 
 ![Skate-BFM development substages](../docs/assets/development_substage.svg)
 
-**Status as of 2026-08-10:** the project-level BFM0-HUSKY foundation and frozen
+**Status as of 2026-08-11:** the project-level BFM0-HUSKY foundation and frozen
 capability audit are complete. Base and Skate expert sources, M2.1 Skate
 online replay, and M2.2a official BFM0 initialization plus expert/replay merge
 are complete. M2.2b-1 completed the first controlled F/B-only Skate adaptation
@@ -35,6 +35,8 @@ M2.2b-3 completed the intended Base+Skate 50/50 expert-mixture treatment at
 independent update 1/10/100 boundaries. The result is mixed at early
 milestones and favorable on several representation metrics at update 100, but
 is not a downstream skate-task success claim.
+M2.3a-0 completed a read-only target-bank and command-alignment audit with one
+aligned forward-push target; no steer target is claimed.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -59,6 +61,17 @@ The canonical Skate artifact is a one-motion, 29-DoF, 50-frame, 50 Hz
 MotionLib file. Its SHA256 and the 64/64 complete-sequence mixture are
 recorded in [`train_res.md`](train_res.md). The generated checkpoints and
 evaluation results remain local under `results/`.
+
+Audit the current raw expert motion and compute frozen target latents:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_skate_target_bank.py \
+  --raw-rollout /absolute/path/to/raw_rollout.npz
+```
+
+This produces one auditable 8-frame target under
+`dataset/skate-expert-pose/target_bank/` and performs no training, rollout,
+Actor execution, or optimizer step.
 
 ## Isaac training runtime
 

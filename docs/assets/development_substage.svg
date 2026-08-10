@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
-  <title id="title">Skate-BFM development substage pipeline as of 2026-08-10</title>
-  <desc id="desc">M0 baseline, M1 expert motion, M2.1 formal HUSKY online replay, M2.2a pretrained expert/replay merge, M2.2b-1 F/B-only adaptation, M2.2b-2 evaluator audit, and M2.2b-3 Base plus Skate mixture treatment are complete. Full FB-CPR-Aux training follows.</desc>
+  <title id="title">Skate-BFM development substage pipeline as of 2026-08-11</title>
+  <desc id="desc">M0 baseline, M1 expert motion, M2.1 formal HUSKY online replay, M2.2a pretrained expert/replay merge, M2.2b-1 F/B-only adaptation, M2.2b-2 evaluator audit, M2.2b-3 expert mixture, and M2.3a-0 target-bank command audit are complete. Full FB-CPR-Aux training follows.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -18,9 +18,9 @@
   <text x="52" y="100" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="17">From verified integration to a trained, queryable skate motion library</text>
 
   <rect x="1010" y="32" width="438" height="84" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="2"/>
-  <text x="1032" y="59" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">LATEST COMPLETION - 2026-08-10</text>
-  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.2b-3 Expert mixture treatment</text>
-  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Base + Skate 50/50 at independent 1/10/100 boundaries</text>
+  <text x="1032" y="59" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">LATEST COMPLETION - 2026-08-11</text>
+  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.3a-0 Target bank audit</text>
+  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">One forward-push target; command evidence recorded</text>
 
   <line x1="302" y1="224" x2="365" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="690" y1="224" x2="753" y2="224" stroke="#d97706" stroke-width="5" marker-end="url(#arrow-active)"/>
@@ -85,10 +85,10 @@
     <line x1="908" y1="509" x2="948" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
 
     <rect x="948" y="432" width="500" height="155" rx="7" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
-    <text x="974" y="471" fill="#64748b" font-size="14" font-weight="700">M2.3  NEXT</text>
-    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Decide adaptation design</text>
-    <text x="974" y="532" fill="#475569" font-size="14">Resolve retention, Qaux, and termination</text>
-    <text x="974" y="555" fill="#475569" font-size="14">Then address Qaux and termination</text>
+    <text x="974" y="471" fill="#64748b" font-size="14" font-weight="700">M2.3b  NEXT</text>
+    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Execute target latent</text>
+    <text x="974" y="532" fill="#475569" font-size="14">Run frozen Actor with command evidence</text>
+    <text x="974" y="555" fill="#475569" font-size="14">Then address retention, Qaux, termination</text>
     <circle cx="1402" cy="505" r="19" fill="#94a3b8"/>
     <path d="M1394 505 L1410 505" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
 
@@ -99,6 +99,6 @@
     <text x="265" y="674" fill="#17212b" font-size="14" font-weight="700">ACTIVE</text>
     <circle cx="385" cy="668" r="10" fill="#94a3b8"/>
     <text x="405" y="674" fill="#17212b" font-size="14" font-weight="700">NEXT / LATER</text>
-    <text x="590" y="674" fill="#475569" font-size="14">Base + Skate boundary validated; full FB-CPR-Aux training remains NOT STARTED.</text>
+    <text x="590" y="674" fill="#475569" font-size="14">Target bank audited; full FB-CPR-Aux training remains NOT STARTED.</text>
   </g>
 </svg>
