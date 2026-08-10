@@ -21,9 +21,13 @@ Git.
 
 ![Skate-BFM engineering progress](../docs/assets/project_progress.svg)
 
-**Status as of 2026-08-09:** the project-level BFM0-HUSKY foundation and frozen
-capability audit are complete. Base and Skate expert sources are integrated,
-and expert sampling integration is complete; model post-training has not
+### Current Development Substage
+
+![Skate-BFM development substages](../docs/assets/development_substage.svg)
+
+**Status as of 2026-08-10:** the project-level BFM0-HUSKY foundation and frozen
+capability audit are complete. Base and Skate expert sources and M2.1 Skate
+online replay integration are complete; frozen-BFM0 post-training has not
 started. Interaction-JEPA and predictive closed-loop control are separate
 downstream modules, not part of the current Motion Library milestone.
 

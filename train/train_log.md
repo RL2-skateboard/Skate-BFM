@@ -188,3 +188,48 @@
 - Formal training performed: no. B, F, Actor, discriminator, critic,
   auxiliary critic, sampling mathematics after expert acquisition, and all
   losses remain unchanged. Temporary validation code was not retained.
+
+## 9. M2.1 Skate Online Replay Integration
+
+- Date: 2026-08-10
+- HUSKY runtime: existing `husky_sim/src/skate_husky/HuskyLiteEnv` using the
+  official generated MuJoCo scene. The runtime now exposes robot body kinematics
+  for the existing BFM privileged observation construction and a public control
+  mapping setter; it is still the existing simulator, not a replacement.
+- Observation source: existing H1 BFM0 state/history semantics, extended to
+  the official training contract:
+  `state[64]`, `privileged_state[463]`, `last_action[29]`, and
+  `history_actor[372]`. Board pose, velocity, and heading remain raw metadata
+  only and are not appended to neural-network inputs.
+- Action adapter: existing name-based `Bfm0ToHusky23`.
+  Stored BFM action is `29D`; executed HUSKY action is the mapped `23D`
+  action. Official HUSKY neutral controls and per-joint scales are shared by
+  the integration and H1 runner.
+- Latent: each bounded rollout step stores the actual frozen BFM0
+  `model.sample_z()` result with `z_dim=256`; no zero or post-hoc latent is
+  inserted.
+- Replay: official `DictBuffer` only. Project-owned registration creates
+  `replay_buffer["train_skate"]` and keeps
+  `replay_buffer["train"]` as the same-object compatibility alias. No
+  `train_base`, replay mixing, or custom replay buffer was added.
+- Rollout validation: 64 frozen-checkpoint HUSKY steps passed. Replay sample
+  validation passed for observation, action, z, next observation, termination,
+  truncation, and finite values.
+- `last_action` validation passed over all consecutive steps:
+  `observation_t.last_action = a_(t-1)` and
+  `next_observation_t.last_action = a_t * 5` under the official normalized
+  action convention.
+- Reset boundary validation passed. The bounded rollout marks its final step
+  as `truncated`; attempting another step before `reset()` raises, so no
+  pre-reset to post-reset transition can enter replay. The lightweight HUSKY
+  runtime does not emit a native terminal signal in this path; physical
+  termination remains a later runtime dependency.
+- B/F forward preflight passed with the frozen official checkpoint and no
+  gradients: `F` output `[2,16,256]`, `B` output `[16,256]`, and
+  `F^T B` finite. No optimizer step or formal training was performed.
+- Tracking compatibility: `expert_tracking` is explicitly Base-only while
+  `expert_slicer` remains the Base/Skate training sampler. The official
+  tracking-z helper uses `expert_tracking` when present.
+- Known later dependencies: native HUSKY termination semantics for the full
+  training runtime, auxiliary reward/Q_aux mapping, Base online replay
+  retention, and any later BFB/RFB/MEBE work. These are outside M2.1.

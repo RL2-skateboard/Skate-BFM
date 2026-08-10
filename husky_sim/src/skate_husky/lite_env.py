@@ -46,7 +46,39 @@ class HuskyLiteEnv:
             for index in range(self.robot_action_dim)
         ]
         self._board_dof = self.model.joint("skateboard/floating_base_joint_skateboard").dofadr[0]
+        self._board_body = self.model.body("skateboard/skateboard_deck").id
         self._pelvis_body = self.model.body("robot/pelvis").id
+        self._robot_body_ids = np.asarray(
+            [
+                body_id
+                for body_id in range(self.model.nbody)
+                if (
+                    (name := mujoco.mj_id2name(
+                        self.model,
+                        mujoco.mjtObj.mjOBJ_BODY,
+                        body_id,
+                    ))
+                    and name.startswith("robot/")
+                )
+            ],
+            dtype=np.int32,
+        )
+
+    def set_control_mapping(
+        self,
+        neutral_control: np.ndarray,
+        action_scale: np.ndarray,
+    ) -> None:
+        neutral_control = np.asarray(neutral_control, dtype=np.float64)
+        action_scale = np.asarray(action_scale, dtype=np.float64)
+        expected = (self.robot_action_dim,)
+        if neutral_control.shape != expected or action_scale.shape != expected:
+            raise ValueError(
+                "Control mapping must contain one value per HUSKY actuator, "
+                f"got neutral={neutral_control.shape}, scale={action_scale.shape}."
+            )
+        self._neutral_control = neutral_control.copy()
+        self.action_scale = action_scale.copy()
 
     def reset(self) -> dict[str, np.ndarray | float]:
         mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
@@ -122,6 +154,25 @@ class HuskyLiteEnv:
             ),
             dtype=np.float32,
         )
+        body_velocity = np.empty((len(self._robot_body_ids), 6), dtype=np.float64)
+        for index, body_id in enumerate(self._robot_body_ids):
+            mujoco.mj_objectVelocity(
+                self.model,
+                self.data,
+                mujoco.mjtObj.mjOBJ_BODY,
+                int(body_id),
+                body_velocity[index],
+                0,
+            )
+        board_velocity = np.empty(6, dtype=np.float64)
+        mujoco.mj_objectVelocity(
+            self.model,
+            self.data,
+            mujoco.mjtObj.mjOBJ_BODY,
+            self._board_body,
+            board_velocity,
+            0,
+        )
         return {
             "joint_position": joint_position,
             "joint_velocity": joint_velocity,
@@ -130,4 +181,12 @@ class HuskyLiteEnv:
             "angular_velocity": self.data.qvel[3:6].astype(np.float32).copy(),
             "root_height": float(self.data.qpos[2]),
             "board_speed": float(self.data.qvel[self._board_dof]),
+            "body_position": self.data.xpos[self._robot_body_ids].astype(np.float32).copy(),
+            "body_quaternion": self.data.xquat[self._robot_body_ids].astype(np.float32).copy(),
+            "body_linear_velocity": body_velocity[:, 3:].astype(np.float32),
+            "body_angular_velocity": body_velocity[:, :3].astype(np.float32),
+            "board_position": self.data.xpos[self._board_body].astype(np.float32).copy(),
+            "board_quaternion": self.data.xquat[self._board_body].astype(np.float32).copy(),
+            "board_linear_velocity": board_velocity[3:].astype(np.float32),
+            "board_angular_velocity": board_velocity[:3].astype(np.float32),
         }

@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
+  <title id="title">Skate-BFM development substage pipeline as of 2026-08-10</title>
+  <desc id="desc">M0 baseline and M1 expert motion are complete. M2.1 Skate online replay integration is active, followed by training preflight, model training, and motion library evaluation.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d97706"/>
+    </marker>
+  </defs>
+
+  <rect width="1500" height="760" fill="#f8fafc"/>
+  <rect width="1500" height="12" fill="#d97706"/>
+
+  <text x="52" y="66" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700">Skate-BFM Development Substages</text>
+  <text x="52" y="100" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="17">From verified integration to a trained, queryable skate motion library</text>
+
+  <rect x="1010" y="32" width="438" height="84" rx="7" fill="#fff7ed" stroke="#d97706" stroke-width="2"/>
+  <text x="1032" y="59" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">CURRENT SUBSTAGE - 2026-08-10</text>
+  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.1 Skate online replay</text>
+  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Frozen BFM0 rollout; no optimizer step</text>
+
+  <line x1="302" y1="224" x2="365" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
+  <line x1="690" y1="224" x2="753" y2="224" stroke="#d97706" stroke-width="5" marker-end="url(#arrow-active)"/>
+  <line x1="1078" y1="224" x2="1140" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
+
+  <g font-family="Inter, Arial, sans-serif">
+    <rect x="52" y="145" width="250" height="160" rx="8" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="3"/>
+    <rect x="72" y="164" width="70" height="26" rx="13" fill="#1f7a4d"/>
+    <text x="107" y="182" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">DONE</text>
+    <text x="177" y="221" fill="#17212b" font-size="25" font-weight="700" text-anchor="middle">M0</text>
+    <text x="177" y="248" fill="#17212b" font-size="17" font-weight="700" text-anchor="middle">Baseline</text>
+    <text x="177" y="272" fill="#475569" font-size="13" text-anchor="middle">BFM0 + HUSKY + H1 audit</text>
+    <circle cx="258" cy="222" r="17" fill="#1f7a4d"/>
+    <path d="M249 222 L256 229 L269 214" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <rect x="365" y="145" width="325" height="160" rx="8" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="3"/>
+    <rect x="385" y="164" width="70" height="26" rx="13" fill="#1f7a4d"/>
+    <text x="420" y="182" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">DONE</text>
+    <text x="527" y="208" fill="#17212b" font-size="24" font-weight="700" text-anchor="middle">M1 Expert Motion</text>
+    <text x="527" y="237" fill="#475569" font-size="13" text-anchor="middle">M1.1 pipeline</text>
+    <text x="527" y="259" fill="#475569" font-size="13" text-anchor="middle">M1.2 Base + Skate sources</text>
+    <text x="527" y="281" fill="#475569" font-size="13" text-anchor="middle">M1.3 sequence-level sampling</text>
+
+    <rect x="753" y="132" width="325" height="185" rx="8" fill="#fff7ed" stroke="#d97706" stroke-width="4"/>
+    <rect x="773" y="151" width="92" height="26" rx="13" fill="#d97706"/>
+    <text x="819" y="169" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">ACTIVE</text>
+    <text x="916" y="197" fill="#17212b" font-size="24" font-weight="700" text-anchor="middle">M2 Training Integration</text>
+    <rect x="779" y="215" width="273" height="35" rx="5" fill="#fed7aa"/>
+    <circle cx="797" cy="232" r="7" fill="#d97706"/>
+    <text x="814" y="237" fill="#9a4d05" font-size="14" font-weight="700">M2.1 Online replay</text>
+    <text x="916" y="270" fill="#64748b" font-size="13" text-anchor="middle">HUSKY -> BFM transition contract</text>
+    <text x="916" y="291" fill="#64748b" font-size="13" text-anchor="middle">Forward / backward preflight</text>
+
+    <rect x="1140" y="145" width="308" height="160" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
+    <rect x="1160" y="164" width="76" height="26" rx="13" fill="#64748b"/>
+    <text x="1198" y="182" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">NEXT</text>
+    <text x="1294" y="214" fill="#17212b" font-size="24" font-weight="700" text-anchor="middle">M3 Motion Library</text>
+    <text x="1294" y="243" fill="#475569" font-size="13" text-anchor="middle">Train, checkpoint, validate</text>
+    <text x="1294" y="266" fill="#475569" font-size="13" text-anchor="middle">queryable skate behaviors</text>
+
+    <text x="52" y="382" fill="#3730a3" font-size="14" font-weight="700">M2 DETAIL</text>
+    <line x1="52" y1="400" x2="1448" y2="400" stroke="#cbd5e1" stroke-width="2"/>
+
+    <rect x="52" y="432" width="408" height="155" rx="7" fill="#fff7ed" stroke="#d97706" stroke-width="3"/>
+    <text x="78" y="471" fill="#9a4d05" font-size="14" font-weight="700">M2.1  ACTIVE</text>
+    <text x="78" y="505" fill="#17212b" font-size="20" font-weight="700">Skate online replay</text>
+    <text x="78" y="532" fill="#475569" font-size="14">29D stored action, 23D executed action</text>
+    <text x="78" y="555" fill="#475569" font-size="14">BFM observations, z, reset-safe transitions</text>
+    <circle cx="415" cy="505" r="19" fill="#d97706"/>
+    <path d="M405 505 L412 512 L425 497" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <line x1="460" y1="509" x2="500" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
+
+    <rect x="500" y="432" width="408" height="155" rx="7" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
+    <text x="526" y="471" fill="#64748b" font-size="14" font-weight="700">M2.2  NEXT</text>
+    <text x="526" y="505" fill="#17212b" font-size="20" font-weight="700">Training preflight</text>
+    <text x="526" y="532" fill="#475569" font-size="14">Replay sampling and B/F contract checks</text>
+    <text x="526" y="555" fill="#475569" font-size="14">Auxiliary reward dependency resolution</text>
+    <circle cx="863" cy="505" r="19" fill="#94a3b8"/>
+    <path d="M855 505 L871 505" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+
+    <line x1="908" y1="509" x2="948" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
+
+    <rect x="948" y="432" width="500" height="155" rx="7" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
+    <text x="974" y="471" fill="#64748b" font-size="14" font-weight="700">M2.3  LATER</text>
+    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Frozen-BFM0 post-training</text>
+    <text x="974" y="532" fill="#475569" font-size="14">Skate online replay enters official update path</text>
+    <text x="974" y="555" fill="#475569" font-size="14">No BFB, RFB, MEBE, or formal training yet</text>
+    <circle cx="1402" cy="505" r="19" fill="#94a3b8"/>
+    <path d="M1394 505 L1410 505" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+
+    <rect x="52" y="640" width="1396" height="56" rx="7" fill="#eef2ff" stroke="#c7d2fe" stroke-width="2"/>
+    <circle cx="78" cy="668" r="10" fill="#1f7a4d"/>
+    <text x="98" y="674" fill="#17212b" font-size="14" font-weight="700">COMPLETE</text>
+    <circle cx="245" cy="668" r="10" fill="#d97706"/>
+    <text x="265" y="674" fill="#17212b" font-size="14" font-weight="700">ACTIVE</text>
+    <circle cx="385" cy="668" r="10" fill="#94a3b8"/>
+    <text x="405" y="674" fill="#17212b" font-size="14" font-weight="700">NEXT / LATER</text>
+    <text x="590" y="674" fill="#475569" font-size="14">The current milestone proves the data path before any optimizer step.</text>
+  </g>
+</svg>

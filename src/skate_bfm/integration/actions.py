@@ -2,7 +2,78 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
+
+BFM0_ACTION_RESCALE = 5.0
+BFM0_ACTION_SCALES = np.asarray(
+    (
+        0.222001498914,
+        0.22200157,
+        0.54754699,
+        0.35066156,
+        0.43857802,
+        0.43857802,
+        0.222001498914,
+        0.22200157,
+        0.54754699,
+        0.35066156,
+        0.43857802,
+        0.43857802,
+        0.54754699,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.07450086,
+        0.07466888,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.43857802,
+        0.07450086,
+        0.07450086,
+    ),
+    dtype=np.float32,
+)
+BFM0_DEFAULT_JOINT_POSITION = np.asarray(
+    (
+        -0.1,
+        0.0,
+        0.0,
+        0.3,
+        -0.2,
+        0.0,
+        -0.1,
+        0.0,
+        0.0,
+        0.3,
+        -0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ),
+    dtype=np.float32,
+)
 
 BFM0_JOINTS = (
     "left_hip_pitch_joint",
@@ -92,3 +163,16 @@ class Bfm0ToHusky23:
             mapped = torch.clamp(mapped, -self.action_clip, self.action_clip)
         return mapped
 
+
+def official_husky_control_parameters(
+    action_gain: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map normalized BFM actions to the HUSKY joint-control convention."""
+
+    indices = np.asarray(
+        [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS],
+        dtype=np.int64,
+    )
+    neutral = BFM0_DEFAULT_JOINT_POSITION[indices].copy()
+    scale = BFM0_ACTION_SCALES[indices] * BFM0_ACTION_RESCALE * float(action_gain)
+    return neutral, scale

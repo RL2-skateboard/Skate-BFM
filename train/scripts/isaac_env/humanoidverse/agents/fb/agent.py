@@ -343,7 +343,11 @@ class FBAgent:
         return preds_mean, preds_unc, preds_mean - pessimism_penalty * preds_unc
     
     def _sample_tracking_z(self, replay_buffer, batch_dim, traj_length):
-        batch = replay_buffer["expert_slicer"].sample(batch_dim * traj_length, seq_length=traj_length)  # N*T x obs_dim
+        tracking_expert = replay_buffer.get(
+            "expert_tracking",
+            replay_buffer["expert_slicer"],
+        )
+        batch = tracking_expert.sample(batch_dim * traj_length, seq_length=traj_length)  # N*T x obs_dim
         z = self._model.backward_map(batch["next"]["observation"])  # NT x z_dim
         z = z.view(batch_dim, traj_length, z.shape[-1])  # N x T x z_dim
         for step in range(traj_length):

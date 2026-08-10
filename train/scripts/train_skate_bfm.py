@@ -16,6 +16,8 @@ ISAAC_ENV_ROOT = Path(
 ).expanduser().resolve()
 if not (ISAAC_ENV_ROOT / "humanoidverse").is_dir():
     raise FileNotFoundError(f"Skate-BFM Isaac runtime not found: {ISAAC_ENV_ROOT}")
+sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
+sys.path.insert(0, str(REPOSITORY_ROOT / "husky_sim" / "src"))
 sys.path.insert(0, str(ISAAC_ENV_ROOT))
 
 from humanoidverse.agents.envs.humanoidverse_isaac import (
@@ -59,6 +61,7 @@ from humanoidverse.agents.fb_cpr.agent import FBcprAgentConfig
 from humanoidverse.agents.fb_cpr_aux.agent import FBcprAuxAgentConfig
 from humanoidverse.agents.misc.loggers import CSVLogger
 from humanoidverse.agents.utils import EveryNStepsChecker, get_local_workdir, set_seed_everywhere
+from skate_bfm.integration import HuskyBfmOnlineEnv
 
 TRAIN_LOG_FILENAME = "train_log.txt"
 REWARD_EVAL_LOG_FILENAME = "reward_eval_log.csv"
@@ -240,6 +243,60 @@ class BaseSkateExpertSampler:
         return getattr(self.expert_base, name)
 
 
+def register_skate_train_replay(replay_buffer: dict, train_skate) -> dict:
+    """Register Skate online replay and retain the official train alias."""
+
+    replay_buffer["train_skate"] = train_skate
+    replay_buffer["train"] = train_skate
+    return replay_buffer
+
+
+def collect_skate_online_replay(
+    model,
+    *,
+    steps: int = 64,
+    capacity: int | None = None,
+    device: str = "cuda",
+    update_z_every: int = 150,
+) -> tuple[dict, list]:
+    """Collect a bounded frozen-model HUSKY rollout into official DictBuffer."""
+
+    if steps <= 0:
+        raise ValueError("steps must be positive.")
+    if update_z_every <= 0:
+        raise ValueError("update_z_every must be positive.")
+
+    replay_buffer = register_skate_train_replay(
+        {},
+        DictBuffer(capacity=capacity or steps, device="cpu"),
+    )
+    online_env = HuskyBfmOnlineEnv()
+    observation = online_env.reset()
+    z = None
+    transitions = []
+    try:
+        for step in range(steps):
+            if z is None or step % update_z_every == 0:
+                z = model.sample_z(1, device=device)[0]
+            model_observation = {
+                key: value.unsqueeze(0).to(device)
+                for key, value in observation.items()
+            }
+            with torch.no_grad():
+                action_bfm = model.act(model_observation, z.unsqueeze(0), mean=True)[0]
+            transition = online_env.step(
+                action_bfm,
+                z,
+                truncated=step == steps - 1,
+            )
+            replay_buffer["train_skate"].extend(transition.as_buffer_data())
+            transitions.append(transition)
+            observation = transition.next_observation
+    finally:
+        online_env.close()
+    return replay_buffer, transitions
+
+
 def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_build_kwargs: dict[str, tp.Any]):
     checkpoint_dir = work_dir / CHECKPOINT_DIR_NAME
     checkpoint_time = 0
@@ -402,10 +459,16 @@ class Workspace:
         if (checkpoint_dir / "buffers/train").exists():
             print("Loading checkpointed buffer")
             if self.cfg.use_trajectory_buffer:
-                replay_buffer["train"] = TrajectoryDictBufferMultiDim.load(checkpoint_dir / "buffers/train", device=self.cfg.buffer_device)
+                train_skate = TrajectoryDictBufferMultiDim.load(
+                    checkpoint_dir / "buffers/train",
+                    device=self.cfg.buffer_device,
+                )
             else:
-                replay_buffer["train"] = DictBuffer.load(checkpoint_dir / "buffers/train", device=self.cfg.buffer_device)
-            print(f"Loaded buffer of size {len(replay_buffer['train'])}")
+                train_skate = DictBuffer.load(
+                    checkpoint_dir / "buffers/train",
+                    device=self.cfg.buffer_device,
+                )
+            print(f"Loaded buffer of size {len(train_skate)}")
         else:
             if self.cfg.use_trajectory_buffer:
                 output_key_t = ["observation", "action", "z", "terminated", "truncated", "step_count", "reward"]
@@ -413,7 +476,7 @@ class Workspace:
                 if isinstance(self.cfg.agent, (FBcprAuxAgentConfig)):
                     output_key_t.append("aux_rewards")
 
-                replay_buffer["train"] = TrajectoryDictBufferMultiDim(
+                train_skate = TrajectoryDictBufferMultiDim(
                     capacity=self.cfg.buffer_size // self.cfg.online_parallel_envs,  # make sure to divide by num_envs
                     device=self.cfg.buffer_device,
                     n_dim=2,
@@ -422,9 +485,14 @@ class Workspace:
                     output_key_tp1=["observation", "terminated"],
                 )
             else:
-                replay_buffer["train"] = DictBuffer(capacity=self.cfg.buffer_size, device=self.cfg.buffer_device)
+                train_skate = DictBuffer(
+                    capacity=self.cfg.buffer_size,
+                    device=self.cfg.buffer_device,
+                )
+        register_skate_train_replay(replay_buffer, train_skate)
         if self.training_with_expert_data:
             replay_buffer["expert_base"] = expert_base
+            replay_buffer["expert_tracking"] = expert_base
             if expert_skate is not None:
                 replay_buffer["expert_skate"] = expert_skate
             if expert_skate is not None and self.cfg.skate_expert_ratio > 0.0:

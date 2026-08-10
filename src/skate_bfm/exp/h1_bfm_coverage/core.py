@@ -20,7 +20,11 @@ from skate_husky import HuskyLiteEnv
 
 from skate_bfm.bfm0 import Bfm0Model
 from skate_bfm.integration import Bfm0ToHusky23, HuskyToBfm0Observation
-from skate_bfm.integration.actions import BFM0_JOINTS, HUSKY_JOINTS
+from skate_bfm.integration.actions import (
+    BFM0_JOINTS,
+    HUSKY_JOINTS,
+    official_husky_control_parameters,
+)
 
 EXPERIMENT_TYPE = "H1 Frozen BFM0 Motion Coverage"
 HUMAN_PUSH_FPS = 50.0
@@ -401,18 +405,6 @@ class OfficialHuskyToBfm0Observation:
             "history": torch.from_numpy(history),
             "last_action": torch.from_numpy(last_action),
         }
-
-
-def official_husky_control_parameters(
-    action_gain: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    indices = np.asarray(
-        [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS],
-        dtype=np.int64,
-    )
-    neutral = BFM0_DEFAULT_JOINT_POSITION[indices].copy()
-    scale = BFM0_ACTION_SCALES[indices] * BFM0_ACTION_RESCALE * float(action_gain)
-    return neutral, scale
 
 
 @dataclass(frozen=True)
@@ -1560,8 +1552,7 @@ class H1RolloutRunner:
             neutral, action_scale = official_husky_control_parameters(
                 float(rollout_config["action_gain"])
             )
-            self.env._neutral_control = neutral
-            self.env.action_scale = action_scale
+            self.env.set_control_mapping(neutral, action_scale)
         self.total_rollouts = 0
         self.successful_rollouts = 0
         self.failed_rollouts = 0
