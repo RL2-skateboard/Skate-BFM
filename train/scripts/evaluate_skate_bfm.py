@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import random
+import subprocess
 import sys
+import platform
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,7 @@ sys.path.insert(0, str(SCRIPT_DIRECTORY))
 from data_collection.rollout_split import randomize_husky_play_physics
 from skate_bfm.integration import HuskyBfmOnlineEnv
 from train_skate_bfm import (
+    _checkpoint_model_path,
     _state_fingerprint,
     build_train_config,
     load_pretrained_bfm0_agent,
@@ -62,6 +66,193 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_json_sha256(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def data_fingerprint(payload: Any) -> str:
+    digest = hashlib.sha256()
+
+    def update(value: Any, path: str) -> None:
+        digest.update(path.encode("utf-8"))
+        if isinstance(value, dict):
+            digest.update(b"dict")
+            for key in sorted(value):
+                update(value[key], f"{path}/{key}")
+            return
+        if isinstance(value, (list, tuple)):
+            digest.update(type(value).__name__.encode("ascii"))
+            for index, item in enumerate(value):
+                update(item, f"{path}/{index}")
+            return
+        if torch.is_tensor(value):
+            array = value.detach().cpu().contiguous().numpy()
+        elif isinstance(value, np.ndarray):
+            array = np.ascontiguousarray(value)
+        else:
+            digest.update(
+                json.dumps(
+                    value,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            return
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(str(array.dtype).encode("ascii"))
+        digest.update(array.tobytes())
+
+    update(payload, "root")
+    return digest.hexdigest()
+
+
+def git_commit_sha() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def source_provenance(protocol_path: Path) -> dict[str, Any]:
+    sources = {
+        "evaluation_protocol": protocol_path,
+        "evaluator": Path(__file__).resolve(),
+        "training_entry": REPOSITORY_ROOT / "train/scripts/train_skate_bfm.py",
+        "husky_lite_env": REPOSITORY_ROOT / "husky_sim/src/skate_husky/lite_env.py",
+        "husky_online": REPOSITORY_ROOT / "src/skate_bfm/integration/online.py",
+        "husky_scene": (
+            REPOSITORY_ROOT
+            / "husky_sim/upstream/test_scene/mjlab_scene.xml"
+        ),
+        "randomization": (
+            REPOSITORY_ROOT
+            / "train/scripts/data_collection/rollout_split.py"
+        ),
+    }
+    missing = [
+        str(path)
+        for path in sources.values()
+        if not path.is_file()
+    ]
+    if missing:
+        raise FileNotFoundError(f"Evaluation source files are missing: {missing}")
+    return {
+        name: {
+            "path": str(path),
+            "sha256": sha256_file(path),
+        }
+        for name, path in sources.items()
+    }
+
+
+def runtime_provenance(agent) -> dict[str, Any]:
+    cuda_available = torch.cuda.is_available()
+    known_environment = (
+        "SKATE_ONLINE_ENV",
+        "SKATE_COLLECT_ONLY",
+        "SKATE_UPDATE_MODE",
+        "SKATE_ADAPTATION_UPDATES",
+        "SKATE_MAX_STEPS",
+        "SKATE_ADAPTATION_PROTOCOL",
+        "BFM0_PRETRAINED_CHECKPOINT",
+    )
+    return {
+        "python": platform.python_version(),
+        "torch": torch.__version__,
+        "numpy": np.__version__,
+        "mujoco": mujoco.__version__,
+        "cuda_runtime": torch.version.cuda,
+        "cuda_available": cuda_available,
+        "cuda_device_name": (
+            torch.cuda.get_device_name(torch.cuda.current_device())
+            if cuda_available
+            else None
+        ),
+        "torch_device": str(agent.device),
+        "deterministic_algorithms": (
+            torch.are_deterministic_algorithms_enabled()
+        ),
+        "cudnn_deterministic": torch.backends.cudnn.deterministic,
+        "cudnn_benchmark": torch.backends.cudnn.benchmark,
+        "cuda_matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+        "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
+        "float32_matmul_precision": torch.get_float32_matmul_precision(),
+        "environment": {
+            name: os.environ[name]
+            for name in known_environment
+            if name in os.environ
+        },
+    }
+
+
+def checkpoint_provenance(
+    checkpoint: Path,
+    agent,
+) -> dict[str, Any]:
+    model_path = _checkpoint_model_path(checkpoint)
+    config_path = model_path.parent / "config.json"
+    init_kwargs_path = model_path.parent / "init_kwargs.json"
+    return {
+        "resolved_path": str(checkpoint),
+        "model": {
+            "path": str(model_path),
+            "sha256": sha256_file(model_path),
+        },
+        "config": {
+            "path": str(config_path),
+            "sha256": sha256_file(config_path),
+        },
+        "init_kwargs": {
+            "path": str(init_kwargs_path),
+            "sha256": sha256_file(init_kwargs_path),
+        },
+        "loaded_parameter_fingerprint": _state_fingerprint(
+            agent._model,
+            parameters=True,
+        ),
+        "loaded_buffer_fingerprint": _state_fingerprint(
+            agent._model,
+            parameters=False,
+        ),
+    }
+
+
+def resolved_agent_provenance(agent) -> dict[str, Any]:
+    config = {
+        "agent": agent.cfg.model_dump(),
+        "action_dim": agent.action_dim,
+        "observation_space": {
+            key: {
+                "shape": list(space.shape),
+                "dtype": str(space.dtype),
+            }
+            for key, space in sorted(agent.obs_space.spaces.items())
+        },
+        "parameter_dtype": str(next(agent._model.parameters()).dtype),
+    }
+    return {
+        "config": config,
+        "sha256": canonical_json_sha256(config),
+    }
 
 
 def quaternion_yaw(quaternion: np.ndarray) -> float:
@@ -190,7 +381,10 @@ def collect_fixed_rollouts(
         env.env.set_reset_joint_offsets(joint_offsets)
         mujoco.mj_setConst(env.env.model, env.env.data)
         observation = env.reset()
+        initial_observation_fingerprint = data_fingerprint(observation)
         z = None
+        first_z_fingerprint = None
+        first_action_fingerprint = None
         records: list[dict[str, Any]] = []
         transition_ids: list[str] = []
         try:
@@ -208,6 +402,9 @@ def collect_fixed_rollouts(
                         z=z.unsqueeze(0),
                         mean=True,
                     )[0]
+                if first_z_fingerprint is None:
+                    first_z_fingerprint = data_fingerprint(z)
+                    first_action_fingerprint = data_fingerprint(action)
                 transition = env.step(
                     action,
                     z,
@@ -251,6 +448,14 @@ def collect_fixed_rollouts(
                 **condition,
                 "transition_ids": transition_ids,
                 "dynamics_realization": dynamics_report,
+                "input_fingerprints": {
+                    "initial_observation": initial_observation_fingerprint,
+                    "first_z": first_z_fingerprint,
+                    "first_action": first_action_fingerprint,
+                    "dynamics_realization": canonical_json_sha256(
+                        dynamics_report
+                    ),
+                },
                 "metrics": physical_metrics(
                     records,
                     horizon=horizon,
@@ -261,7 +466,10 @@ def collect_fixed_rollouts(
     return all_records, rollout_results
 
 
-def fixed_batch(buffer: DictBuffer, batch_size: int) -> dict[str, Any]:
+def fixed_batch(
+    buffer: DictBuffer,
+    batch_size: int,
+) -> tuple[dict[str, Any], torch.Tensor]:
     full = buffer.get_full_buffer()
     size = len(buffer)
     if size < batch_size:
@@ -269,7 +477,7 @@ def fixed_batch(buffer: DictBuffer, batch_size: int) -> dict[str, Any]:
             f"Evaluation buffer has {size} transitions; need {batch_size}."
         )
     indices = torch.linspace(0, size - 1, batch_size).round().long()
-    return tree_map(lambda value: value[indices], full)
+    return tree_map(lambda value: value[indices], full), indices
 
 
 def fb_diagnostics(
@@ -336,6 +544,7 @@ def fb_diagnostics(
         "orth_loss": float(orth_loss),
         "orth_loss_diag": float(orth_loss_diag),
         "orth_loss_offdiag": float(orth_loss_offdiag),
+        "q_loss": 0.0,
         "B_norm": float(torch.linalg.vector_norm(b, dim=-1).mean()),
         "z_norm": float(torch.linalg.vector_norm(z, dim=-1).mean()),
     }
@@ -470,6 +679,30 @@ def main() -> int:
     agent, checkpoint_report = build_frozen_agent(checkpoint)
     parameter_before = _state_fingerprint(agent._model, parameters=True)
     buffer_before = _state_fingerprint(agent._model, parameters=False)
+    provenance = {
+        "repository": {
+            "git_commit": git_commit_sha(),
+        },
+        "evaluation": {
+            "evaluator_version": protocol["evaluator_version"],
+            "formula_fidelity": {
+                "source_of_truth": (
+                    "train/scripts/isaac_env/humanoidverse/agents/fb/"
+                    "agent.py:FBAgent.update_fb"
+                ),
+                "fb_diag": (
+                    "-diagonal(Ms - discount * target_M).mean() "
+                    "* num_parallel"
+                ),
+                "matches_vendored_update_fb": True,
+                "q_loss_active": agent.cfg.train.q_loss_coef > 0,
+            },
+        },
+        "sources": source_provenance(protocol_path),
+        "checkpoint": checkpoint_provenance(checkpoint, agent),
+        "resolved_agent": resolved_agent_provenance(agent),
+        "runtime": runtime_provenance(agent),
+    }
 
     total_transitions = (
         int(protocol["rollout_horizon"]) * len(protocol["rollouts"])
@@ -491,7 +724,7 @@ def main() -> int:
     if len(replay_buffers["train"]) != 0:
         raise RuntimeError("Fixed evaluation wrote into training replay.")
 
-    batch = fixed_batch(
+    batch, diagnostic_indices = fixed_batch(
         eval_buffer,
         int(protocol["fb_diagnostic_batch_size"]),
     )
@@ -504,6 +737,26 @@ def main() -> int:
         records,
         protocol["physical_behavior_projection"],
     )
+    transition_ids = [
+        record["transition_id"]
+        for record in records
+    ]
+    evaluation_inputs = {
+        "eval_transition_buffer": data_fingerprint(
+            eval_buffer.get_full_buffer()
+        ),
+        "transition_ids": canonical_json_sha256(transition_ids),
+        "fixed_diagnostic_batch_indices": diagnostic_indices.tolist(),
+        "fixed_diagnostic_batch_indices_fingerprint": data_fingerprint(
+            diagnostic_indices
+        ),
+        "diagnostic_batch": data_fingerprint(batch),
+        "rollouts": {
+            rollout["rollout_id"]: rollout["input_fingerprints"]
+            for rollout in rollouts
+        },
+    }
+    provenance["evaluation_inputs"] = evaluation_inputs
 
     parameter_after = _state_fingerprint(agent._model, parameters=True)
     buffer_after = _state_fingerprint(agent._model, parameters=False)
@@ -532,15 +785,14 @@ def main() -> int:
         "checkpoint": checkpoint_report,
         "rollouts": rollouts,
         "transition_count": len(eval_buffer),
-        "transition_ids": [
-            record["transition_id"]
-            for record in records
-        ],
+        "transition_ids": transition_ids,
+        "provenance": provenance,
     }
     write_json(output_dir / "evaluation_manifest.json", resolved_manifest)
 
     report = {
         "evaluator_version": protocol["evaluator_version"],
+        "provenance": provenance,
         "checkpoint": checkpoint_report["source"],
         "held_out_transition_count": len(eval_buffer),
         "fb_diagnostics": fb_metrics,
