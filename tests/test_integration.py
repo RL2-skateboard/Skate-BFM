@@ -41,7 +41,25 @@ def test_husky_lite_env_runs_headless() -> None:
         env.close()
 
     assert observation["joint_position"].shape == (23,)
+    assert observation["root_linear_velocity"].shape == (3,)
+    assert observation["root_angular_velocity"].shape == (3,)
+    assert observation["board_linear_velocity"].shape == (3,)
+    assert observation["board_angular_velocity"].shape == (3,)
     assert next_observation["root_height"] > 0.0
+
+
+def test_husky_reset_applies_configured_joint_offsets() -> None:
+    env = HuskyLiteEnv()
+    joint_name = "robot/left_hip_pitch_joint"
+    joint_index = env._robot_joints.index(joint_name)
+    try:
+        baseline = env.reset()["joint_position"][joint_index]
+        env.set_reset_joint_offsets({joint_name: 0.005})
+        offset = env.reset()["joint_position"][joint_index]
+    finally:
+        env.close()
+
+    assert np.isclose(offset - baseline, 0.005, atol=1e-6)
 
 
 def test_infinite_smoke_requires_viewer() -> None:

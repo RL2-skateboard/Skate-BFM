@@ -106,6 +106,19 @@ class HuskyBfmOnlineEnv:
             step_count=self._step_count,
             raw_metadata={
                 "root_height": float(raw_next["root_height"]),
+                "root_position": np.asarray(raw_next["root_position"]).copy(),
+                "root_quaternion": np.asarray(raw_next["root_quaternion"]).copy(),
+                "root_linear_velocity": np.asarray(
+                    raw_next["root_linear_velocity"]
+                ).copy(),
+                "root_angular_velocity": np.asarray(
+                    raw_next["root_angular_velocity"]
+                ).copy(),
+                "projected_gravity": np.asarray(
+                    raw_next["projected_gravity"]
+                ).copy(),
+                "joint_position": np.asarray(raw_next["joint_position"]).copy(),
+                "joint_velocity": np.asarray(raw_next["joint_velocity"]).copy(),
                 "board_speed": float(raw_next["board_speed"]),
                 "board_position": np.asarray(raw_next["board_position"]).copy(),
                 "board_quaternion": np.asarray(raw_next["board_quaternion"]).copy(),

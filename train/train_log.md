@@ -313,3 +313,85 @@
   `train_res.md` remains unchanged.
 - Known remaining blockers: Skate auxiliary reward/Q_aux, native HUSKY
   physical termination, and the first Skate FB adaptation protocol.
+
+## 12. M2.2b-0 Fixed Evaluation Protocol
+
+- Date: 2026-08-10
+- Added `train/evaluation_protocol.json` as the fixed comparison contract for
+  BFM0, Original FB + Skate, and future BFB/RFB/FB-MEBE ablations. It freezes
+  rollout IDs, seeds, command metadata, 128-step horizon, seen/unseen dynamics
+  seeds, context schema, physical projection, entropy bins, and Base tracking
+  configuration.
+- Added `train/scripts/evaluate_skate_bfm.py`. It creates a separate
+  `eval_skate_transition` buffer and never writes to `train` or `train_skate`.
+  Unseen dynamics and future context trajectories are explicitly
+  evaluation-only.
+- Fixed held-out set: four rollouts and 512 transitions. Two dynamics
+  realizations are marked seen and two are held-out unseen. Every realization
+  records the exact COM, friction, reset joint offsets, randomization seed,
+  command metadata, and transition IDs.
+- FB diagnostics use the current vendored BFM-Zero `update_fb()` equations
+  under `torch.no_grad()`: `fb_loss`, diagonal/off-diagonal terms,
+  orthonormality terms, B norm, and z norm. No loss or optimizer implementation
+  was changed.
+- Added the Skate-BFM representation diagnostic `F_i^T B_j`: diagonal mean,
+  off-diagonal mean, margin, Top-1, Top-5, mean rank, and median rank. It is
+  not described as an official BFB or RFB metric.
+- Fixed pretrained baseline result: FB loss `1775099.875`, Top-1 `0.25`,
+  Top-5 `0.6875`, mean rank `5.703125`, and median rank `3`.
+- Physical rollout evaluation uses only real MuJoCo fields: bounded duration,
+  root height/tilt and linear/angular velocity, board position/heading and
+  linear/angular velocity. Native survival/fall, contact, slippage, force,
+  command error, and aligned joint-reference error remain unavailable and are
+  not synthesized.
+- Current official HUSKY play randomization audit: robot torso COM, skateboard
+  COM, robot/deck/foot/wheel friction, and reset joint position offsets.
+  External push and observation corruption are disabled by the official play
+  configuration. No new randomization was added.
+- Physical behavior projection `husky_skate_phi_v1` uses six real fields:
+  root linear velocity x/y, root angular velocity z, board linear velocity
+  x/y, and board angular velocity z. Fixed 10-bin discretization produced
+  entropy `4.6439129236` nats over 512 states; the fixed board x/y occupancy
+  used 20 bins per axis.
+- The evaluator was run twice with the same protocol. Metrics, resolved
+  manifest, and coverage artifact were byte-identical. Metrics SHA256:
+  `4372b6b4a48b6518330e65d36c3d5d545fa2d27b98591e0f126e8eac184f7fc5`.
+- Base retention reuses `HumanoidVerseIsaacTrackingEvaluation` with
+  `train/dataset/BFM-Zero/evaluation/lafan_29dof.pkl`, fixed seed 20260810,
+  one episode per motion, and the existing official tracking metrics. This
+  preflight identified and validated the entrypoint but did not run the full
+  1024-env Base evaluation.
+- Context hooks reserve state/action/next-state trajectories with short,
+  medium, and long lengths 16/64/256. BFB `h`, RFB `kappa`, and MEBE
+  density/beta fields are `unavailable` or `not_applicable`; no fake values
+  are inserted.
+- Parameter mutation: no. Model buffer mutation: no. `agent.update()` calls:
+  0. `backward()` calls: 0. Optimizer steps: 0. Formal training: no.
+  `train_res.md` remains unchanged.
+
+### Method Source Grounding
+
+- BFB/RFB reference: `skylooop/BeliefConditionedFB`, revision
+  `30e7487ca033c3619ec744ed55f916ece005c425`; reviewed
+  `agents/dynamics_fb.py`, `agents/dynamics_rfb.py`, and
+  `utils/networks.py`.
+- BFB source behavior: a dynamics trajectory is encoded by
+  `dynamic_transformer`; the context is learned with next-state prediction,
+  stop-gradient is applied during FB learning, dynamics context conditions F,
+  and B remains shared with no dynamics input.
+- RFB source behavior: vMF samples are drawn around the north pole, aligned to
+  normalized dynamics context with a Householder reflection, projected to the
+  latent sphere, and mixed with a B-goal latent by the source
+  `sample_mixed_z()`.
+- FB-MEBE reference: `MATH-286-Pro/FB-MEBE`, revision
+  `344385dcbabd541240c27c3ee41fdc4de9c548ae`; reviewed
+  `agent_meta/fb/agent.py`, `density_estimator/agent_normalizing_flow.py`, and
+  `pretrain.py`.
+- FB-MEBE source behavior: density is estimated on an achieved physical/goal
+  state projection; complete achieved states are sampled from replay with
+  weight proportional to `q(s)^(-beta)`, then mapped through `B(s_E)` to
+  `z_E`. Training mixes this exploration latent with uniform latent, and
+  online `refresh_z()` uses the same exploration mechanism with `p_reverse =
+  0.8` after enough estimator data. No MEBE estimator or 0.8 branch was added
+  to Skate-BFM.
+- Q_aux mapping to FB-MEBE behavior regularization remains unresolved.

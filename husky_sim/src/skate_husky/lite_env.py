@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import mujoco
@@ -41,6 +42,7 @@ class HuskyLiteEnv:
         self._viewer = None
         self._neutral_control = self.model.key_ctrl[0, : self.robot_action_dim].copy()
         self._last_action = np.zeros(self.robot_action_dim, dtype=np.float32)
+        self._reset_joint_offsets: dict[str, float] = {}
         self._robot_joints = [
             mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
             for index in range(self.robot_action_dim)
@@ -80,8 +82,27 @@ class HuskyLiteEnv:
         self._neutral_control = neutral_control.copy()
         self.action_scale = action_scale.copy()
 
+    def set_reset_joint_offsets(
+        self,
+        joint_offsets: Mapping[str, float] | None,
+    ) -> None:
+        offsets = dict(joint_offsets or {})
+        for joint_name, offset in offsets.items():
+            joint = self.model.joint(joint_name)
+            if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+                raise ValueError(f"Reset offset cannot target free joint {joint_name}.")
+            if not np.isfinite(offset):
+                raise ValueError(f"Reset offset for {joint_name} must be finite.")
+        self._reset_joint_offsets = {
+            name: float(offset)
+            for name, offset in offsets.items()
+        }
+
     def reset(self) -> dict[str, np.ndarray | float]:
         mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
+        for joint_name, offset in self._reset_joint_offsets.items():
+            joint = self.model.joint(joint_name)
+            self.data.qpos[joint.qposadr[0]] += offset
         self._last_action.fill(0.0)
         mujoco.mj_forward(self.model, self.data)
         if self._viewer_requested and self._viewer is None:
@@ -179,6 +200,10 @@ class HuskyLiteEnv:
             "last_action": self._last_action.copy(),
             "projected_gravity": gravity,
             "angular_velocity": self.data.qvel[3:6].astype(np.float32).copy(),
+            "root_position": self.data.qpos[:3].astype(np.float32).copy(),
+            "root_quaternion": self.data.qpos[3:7].astype(np.float32).copy(),
+            "root_linear_velocity": self.data.qvel[:3].astype(np.float32).copy(),
+            "root_angular_velocity": self.data.qvel[3:6].astype(np.float32).copy(),
             "root_height": float(self.data.qpos[2]),
             "board_speed": float(self.data.qvel[self._board_dof]),
             "body_position": self.data.xpos[self._robot_body_ids].astype(np.float32).copy(),

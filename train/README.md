@@ -28,9 +28,10 @@ Git.
 **Status as of 2026-08-10:** the project-level BFM0-HUSKY foundation and frozen
 capability audit are complete. Base and Skate expert sources, M2.1 Skate
 online replay, and M2.2a official BFM0 initialization plus expert/replay merge
-are complete. No optimizer step or formal Skate post-training has started.
-Interaction-JEPA and predictive closed-loop control are separate downstream
-modules, not part of the current Motion Library milestone.
+are complete. M2.2b-0 now fixes the source-grounded held-out evaluation
+protocol before adaptation. No optimizer step or formal Skate post-training
+has started. Interaction-JEPA and predictive closed-loop control are separate
+downstream modules, not part of the current Motion Library milestone.
 
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
@@ -95,6 +96,36 @@ parameter and buffer fingerprints before and after the run, and blocks
 current-config optimizers remain fresh and unused. Skate auxiliary rewards,
 native physical termination, and the first FB adaptation protocol remain
 later dependencies.
+
+## Fixed evaluation protocol
+
+All Skate-BFM method comparisons use the checked-in
+[`evaluation_protocol.json`](evaluation_protocol.json). It fixes held-out
+rollout IDs, seeds, commands, horizon, seen/unseen dynamics realizations,
+context schema, physical behavior projection, entropy binning, and the
+official Base tracking evaluator entry.
+
+Run the frozen evaluator from the repository root:
+
+```bash
+train/scripts/isaac_env/.venv/bin/python \
+  train/scripts/evaluate_skate_bfm.py \
+  --checkpoint model/bfm-zero-official \
+  --output-dir results/fixed-evaluation/bfm0-pretrained
+```
+
+The evaluator writes an isolated `eval_skate_transition` buffer, resolved
+manifest, metrics JSON, and behavior occupancy data. It computes held-out FB
+objective diagnostics directly from the current BFM-Zero equations without
+calling `backward()` or an optimizer, plus Skate-BFM matching/retrieval,
+physical rollout metrics, seen/unseen dynamics summaries, and fixed
+achieved-behavior entropy.
+
+The current lightweight runtime has no reliable native termination, contact,
+slippage, force, or command-to-BFM-latent alignment. Those metrics are
+reported as unavailable rather than synthesized. BFB context `h`, RFB
+`kappa`, and MEBE density fields are schema hooks only; no BFB, RFB, or
+FB-MEBE algorithm is implemented here.
 
 ## Expert rollout collection
 
