@@ -175,7 +175,7 @@ def runtime_provenance(agent) -> dict[str, Any]:
         "SKATE_ADAPTATION_PROTOCOL",
         "BFM0_PRETRAINED_CHECKPOINT",
     )
-    return {
+    runtime = {
         "python": platform.python_version(),
         "torch": torch.__version__,
         "numpy": np.__version__,
@@ -202,6 +202,8 @@ def runtime_provenance(agent) -> dict[str, Any]:
             if name in os.environ
         },
     }
+    runtime["sha256"] = canonical_json_sha256(runtime)
+    return runtime
 
 
 def checkpoint_provenance(
