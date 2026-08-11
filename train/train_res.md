@@ -355,3 +355,74 @@ This is an engineering-only refactor record, not a training experiment.
 - Regression status: target-bank byte equality, target rollout fingerprint
   equality, and canonical 512-transition evaluator numerical equality:
   `PASS`.
+
+## M2.4a Training Readiness
+
+This is a read-only dependency audit, not a training experiment.
+
+- Date: `2026-08-11`
+- Resolved agent: `FBcprAuxAgent`
+- Full native update call graph: `PASS`
+- Runtime batch / sequence length: `1024 / 8`
+- Replay: `PARTIAL`
+  - `train is train_skate`: yes
+  - core observation, 29D action, 256D z, next observation, terminated, and
+    truncated contracts: finite and shape-compatible
+  - configured auxiliary reward dictionary: absent
+- Expert: `READY`
+  - Base source: `862` LAFAN motions
+  - Skate source: `1` motion, `50` frames, `50 Hz`, forward push
+  - sampled mixture: `64 Base + 64 Skate` complete 8-frame sequences
+- Termination: `PARTIAL`
+  - current Skate transitions never set `terminated=True`
+  - bounded horizon sets `truncated=True`
+  - fall, invalid state, and board separation are not terminal
+  - reset-crossing transitions are prevented
+- Discriminator: `READY`
+- F/B: `READY`
+- Main critic / QD: `READY`
+- Qaux network: `READY`
+- Qaux data: `BLOCKED`
+- Actor network and 29D output: `READY`
+- Actor training interface: `BLOCKED` by missing Qaux reward data
+- Target F, B, QD, and Qaux: `READY`
+- Observation and auxiliary reward normalizer state: `READY`
+- Configured auxiliary rewards:
+  `penalty_torques`, `penalty_action_rate`, `limits_dof_pos`,
+  `limits_torque`, `penalty_undesired_contact`, `penalty_feet_ori`,
+  `penalty_ankle_roll`, `penalty_slippage`.
+- Auxiliary reward data: `BLOCKED`.
+  `penalty_action_rate`, `limits_dof_pos`, and `penalty_ankle_roll` have at
+  least partial source-state support; exact torque, contact-gated foot
+  orientation, undesired-contact, and slippage contracts are unavailable.
+  Zero-scaled torque keys are still accessed by upstream and cannot be
+  omitted or filled silently.
+
+| Readiness judgment | Result |
+| :--- | :--- |
+| Representation training ready | `YES` |
+| Critic/discriminator interface ready | `YES` |
+| Actor training interface ready | `NO` |
+| Full `FBcprAuxAgent.update()` ready | `NO` |
+
+The first hard blocker is the missing configured Skate auxiliary reward
+contract. The next milestone is:
+
+`M2.4b — Skate Auxiliary Reward Contract`
+
+The single 50-frame push expert is a performance/coverage limitation rather
+than a technical smoke-training blocker. Previous frozen-Actor behavior does
+not predict full FB-CPR-Aux training performance.
+
+Validation:
+
+- Full 1024-item forward checks: finite for expert z, mixed z,
+  discriminator logits/reward, F/B, QD, Qaux, Actor, and all targets.
+- Actor output: `[1024, 29]`.
+- Parameter mutation: `NO`.
+- Model-buffer mutation: `NO`.
+- Optimizer steps: `0`.
+- Backward calls: `0`.
+- `agent.update`, `update_fb`, `update_actor`, `update_critic`,
+  `update_aux_critic`, and `update_discriminator` calls: `0`.
+- Training performed: `NO`.

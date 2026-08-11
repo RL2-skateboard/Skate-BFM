@@ -30,9 +30,13 @@ evaluation-only frozen-Actor target-conditioned preflight: the forward-push
 target has a consistent forward-response advantage over matched random
 latents, but lateral and heading behavior remain mixed. Full FB-CPR-Aux
 training has not started. M2.4-0 completed the behavior-preserving project
-code cleanup; M2.4a full-training dependency audit is next. Interaction-JEPA,
-predictive closed-loop planning, and complete skateboarding-task evaluation
-remain later project modules.
+code cleanup. M2.4a then completed the full-training dependency audit:
+representation, discriminator, main critic, Actor network, Qaux network, and
+all target-network shapes are compatible with a 1024-transition Skate batch,
+but the formal replay does not contain the configured auxiliary rewards.
+Full FB-CPR-Aux training is therefore blocked by the Skate auxiliary reward
+contract. Interaction-JEPA, predictive closed-loop planning, and complete
+skateboarding-task evaluation remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.
@@ -78,6 +82,19 @@ no training, optimizer step, backward call, replay update, or command
 injection. The generated JSON result is kept under the ignored `results/`
 directory; the summarized tables and boundary checks are recorded in
 [`train/train_res.md`](train/train_res.md).
+
+Run the M2.4a read-only full-training dependency audit:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py
+```
+
+This builds the formal 1024-transition collect-only Skate replay, samples a
+1024-item 50/50 Base+Skate expert batch, and performs forward-only checks for
+the discriminator, F/B, QD, Qaux, Actor, and target networks. It performs no
+training, optimizer step, backward call, or model-state mutation. The local
+JSON report is written under ignored `results/`; the retained conclusion is
+recorded in [`train/train_res.md`](train/train_res.md).
 
 Audit the current expert target bank without training or rollout:
 

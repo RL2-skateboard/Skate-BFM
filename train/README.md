@@ -39,9 +39,13 @@ completed the evaluation-only frozen-Actor target-conditioned preflight. The
 forward-push target consistently increases forward response over matched
 random latents, while lateral and heading behavior remain mixed; no steer
 target is claimed. M2.4-0 completed the behavior-preserving project code
-cleanup, and M2.4a full-training dependency audit is next.
-Interaction-JEPA and predictive closed-loop control are separate downstream
-modules, not part of the current Motion Library milestone.
+cleanup. M2.4a completed the read-only full-training dependency audit. The
+1024-transition Skate replay and 50/50 Base+Skate expert batch are compatible
+with the representation, discriminator, QD, Qaux-network, Actor-network, and
+target-network interfaces, but the replay does not contain the eight
+configured auxiliary reward fields. Full FB-CPR-Aux training is blocked by
+that data contract. Interaction-JEPA and predictive closed-loop control are
+separate downstream modules, not part of the current Motion Library milestone.
 
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
@@ -90,6 +94,18 @@ checks exact reset reproducibility plus parameter, component, and normalizer
 immutability. It is evaluation-only and makes no optimizer, backward,
 `agent.update`, or `update_fb` calls. Results are summarized in
 [`train_res.md`](train_res.md).
+
+Run the read-only full-training dependency audit:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py
+```
+
+The audit uses the official BFM0 checkpoint, 1024 formal HUSKY transitions,
+and 64 Base plus 64 Skate complete expert sequences. It performs no
+`agent.update()`, update subroutine, optimizer step, backward call, or
+parameter/buffer mutation. Its local JSON output is kept under `results/`;
+the readiness matrix and blocker are retained in [`train_res.md`](train_res.md).
 
 ## Isaac training runtime
 

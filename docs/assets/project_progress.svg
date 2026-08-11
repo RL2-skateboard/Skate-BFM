@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="820" viewBox="0 0 1600 820" role="img" aria-labelledby="title desc">
   <title id="title">Skate-BFM overall research program as of 2026-08-11</title>
-  <desc id="desc">The frozen BFM0 and HUSKY baseline, expert motion integration, F/B-only adaptation boundary, target-conditioned preflight, and behavior-preserving project cleanup are verified. Full-training dependency audit, full FB-CPR-Aux training, and downstream planning follow.</desc>
+  <desc id="desc">The frozen BFM0 and HUSKY baseline, expert motion integration, F/B-only adaptation boundary, target-conditioned preflight, cleanup, and full-training dependency audit are verified. The auxiliary reward contract blocks full FB-CPR-Aux training; downstream planning follows later.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
@@ -19,8 +19,8 @@
 
   <rect x="1038" y="34" width="510" height="82" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="2"/>
     <text x="1062" y="61" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">CURRENT POSITION - 2026-08-11</text>
-    <text x="1062" y="88" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">M2.4-0 Project code cleanup</text>
-    <text x="1062" y="107" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Numerical behavior preserved; dependency audit next</text>
+    <text x="1062" y="88" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">M2.4a Full-training dependency audit</text>
+    <text x="1062" y="107" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Interfaces pass; auxiliary reward data blocks full update</text>
 
   <line x1="258" y1="292" x2="374" y2="292" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="670" y1="292" x2="765" y2="292" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
@@ -74,15 +74,15 @@
 
     <circle cx="421" cy="437" r="10" fill="#1f7a4d"/>
     <line x1="431" y1="437" x2="474" y2="437" stroke="#1f7a4d" stroke-width="4"/>
-    <circle cx="484" cy="437" r="13" fill="#d97706" stroke="#ffedd5" stroke-width="5"/>
-    <line x1="497" y1="437" x2="540" y2="437" stroke="#cbd5e1" stroke-width="4"/>
-    <circle cx="550" cy="437" r="10" fill="#94a3b8"/>
-    <line x1="560" y1="437" x2="603" y2="437" stroke="#cbd5e1" stroke-width="4"/>
-    <circle cx="613" cy="437" r="10" fill="#94a3b8"/>
-    <text x="421" y="469" fill="#1f7a4d" font-size="12" font-weight="700" text-anchor="middle">AUDIT</text>
-    <text x="484" y="469" fill="#1f7a4d" font-size="12" font-weight="700" text-anchor="middle">DATA</text>
+    <circle cx="484" cy="437" r="10" fill="#1f7a4d"/>
+    <line x1="494" y1="437" x2="540" y2="437" stroke="#1f7a4d" stroke-width="4"/>
+    <circle cx="550" cy="437" r="10" fill="#1f7a4d"/>
+    <line x1="560" y1="437" x2="603" y2="437" stroke="#d97706" stroke-width="4"/>
+    <circle cx="613" cy="437" r="13" fill="#d97706" stroke="#ffedd5" stroke-width="5"/>
+    <text x="421" y="469" fill="#1f7a4d" font-size="12" font-weight="700" text-anchor="middle">BASE</text>
+    <text x="484" y="469" fill="#1f7a4d" font-size="12" font-weight="700" text-anchor="middle">EXPERT</text>
     <text x="550" y="469" fill="#1f7a4d" font-size="12" font-weight="700" text-anchor="middle">TARGETS</text>
-    <text x="613" y="469" fill="#d97706" font-size="12" font-weight="700" text-anchor="middle">PREFLIGHT</text>
+    <text x="613" y="469" fill="#d97706" font-size="12" font-weight="700" text-anchor="middle">AUDIT</text>
   </g>
 
   <!-- Interaction-JEPA -->
@@ -170,7 +170,7 @@
   <text x="52" y="730" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">EVIDENCE COMPLETE</text>
   <text x="52" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">Official checkpoint integration, H1 retrieval, and target-bank command audit</text>
   <text x="824" y="730" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">ACTIVE MILESTONE</text>
-  <text x="824" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">One aligned forward target verified; target execution and full training next</text>
+  <text x="824" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">M2.4a audited; M2.4b auxiliary reward contract is next</text>
 
   <text x="52" y="797" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="13">Progress is tracked across main-branch experiment records and train-branch data, training, and result logs.</text>
 </svg>

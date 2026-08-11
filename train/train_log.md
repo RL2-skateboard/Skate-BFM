@@ -648,3 +648,328 @@
   - canonical BFM evaluation had identical 512-transition metrics and
     behavior coverage.
 - Training performed: no. Optimizer steps: `0`.
+
+## 19. M2.4a Full Training Dependency Audit
+
+- Date: 2026-08-11
+- Status: `completed_read_only_audit`
+- Scope: determine what prevents one legal native
+  `FBcprAuxAgent.update()` call. No training or update method was executed.
+- Source of truth:
+  - `train/scripts/isaac_env/humanoidverse/agents/fb/agent.py`
+  - `train/scripts/isaac_env/humanoidverse/agents/fb_cpr/agent.py`
+  - `train/scripts/isaac_env/humanoidverse/agents/fb_cpr_aux/agent.py`
+  - `train/scripts/train_skate_bfm.py`
+  - `src/skate_bfm/integration/`
+  - `husky_sim/src/skate_husky/lite_env.py`
+
+### Native Full-Update Call Graph
+
+```text
+expert_slicer.sample + train.sample
+  -> device transfer + discount = 0.98 * ~terminated
+  -> observation-normalizer update
+  -> eval-mode normalization of train and expert observations
+  -> encode_expert(expert_next_obs)
+  -> update_discriminator(expert_obs/z, train_obs/z)
+  -> sample_mixed_z -> z-buffer add -> probabilistic relabel
+  -> update_fb(obs, action, discount, next_obs, goal, z)
+  -> update_critic(obs, action, discount, next_obs, z)
+  -> weighted train_batch["aux_rewards"]
+  -> auxiliary reward EMA normalizer
+  -> update_aux_critic(...)
+  -> update_actor(QD + Qaux + F-derived Q)
+  -> soft-update target F, B, QD, and Qaux
+```
+
+M2.2 `fb_only` stepped only the F and B optimizers and soft-updated target
+F/B. M2.3 was frozen inference with no training. Those experiments establish
+interface and representation boundaries, not expected full-update training
+performance.
+
+### Resolved Runtime Configuration
+
+| Field | Value |
+| :--- | :--- |
+| Agent | `FBcprAuxAgent` |
+| Batch / sequence length | `1024 / 8` |
+| Discount | `0.98` |
+| F / B learning rate | `3e-4 / 1e-5` |
+| Actor / QD / Qaux learning rate | `3e-4 / 3e-4 / 3e-4` |
+| Discriminator learning rate | `1e-5` |
+| F/B target tau | `0.01` |
+| QD/Qaux target tau | `0.005` |
+| `expert_asm_ratio` / `train_goal_ratio` | `0.6 / 0.2` |
+| `relabel_ratio` | `0.8` |
+| `q_loss_coef` | `0.0` |
+| `reg_coeff` / `reg_coeff_aux` | `0.05 / 0.02` |
+| Discriminator gradient penalty | `10.0` |
+| QD / Qaux / Actor pessimism | `0.5 / 0.5 / 0.5` |
+
+Configured auxiliary rewards and scales:
+
+```text
+penalty_torques:            0.0
+penalty_action_rate:       -0.1
+limits_dof_pos:           -10.0
+limits_torque:              0.0
+penalty_undesired_contact: -1.0
+penalty_feet_ori:          -0.4
+penalty_ankle_roll:        -4.0
+penalty_slippage:          -2.0
+```
+
+Zero-scaled keys remain mandatory because upstream accesses and logs every
+configured key before applying its scale.
+
+### Runtime Structural Audit
+
+- Formal replay: `replay_buffer["train"] is replay_buffer["train_skate"]`.
+- Replay size and sample: `1024` transitions and a full `1024` batch.
+- Observation shapes:
+  `state [1024,64]`, `privileged_state [1024,463]`,
+  `last_action [1024,29]`, `history_actor [1024,372]`.
+- Action / latent: `[1024,29]` and `[1024,256]`, finite `float32`.
+- Latent norm min/mean/max:
+  `15.999999 / 16.000000 / 16.000000`.
+- Termination sample: `0` terminated and `1` horizon-truncated transition.
+- `aux_rewards`: absent; no keys were silently synthesized.
+- Expert Base source: `862` LAFAN motions.
+- Expert Skate source: `1` motion, `50` frames, `50 Hz`, forward push,
+  SHA256 `660c18145a21457d3541b49ccc802ba3f99170804836cedaebb9d245b837fd86`.
+- Full expert sample: `128` complete 8-frame sequences, split exactly
+  `64 Base + 64 Skate`.
+- Forward-only finite shapes:
+  - expert and mixed z: `[1024,256]`;
+  - discriminator logits/reward: `[1024,1]`;
+  - F and target F: `[2,1024,256]`;
+  - B and target B: `[1024,256]`;
+  - FB target matrix: `[2,1024,1024]`;
+  - QD, target QD, Qaux, target Qaux: `[2,1024,1]`;
+  - Actor output: `[1024,29]`.
+- All six optimizers exist with one parameter group and zero state entries;
+  none was stepped.
+- Target parameter lists exist and match source shapes:
+  F `76/76`, B `6/6`, QD `76/76`, Qaux `76/76`.
+- Observation normalizer is checkpoint-loaded and was held in eval mode.
+  Full upstream training intentionally updates it before eval normalization.
+- Auxiliary reward normalizer exists with scalar `mean`, `mean_square`, and
+  `counter` buffers and expects `[1024,1]`. Its `EMA.forward()` always mutates
+  those buffers, so the audit inspected state without calling it.
+- Full-model parameter hash before/after:
+  `6e4c5279dee203d5c971b09269294d50482d35555d0fbd6c8890efd593c524fe`.
+- Full-model buffer hash before/after:
+  `5bd0b8dea2f792a3401b4341c9d04dc4a09c89fccf66f8ffdb825a8e14dd5dc5`.
+
+### Termination Audit
+
+- Current `HuskyBfmOnlineEnv.step()` always writes `terminated=False`.
+- The fixed horizon writes `truncated=True`; fall, invalid state, and board
+  separation do not currently terminate the transition.
+- The wrapper refuses another step after termination/truncation until reset,
+  so reset-crossing transitions cannot enter replay.
+- Official HumanoidVerse computes reset conditions in
+  `LeggedRobotBase._check_termination()` and maps
+  `reset & ~time_outs` to terminated while mapping timeouts to truncated in
+  `gymnasium_wrapper.py`.
+- The resolved BFM0 config disables contact, gravity, low-height, limit,
+  motion-end, and motion-far termination switches, so official configured
+  behavior is also predominantly timeout truncation.
+- Status: `PARTIAL`. The discount tensor is structurally valid and reset
+  leakage is prevented, but no Skate-specific failure semantics exist.
+
+### Auxiliary Reward Audit
+
+**`penalty_torques`**
+
+- Upstream: `LeggedRobotBase._reward_penalty_torques()`.
+- Meaning/raw variables: sum of squared applied joint torques; `self.torques`.
+- Current HUSKY source: actuator force is internal to MuJoCo but is not
+  exposed by `HuskyLiteEnv`.
+- Current replay: no torque or reward field.
+- Exact / approximate: `NO / NO`.
+- Status: `BLOCKED`.
+
+**`penalty_action_rate`**
+
+- Upstream: `LeggedRobotBase._reward_penalty_action_rate()`.
+- Meaning/raw variables: squared difference between previous and current
+  29-DoF actions.
+- Current HUSKY source: current stored BFM action and previous BFM action are
+  available through the action/history contract.
+- Current replay: source values exist, but the scalar reward is not emitted.
+- Exact / approximate: `YES / YES` under the existing BFM action convention.
+- Status: `PARTIAL`.
+
+**`limits_dof_pos`**
+
+- Upstream: `LeggedRobotBase._reward_limits_dof_pos()`.
+- Meaning/raw variables: 29-DoF position violation against resolved soft
+  limits and optional curriculum state.
+- Current HUSKY source: 23 physical joint positions and MuJoCo limits exist;
+  the BFM observation expands them to 29 dimensions.
+- Current replay: expanded joint state exists, but exact official 29-DoF
+  limits/curriculum realization and reward are absent.
+- Exact / approximate: `NO / YES`.
+- Status: `PARTIAL`.
+
+**`limits_torque`**
+
+- Upstream: `LeggedRobotBase._reward_limits_torque()`.
+- Meaning/raw variables: torque excess over resolved soft torque limits.
+- Current HUSKY source/replay: neither applied torque nor the official
+  29-DoF soft-limit realization is exposed or stored.
+- Exact / approximate: `NO / NO`.
+- Status: `BLOCKED`.
+
+**`penalty_undesired_contact`**
+
+- Upstream:
+  `LeggedRobotMotions._reward_penalty_undesired_contact()`.
+- Meaning/raw variables: whether any configured penalized body has contact
+  force magnitude above `1`.
+- Current HUSKY source: MuJoCo contacts exist internally, but the penalized
+  body mapping and contact forces are not exposed.
+- Current replay: no contact data.
+- Exact / approximate: `NO / YES` only through a non-equivalent pose/contact
+  heuristic.
+- Status: `BLOCKED`.
+
+**`penalty_feet_ori`**
+
+- Upstream: `LeggedRobotBase._reward_penalty_feet_ori()`.
+- Meaning/raw variables: left/right foot tilt, gated by vertical contact force
+  above `1`.
+- Current HUSKY source: raw body orientation exists; exact contact gating is
+  missing.
+- Current replay: neither foot orientation nor contact force is stored.
+- Exact / approximate: `NO / YES` without equivalent contact gating.
+- Status: `BLOCKED`.
+
+**`penalty_ankle_roll`**
+
+- Upstream: `LeggedRobotMotions._reward_penalty_ankle_roll()`.
+- Meaning/raw variables: squared left/right ankle-roll positions.
+- Current HUSKY source: both physical ankle-roll joint positions exist and
+  enter the BFM observation.
+- Current replay: source state exists, but the scalar reward is not emitted.
+- Exact / approximate: `YES / YES` under the current joint adapter.
+- Status: `PARTIAL`.
+
+**`penalty_slippage`**
+
+- Upstream: `LeggedRobotBase._reward_penalty_slippage()`.
+- Meaning/raw variables: foot velocity magnitude gated by foot contact force
+  magnitude above `1`.
+- Current HUSKY source: body velocity exists; exact contact-force gating is
+  missing.
+- Current replay: neither foot velocity nor contact force is stored.
+- Exact / approximate: `NO / YES` using a non-equivalent kinematic contact
+  heuristic.
+- Status: `BLOCKED`.
+
+### Full Training Dependency Matrix
+
+| Dependency | Required by | Current source | Status | Hard blocker? | Next action |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Base expert | expert sampling | LAFAN, 862 motions | READY | No | Retain |
+| Skate expert | expert sampling | 1 x 50-frame push | READY | No | Expand later |
+| `expert_slicer` | update start | 64/64 sequence sampler | READY | No | Retain |
+| Train replay | all updates | 1024 formal transitions | PARTIAL | Yes | Add exact aux contract |
+| Observation | all networks | 64/463/29/372 fields | READY | No | Retain |
+| Action | F/QD/Qaux/Actor | stored 29D | READY | No | Retain |
+| z | discriminator/F/B/critics | stored 256D | READY | No | Retain |
+| terminated | discount | always false | PARTIAL | No | Audit semantics later |
+| truncated | episode boundary | bounded horizon | READY | No | Retain |
+| Observation normalizer | all networks | official checkpoint | READY | No | Retain |
+| Discriminator | CPR reward | official checkpoint | READY | No | Retain |
+| F | representation/Actor | official checkpoint | READY | No | Retain |
+| B | encoding/representation | official checkpoint | READY | No | Retain |
+| Main critic / QD | CPR/Actor | official checkpoint | READY | No | Retain |
+| Auxiliary rewards | Qaux | absent | BLOCKED | Yes | M2.4b |
+| Aux reward normalizer | Qaux | checkpointed scalar EMA | READY | No | Feed exact scalar |
+| Qaux network | Qaux/Actor | official checkpoint | READY | No | Retain |
+| Qaux data | Qaux/Actor | absent aux rewards | BLOCKED | Yes | M2.4b |
+| Actor network | action output | official checkpoint, 29D | READY | No | Retain |
+| Actor training interface | full Actor loss | depends on Qaux data | BLOCKED | Yes | Unblock Qaux data |
+| Target F / B | FB targets | shape-matched | READY | No | Retain |
+| Target QD / Qaux | critic targets | shape-matched | READY | No | Retain |
+
+### Judgment
+
+- Representation training ready: `YES`.
+- Critic/discriminator interface ready: `YES`.
+- Actor training interface ready: `NO`.
+- Full `FBcprAuxAgent.update()` ready: `NO`.
+- Earliest independent hard blocker: configured Skate auxiliary reward data
+  is absent/incomplete.
+- Performance limitation, not a technical blocker: the Skate expert set is
+  one 50-frame forward-push motion. It is sufficient for technical training
+  feasibility smoke and insufficient for final skill coverage.
+- Next milestone: `M2.4b — Skate Auxiliary Reward Contract`.
+- Parameter mutation: `NO`; model-buffer mutation: `NO`.
+- Optimizer steps: `0`; backward calls: `0`; `agent.update`: `0`;
+  `update_fb`: `0`; `update_actor`: `0`; training: `NO`.
+
+### Code Change Summary
+
+1. `train/scripts/audit_training.py`
+
+   - Changed: added the retained read-only M2.4a audit entrypoint.
+   - Why: reproduce resolved config, real replay/expert batches, network
+     forward contracts, optimizer/target presence, and mutation checks.
+   - Original logic: no project-owned full-training audit entrypoint.
+   - New logic: collect-only construction plus `torch.no_grad()` inspection;
+     all update methods remain uncalled.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: training-readiness tooling only.
+
+2. `README.md` and `train/README.md`
+
+   - Changed: advanced project status to completed M2.4a, documented the hard
+     blocker, and added the audit command.
+   - Why: keep branch and project progress aligned with verified evidence.
+   - Original logic: M2.4a was listed as next.
+   - New logic: M2.4b auxiliary reward contract is next.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: documentation only.
+
+3. `docs/assets/project_progress.svg` and
+   `docs/assets/development_substage.svg`
+
+   - Changed: moved the visual current position to M2.4a and marked full
+     training as blocked by auxiliary reward data.
+   - Why: keep both progress figures synchronized with the audit.
+   - Original logic: M2.4-0 current, M2.4a next.
+   - New logic: M2.4a complete, M2.4b next.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: documentation assets only.
+
+4. `train/train_log.md` and `train/train_res.md`
+
+   - Changed: retained the call graph, resolved config, contracts, reward
+     audit, readiness matrix, validation, and final judgments.
+   - Why: preserve the M2.4a evidence without retaining generated results.
+   - Original logic: records ended at M2.4-0.
+   - New logic: M2.4a is recorded as a non-training readiness audit.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: training records only.
+
+### Overall Code Change Summary
+
+- Model architecture changed: `NO`.
+- Loss changed: `NO`.
+- Optimizer behavior changed: `NO`.
+- Training loop changed: `NO`.
+- Expert sampling changed: `NO`.
+- Online latent sampling changed: `NO`.
+- Exploration changed: `NO`.
+- Replay semantics changed: `NO`.
+- Observation format changed: `NO`.
+- Action format changed: `NO`.
+- Termination semantics changed: `NO`.
+- Auxiliary reward semantics changed: `NO`.
+- Evaluation protocol changed: `NO`.
+- Training-readiness audit added: `YES`.
+- Vendored BFM-Zero source modified: `NO`.
+- Training performed: `NO`.
