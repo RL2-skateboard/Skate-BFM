@@ -71,6 +71,7 @@ from humanoidverse.agents.misc.loggers import CSVLogger
 from humanoidverse.agents.utils import EveryNStepsChecker, get_local_workdir, set_seed_everywhere
 from data_collection.rollout_split import randomize_husky_play_physics
 from skate_bfm.integration import HuskyBfmOnlineEnv
+from skate_husky import AUX_REWARD_KEYS
 
 TRAIN_LOG_FILENAME = "train_log.txt"
 REWARD_EVAL_LOG_FILENAME = "reward_eval_log.csv"
@@ -116,7 +117,7 @@ class TrainConfig(BaseConfig):
     skate_expert_ratio: float = pydantic.Field(default=0.5, ge=0.0, le=1.0)
     online_env: tp.Literal["base", "skate"] = "base"
     collect_only: bool = False
-    skate_update_mode: tp.Literal["none", "fb_only"] = "none"
+    skate_update_mode: tp.Literal["none", "fb_only", "full"] = "none"
     adaptation_updates: int = pydantic.Field(default=0, ge=0)
     adaptation_protocol: str | None = None
     skate_max_steps: int = pydantic.Field(default=64, gt=0)
@@ -193,6 +194,10 @@ class TrainConfig(BaseConfig):
                 raise ValueError(
                     "skate_update_mode='fb_only' requires collect_only=False."
                 )
+            if self.skate_update_mode == "full" and self.collect_only:
+                raise ValueError(
+                    "skate_update_mode='full' requires collect_only=False."
+                )
             if self.skate_update_mode == "none" and self.adaptation_updates != 0:
                 raise ValueError(
                     "skate_update_mode='none' requires adaptation_updates=0."
@@ -204,29 +209,43 @@ class TrainConfig(BaseConfig):
                 raise ValueError(
                     "B/F-only adaptation_updates must be one of 1, 10, or 100."
                 )
+            if (
+                self.skate_update_mode == "full"
+                and self.adaptation_updates != 1
+            ):
+                raise ValueError(
+                    "Native full-update smoke requires adaptation_updates=1."
+                )
+            if self.skate_update_mode == "full" and self.skate_max_steps != 1024:
+                raise ValueError(
+                    "Native full-update smoke requires skate_max_steps=1024."
+                )
             if self.skate_update_mode == "fb_only" and self.adaptation_protocol is None:
                 raise ValueError(
                     "B/F-only adaptation requires the fixed evaluation protocol "
                     "to define seen dynamics."
                 )
             if (
-                self.skate_update_mode == "fb_only"
+                self.skate_update_mode in {"fb_only", "full"}
                 and self.skate_expert_ratio > 0.0
                 and self.skate_expert_motion_file is None
             ):
                 raise ValueError(
-                    "B/F-only adaptation with skate_expert_ratio > 0 requires "
-                    "skate_expert_motion_file. Set SKATE_EXPERT_RATIO=0 for "
-                    "an explicit Base-only control."
+                    "Skate adaptation with skate_expert_ratio > 0 requires "
+                    "skate_expert_motion_file."
                 )
             if (
-                self.skate_update_mode == "fb_only"
+                self.skate_update_mode in {"fb_only", "full"}
                 and self.skate_expert_motion_file is not None
                 and not Path(self.skate_expert_motion_file).expanduser().is_file()
             ):
                 raise ValueError(
                     "Configured Skate expert motion file does not exist: "
                     f"{self.skate_expert_motion_file}"
+                )
+            if self.skate_update_mode == "full" and self.skate_expert_ratio != 0.5:
+                raise ValueError(
+                    "Native full-update smoke requires skate_expert_ratio=0.5."
                 )
             if self.online_parallel_envs != 1:
                 raise ValueError("Skate online mode currently supports exactly one environment.")
@@ -445,6 +464,35 @@ def hash_components(agent) -> dict[str, str]:
         "target_QD": hash_params(model._target_critic),
         "Qaux": hash_params(model._aux_critic),
         "target_Qaux": hash_params(model._target_aux_critic),
+    }
+
+
+def module_state_is_finite(module: torch.nn.Module) -> bool:
+    """Return whether every floating parameter and buffer is finite."""
+
+    tensors = tuple(module.parameters()) + tuple(module.buffers())
+    return all(
+        not tensor.is_floating_point() or bool(torch.isfinite(tensor).all())
+        for tensor in tensors
+    )
+
+
+def optimizer_step_report(optimizer: torch.optim.Optimizer) -> dict[str, tp.Any]:
+    """Summarize first-step Adam state without changing it."""
+
+    steps = []
+    finite = True
+    for state in optimizer.state.values():
+        step = state.get("step")
+        if step is not None:
+            steps.append(float(torch.as_tensor(step).item()))
+        for value in state.values():
+            if torch.is_tensor(value) and value.is_floating_point():
+                finite = finite and bool(torch.isfinite(value).all())
+    return {
+        "state_entries": len(optimizer.state),
+        "step_values": sorted(set(steps)),
+        "finite": finite,
     }
 
 
@@ -725,10 +773,13 @@ def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_buil
     checkpoint_dir = work_dir / CHECKPOINT_DIR_NAME
     checkpoint_time = 0
     if checkpoint_dir.exists():
-        if cfg.online_env == "skate" and cfg.skate_update_mode == "fb_only":
+        if cfg.online_env == "skate" and cfg.skate_update_mode in {
+            "fb_only",
+            "full",
+        }:
             raise RuntimeError(
-                "B/F-only diagnostic milestones must start from the official "
-                "BFM0 checkpoint in an empty work directory."
+                "Skate adaptation milestones must start from the official BFM0 "
+                "checkpoint in an empty work directory."
             )
         with (checkpoint_dir / "train_status.json").open("r") as f:
             train_status = json.load(f)
@@ -1042,6 +1093,8 @@ class Workspace:
         if not self.uses_base_online_env:
             if self.cfg.skate_update_mode == "fb_only":
                 return self._adapt_skate_fb(replay_buffer)
+            if self.cfg.skate_update_mode == "full":
+                return self._full_skate_update(replay_buffer)
             return self._collect_skate_online(replay_buffer)
 
         print("Starting training")
@@ -1383,17 +1436,17 @@ class Workspace:
             }
         )
         if (
-            self.cfg.skate_update_mode == "fb_only"
+            self.cfg.skate_update_mode in {"fb_only", "full"}
             and self.cfg.skate_expert_ratio > 0.0
         ):
             if "expert_skate" not in replay_buffer:
-                raise RuntimeError("B/F-only mixture requires expert_skate.")
+                raise RuntimeError("Skate mixture requires expert_skate.")
             if not isinstance(
                 replay_buffer["expert_slicer"],
                 BaseSkateExpertSampler,
             ):
                 raise RuntimeError(
-                    "B/F-only mixture requires BaseSkateExpertSampler."
+                    "Skate mixture requires BaseSkateExpertSampler."
                 )
             if (
                 replay_buffer["expert_slicer"].skate_expert_ratio
@@ -1847,18 +1900,285 @@ class Workspace:
         )
         return replay_buffer
 
+    def _full_skate_update(self, replay_buffer: dict) -> dict:
+        if self.cfg.collect_only or self.cfg.skate_update_mode != "full":
+            raise RuntimeError("Native full update requires full Skate mode.")
+        if self.cfg.adaptation_updates != 1:
+            raise RuntimeError("Native full-update smoke requires exactly one update.")
+        if self.agent.checkpoint_source != "official_bfm0_pretrained":
+            raise RuntimeError("Native full-update smoke requires official BFM0.")
+        if (self.work_dir / "summary.json").exists():
+            raise RuntimeError("Native full-update smoke requires a fresh work directory.")
+        if replay_buffer["train"] is not replay_buffer["train_skate"]:
+            raise RuntimeError("train must remain an alias of train_skate.")
+
+        model = self.agent._model
+        model.eval()
+        replay_buffer = self._collect_skate_online(replay_buffer)
+        model.eval()
+        try:
+            self._run_skate_preflight(replay_buffer)
+        finally:
+            model.train()
+            model.requires_grad_(True)
+
+        trainable_modules = {
+            "F": model._forward_map,
+            "B": model._backward_map,
+            "discriminator": model._discriminator,
+            "QD": model._critic,
+            "Qaux": model._aux_critic,
+            "Actor": model._actor,
+        }
+        if not model.training or not all(
+            all(parameter.requires_grad for parameter in module.parameters())
+            for module in trainable_modules.values()
+        ):
+            raise RuntimeError("Native full-update modules are not trainable.")
+        if self.preflight_report["expert_base_sequences"] != 64 or (
+            self.preflight_report["expert_skate_sequences"] != 64
+        ):
+            raise RuntimeError("Native full update requires 64 Base and 64 Skate sequences.")
+
+        full_replay = replay_buffer["train"].get_full_buffer()
+        if len(replay_buffer["train"]) != 1024:
+            raise RuntimeError("Native full update requires exactly 1024 replay rows.")
+        if tuple(full_replay["action"].shape) != (1024, 29):
+            raise RuntimeError("Native full update requires replay action [1024,29].")
+        if tuple(full_replay["z"].shape) != (1024, 256):
+            raise RuntimeError("Native full update requires replay z [1024,256].")
+        terminated = full_replay["next"]["terminated"]
+        truncated = full_replay["next"]["truncated"]
+        if (
+            tuple(terminated.shape) != (1024, 1)
+            or tuple(truncated.shape) != (1024, 1)
+            or terminated.dtype is not torch.bool
+            or truncated.dtype is not torch.bool
+        ):
+            raise RuntimeError("Native full update requires boolean terminal replay fields.")
+        if bool((terminated & truncated).any()):
+            raise RuntimeError("Terminal and truncated replay fields must not overlap.")
+        discount = self.agent.cfg.train.discount * ~terminated
+        if not torch.equal(discount[terminated], torch.zeros_like(discount[terminated])):
+            raise RuntimeError("Terminal replay rows must have zero discount.")
+        if not torch.allclose(
+            discount[~terminated],
+            torch.full_like(discount[~terminated], self.agent.cfg.train.discount),
+        ):
+            raise RuntimeError("Non-terminal replay rows must retain gamma discount.")
+        aux_rewards = full_replay.get("aux_rewards")
+        if not isinstance(aux_rewards, dict) or tuple(aux_rewards) != AUX_REWARD_KEYS:
+            raise RuntimeError("Native full update requires all 8 auxiliary rewards.")
+        for name in AUX_REWARD_KEYS:
+            values = aux_rewards[name]
+            if tuple(values.shape) != (1024, 1) or not bool(
+                torch.isfinite(values).all()
+            ):
+                raise RuntimeError(f"Invalid auxiliary reward replay field: {name}.")
+
+        components_before = hash_components(self.agent)
+        normalizers_before = {
+            "obs": hash_buffers(model._obs_normalizer),
+            "aux_reward": hash_buffers(model._aux_reward_normalizer),
+        }
+        z_buffer_before = {
+            "size": len(self.agent.z_buffer),
+            "hash": hash_tensor(self.agent.z_buffer._storage),
+        }
+        optimizers = {
+            "forward": self.agent.forward_optimizer,
+            "backward": self.agent.backward_optimizer,
+            "discriminator": self.agent.discriminator_optimizer,
+            "critic": self.agent.critic_optimizer,
+            "aux_critic": self.agent.aux_critic_optimizer,
+            "actor": self.agent.actor_optimizer,
+        }
+        optimizer_before = {
+            name: optimizer_step_report(optimizer)
+            for name, optimizer in optimizers.items()
+        }
+        if any(report["state_entries"] != 0 for report in optimizer_before.values()):
+            raise RuntimeError("Native full-update smoke requires fresh optimizers.")
+
+        self.agent_update_calls += 1
+        metrics = self.agent.update(replay_buffer, self.cfg.skate_max_steps)
+        if self.agent_update_calls != 1 or self.fb_update_calls != 0:
+            raise RuntimeError("Native full update must call agent.update exactly once.")
+        metric_report = {
+            name: float(value.detach().mean().cpu())
+            for name, value in metrics.items()
+        }
+        if not metric_report or not all(
+            np.isfinite(value) for value in metric_report.values()
+        ):
+            raise RuntimeError("Native full update returned non-finite metrics.")
+        native_aux_means = {
+            name: metric_report[f"aux_rew/{name}"]
+            for name in AUX_REWARD_KEYS
+            if f"aux_rew/{name}" in metric_report
+        }
+        if tuple(native_aux_means) != AUX_REWARD_KEYS:
+            raise RuntimeError("Native full update did not read all auxiliary rewards.")
+
+        components_after = hash_components(self.agent)
+        component_mutation = {
+            name: {
+                "before": components_before[name],
+                "after": components_after[name],
+                "changed": components_before[name] != components_after[name],
+            }
+            for name in components_before
+        }
+        expected_changed = {
+            "F",
+            "B",
+            "discriminator",
+            "QD",
+            "Qaux",
+            "Actor",
+            "target_F",
+            "target_B",
+            "target_QD",
+            "target_Qaux",
+        }
+        if any(
+            not component_mutation[name]["changed"] for name in expected_changed
+        ):
+            raise RuntimeError("Native full update did not mutate every required module.")
+        if not all(
+            module_state_is_finite(module)
+            for module in (
+                *trainable_modules.values(),
+                model._target_forward_map,
+                model._target_backward_map,
+                model._target_critic,
+                model._target_aux_critic,
+            )
+        ):
+            raise RuntimeError("Native full update produced non-finite model state.")
+
+        normalizers_after = {
+            "obs": hash_buffers(model._obs_normalizer),
+            "aux_reward": hash_buffers(model._aux_reward_normalizer),
+        }
+        if not (
+            module_state_is_finite(model._obs_normalizer)
+            and module_state_is_finite(model._aux_reward_normalizer)
+        ):
+            raise RuntimeError("Native full update produced non-finite normalizers.")
+        optimizer_after = {
+            name: optimizer_step_report(optimizer)
+            for name, optimizer in optimizers.items()
+        }
+        if any(
+            report["state_entries"] == 0
+            or report["step_values"] != [1.0]
+            or not report["finite"]
+            for report in optimizer_after.values()
+        ):
+            raise RuntimeError("Native full update did not step every optimizer once.")
+        z_buffer_after = {
+            "size": len(self.agent.z_buffer),
+            "hash": hash_tensor(self.agent.z_buffer._storage),
+        }
+        if z_buffer_after["size"] <= z_buffer_before["size"]:
+            raise RuntimeError("Native mixed-z path did not populate z_buffer.")
+
+        summary = {
+            "milestone": "M2.4d-1 Native Full-Update Smoke",
+            "checkpoint": {
+                **self.agent.pretrained_load_report,
+                "model_sha256": hash_file(
+                    Path(self.agent.pretrained_load_report["model_file"])
+                ),
+            },
+            "replay": {
+                "transition_count": len(replay_buffer["train"]),
+                "train_is_train_skate": replay_buffer["train"]
+                is replay_buffer["train_skate"],
+                "terminated_count": int(terminated.sum()),
+                "truncated_count": int(truncated.sum()),
+                "normal_count": int((~(terminated | truncated)).sum()),
+                "discount": f"{self.agent.cfg.train.discount} * ~terminated",
+                "reset_crossing_transitions": 0,
+            },
+            "expert": {
+                "base_sequences": self.preflight_report["expert_base_sequences"],
+                "skate_sequences": self.preflight_report["expert_skate_sequences"],
+                "sequence_length": self.preflight_report["expert_sequence_length"],
+                "skate_expert_ratio": self.cfg.skate_expert_ratio,
+            },
+            "native_update": {
+                "agent_update_calls": self.agent_update_calls,
+                "direct_update_fb_calls": self.fb_update_calls,
+                "metrics": metric_report,
+            },
+            "aux_rewards": {
+                "keys": list(AUX_REWARD_KEYS),
+                "scaling": dict(self.agent.cfg.aux_rewards_scaling),
+                "native_sampled_raw_means": native_aux_means,
+                "native_sampled_weighted_raw_mean": sum(
+                    self.agent.cfg.aux_rewards_scaling[name] * value
+                    for name, value in native_aux_means.items()
+                ),
+            },
+            "module_mutation": component_mutation,
+            "optimizer": {
+                name: {
+                    "before": optimizer_before[name],
+                    "after": optimizer_after[name],
+                }
+                for name in optimizers
+            },
+            "normalizer": {
+                name: {
+                    "before": normalizers_before[name],
+                    "after": normalizers_after[name],
+                    "changed": normalizers_before[name] != normalizers_after[name],
+                    "finite": module_state_is_finite(
+                        model._obs_normalizer
+                        if name == "obs"
+                        else model._aux_reward_normalizer
+                    ),
+                }
+                for name in normalizers_before
+            },
+            "z_buffer": {
+                "before": z_buffer_before,
+                "after": z_buffer_after,
+                "changed": z_buffer_before["hash"] != z_buffer_after["hash"],
+            },
+            "training_performed": True,
+            "smoke_checkpoint_saved": False,
+            "next_milestone": "M2.4d-2 — Short Multi-Update Stability Smoke",
+        }
+        with (self.work_dir / "summary.json").open("w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        self.preflight_report = summary
+        print(
+            "M2.4d-1 native full-update smoke complete: "
+            f"{len(replay_buffer['train'])} transitions, agent.update calls 1"
+        )
+        return replay_buffer
+
     def _collect_skate_online(self, replay_buffer: dict) -> dict:
-        if not self.cfg.collect_only:
-            raise RuntimeError("Skate online updates are disabled in M2.1b.")
+        if self.cfg.skate_update_mode == "none" and not self.cfg.collect_only:
+            raise RuntimeError("Collect-only Skate mode requires collect_only=True.")
+        if self.cfg.skate_update_mode == "full" and self.cfg.collect_only:
+            raise RuntimeError("Native full update cannot run collect-only.")
+        if self.cfg.skate_update_mode not in {"none", "full"}:
+            raise RuntimeError("Skate replay collector received an invalid update mode.")
         if not isinstance(self.train_env, HuskyBfmOnlineEnv):
             raise RuntimeError("Skate online mode must use HuskyBfmOnlineEnv.")
 
-        self.preflight_report.update(
-            {
-                "model_parameters_before": hash_params(self.agent._model),
-                "model_buffers_before": hash_buffers(self.agent._model),
-            }
-        )
+        if self.cfg.collect_only:
+            self.preflight_report.update(
+                {
+                    "model_parameters_before": hash_params(self.agent._model),
+                    "model_buffers_before": hash_buffers(self.agent._model),
+                }
+            )
         print(
             f"Starting formal {type(self.train_env).__name__} collect-only path "
             f"for {self.cfg.skate_max_steps} steps"
@@ -1934,40 +2254,45 @@ class Workspace:
             raise RuntimeError("Skate replay must store the 29D BFM action.")
         if self.last_skate_sample["z"].shape[-1] != 256:
             raise RuntimeError("Skate replay must store the 256D rollout latent.")
-        if self.agent_update_calls != 0:
-            raise RuntimeError("Collect-only mode must not call agent.update().")
-        self._run_skate_preflight(replay_buffer)
-        model_parameters_after = hash_params(self.agent._model)
-        model_buffers_after = hash_buffers(self.agent._model)
-        if model_parameters_after != self.preflight_report["model_parameters_before"]:
-            raise RuntimeError("Pretrained model parameters changed during collect-only preflight.")
-        if model_buffers_after != self.preflight_report["model_buffers_before"]:
-            raise RuntimeError("Pretrained model buffers changed during collect-only preflight.")
-        self.preflight_report.update(
-            {
-                "model_parameters_after": model_parameters_after,
-                "model_buffers_after": model_buffers_after,
-                "parameter_mutation": False,
-                "buffer_mutation": False,
-                "agent_update_calls": self.agent_update_calls,
-                "optimizer_steps": 0,
-            }
-        )
-        print(
-            "M2.2a preflight complete: "
-            f"expert Base/Skate sequences "
-            f"{self.preflight_report['expert_base_sequences']}/"
-            f"{self.preflight_report['expert_skate_sequences']}, "
-            f"expert_z {self.preflight_report['expert_batch_shape']}, "
-            f"F {self.preflight_report['forward_shape']}, "
-            f"B {self.preflight_report['backward_shape']}, "
-            "parameter mutation false, buffer mutation false"
-        )
-        print(
-            "HUSKY collect-only complete: "
-            f"{len(replay_buffer['train_skate'])} transitions, "
-            "optimizer updates 0"
-        )
+        if self.cfg.collect_only:
+            if self.agent_update_calls != 0:
+                raise RuntimeError("Collect-only mode must not call agent.update().")
+            self._run_skate_preflight(replay_buffer)
+            model_parameters_after = hash_params(self.agent._model)
+            model_buffers_after = hash_buffers(self.agent._model)
+            if model_parameters_after != self.preflight_report["model_parameters_before"]:
+                raise RuntimeError(
+                    "Pretrained model parameters changed during collect-only preflight."
+                )
+            if model_buffers_after != self.preflight_report["model_buffers_before"]:
+                raise RuntimeError(
+                    "Pretrained model buffers changed during collect-only preflight."
+                )
+            self.preflight_report.update(
+                {
+                    "model_parameters_after": model_parameters_after,
+                    "model_buffers_after": model_buffers_after,
+                    "parameter_mutation": False,
+                    "buffer_mutation": False,
+                    "agent_update_calls": self.agent_update_calls,
+                    "optimizer_steps": 0,
+                }
+            )
+            print(
+                "M2.2a preflight complete: "
+                f"expert Base/Skate sequences "
+                f"{self.preflight_report['expert_base_sequences']}/"
+                f"{self.preflight_report['expert_skate_sequences']}, "
+                f"expert_z {self.preflight_report['expert_batch_shape']}, "
+                f"F {self.preflight_report['forward_shape']}, "
+                f"B {self.preflight_report['backward_shape']}, "
+                "parameter mutation false, buffer mutation false"
+            )
+            print(
+                "HUSKY collect-only complete: "
+                f"{len(replay_buffer['train_skate'])} transitions, "
+                "optimizer updates 0"
+            )
         return replay_buffer
 
     def eval(self, t, replay_buffer):
@@ -2041,9 +2366,9 @@ def build_train_config() -> TrainConfig:
         "SKATE_UPDATE_MODE",
         "none",
     ).strip().lower()
-    if skate_update_mode not in {"none", "fb_only"}:
+    if skate_update_mode not in {"none", "fb_only", "full"}:
         raise ValueError(
-            "SKATE_UPDATE_MODE must be 'none' or 'fb_only', "
+            "SKATE_UPDATE_MODE must be 'none', 'fb_only', or 'full', "
             f"got {skate_update_mode!r}."
         )
     collect_only = _environment_flag(
@@ -2051,7 +2376,7 @@ def build_train_config() -> TrainConfig:
         default=skate_mode and skate_update_mode == "none",
     )
     adaptation_updates = int(os.environ.get("SKATE_ADAPTATION_UPDATES", "0"))
-    default_skate_steps = "1024" if skate_update_mode == "fb_only" else "64"
+    default_skate_steps = "1024" if skate_update_mode in {"fb_only", "full"} else "64"
     skate_max_steps = int(
         os.environ.get("SKATE_MAX_STEPS", default_skate_steps)
     )

@@ -610,3 +610,50 @@ This is a collect-only termination validation, not training.
 | Full `FBcprAuxAgent.update()` dependencies | `READY` |
 
 Next milestone: `M2.4d — Native Full-Update Smoke`.
+
+## M2.4d-1 Native Full-Update Smoke
+
+This is one native full-update execution smoke, not a skill-quality result.
+
+- Date: `2026-08-11`
+- Checkpoint: official BFM0, strict 537-key model load; no optimizer state was
+  restored.
+- Expert mixture: 128 complete sequences of length 8, with 64 Base and 64
+  Skate sequences.
+- Replay: 1024 HUSKY transitions, 14 terminated, 1 truncated, 1009 normal;
+  `train is train_skate`: `YES`.
+- Native `FBcprAuxAgent.update()` calls: `1`; direct `update_fb()` calls from
+  Skate project code: `0`.
+- All eight raw auxiliary reward keys were read. `penalty_torques` and
+  `limits_torque` retained scale `0.0`.
+- No smoke checkpoint was saved. This result is diagnostic-only and is not an
+  M2.5 initialization.
+
+### Native Metrics
+
+| Metric | Value |
+| :--- | ---: |
+| `fb_loss` | 1283845.2500 |
+| `disc_loss` | 0.4494 |
+| `critic_loss` | 1796.0070 |
+| `aux_critic_loss` | 248.8505 |
+| `mean_aux_reward` | -3.1395 |
+| `actor_loss` | 50068.2305 |
+| `Q_discriminator` | -332.1558 |
+| `Q_aux` | -101.3127 |
+| `Q_fb` | 2837.1506 |
+
+All returned native metrics were finite. The ignored machine-readable report
+is `results/m2.4d-1-native-full-update/summary.json`.
+
+| Audit | Result |
+| :--- | :--- |
+| F / B / discriminator / QD / Qaux / Actor mutation | `PASS` |
+| target F / B / QD / Qaux mutation | `PASS` |
+| Six fresh optimizer states | `PASS`, all at step `1` |
+| Observation normalizer finite and changed | `PASS` |
+| Auxiliary reward normalizer finite and changed | `PASS` |
+| z-buffer | `0 -> 1024`, `PASS` |
+| Full native update | `PASS` |
+
+Next milestone: `M2.4d-2 — Short Multi-Update Stability Smoke`.

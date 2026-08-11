@@ -46,6 +46,24 @@ def _collection_rollout_split():
     return module
 
 
+def _train_skate_bfm_module():
+    module_name = "train_skate_bfm_for_test"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    script_dir = Path(__file__).resolve().parents[1] / "train" / "scripts"
+    sys.path.insert(0, str(script_dir))
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        script_dir / "train_skate_bfm.py",
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Skate training configuration.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_joint_mapping_is_name_based() -> None:
     adapter = Bfm0ToHusky23(action_clip=None)
     source = torch.arange(29, dtype=torch.float32)
@@ -262,3 +280,37 @@ def test_online_fall_terminates_and_horizon_truncates() -> None:
             env.step(action, z)
     finally:
         env.close()
+
+
+def test_native_full_update_mode_is_single_step_only(monkeypatch) -> None:
+    module = _train_skate_bfm_module()
+    root = Path(__file__).resolve().parents[1]
+    expert_motion = (
+        root
+        / "train"
+        / "dataset"
+        / "skate-expert-pose"
+        / "motion_library"
+        / "skate_expert.pkl"
+    )
+    monkeypatch.setenv("SKATE_ONLINE_ENV", "skate")
+    monkeypatch.setenv("SKATE_UPDATE_MODE", "full")
+    monkeypatch.setenv("SKATE_COLLECT_ONLY", "0")
+    monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "1")
+    monkeypatch.setenv("SKATE_MAX_STEPS", "1024")
+    monkeypatch.setenv("SKATE_EXPERT_RATIO", "0.5")
+    monkeypatch.setenv("SKATE_EXPERT_MOTION_FILE", str(expert_motion))
+
+    cfg = module.build_train_config()
+    assert cfg.skate_update_mode == "full"
+    assert not cfg.collect_only
+    assert cfg.adaptation_updates == 1
+
+    monkeypatch.setenv("SKATE_COLLECT_ONLY", "1")
+    with pytest.raises(ValueError, match="collect_only=False"):
+        module.build_train_config()
+
+    monkeypatch.setenv("SKATE_COLLECT_ONLY", "0")
+    monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "2")
+    with pytest.raises(ValueError, match="adaptation_updates=1"):
+        module.build_train_config()

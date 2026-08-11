@@ -1319,3 +1319,18 @@ the formal Skate runtime action contract.
 - No model update, optimizer step, backward call, normalizer update, or
   parameter/buffer mutation occurred.
 - Next milestone: `M2.4d — Native Full-Update Smoke`.
+
+## M2.4d-1 Native Full-Update Smoke
+
+- Date: `2026-08-11`
+- Added fail-closed Skate `full` mode: it requires the official BFM0
+  checkpoint, `collect_only=False`, exactly 1 update, exactly 1024 HUSKY
+  transitions, and a 64 Base / 64 Skate expert sequence mixture.
+- Ran exactly one vendored `FBcprAuxAgent.update()` with all six optimizers.
+- Replay result: 14 terminal falls, 1 horizon truncation, and 1009 normal
+  transitions; `train is train_skate` and no reset-crossing transition.
+- All native metrics, updated online/target modules, optimizer state, and
+  normalizer buffers were finite. The z-buffer changed from 0 to 1024 entries.
+- The smoke work directory contains diagnostics only; no checkpoint was saved
+  or retained as a training baseline.
+- Next milestone: `M2.4d-2 — Short Multi-Update Stability Smoke`.

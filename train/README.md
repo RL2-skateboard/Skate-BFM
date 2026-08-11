@@ -54,7 +54,10 @@ completed native termination: confirmed persistent physical falls write
 `terminated=True`, and fixed horizons write `truncated=True`. Temporary foot
 lift-off and board separation alone do not terminate. The auxiliary reward,
 Qaux, Actor, replay, and termination dependencies are ready; M2.4d is the
-first native full-update smoke.
+first native full-update smoke. M2.4d-1 then completed exactly one vendored
+`FBcprAuxAgent.update()` from the official checkpoint: all six optimizers and
+all online/target modules changed with finite state. M2.4d-2 is the next,
+short multi-update stability smoke.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -121,6 +124,25 @@ not update the reward normalizer or perform `agent.update()`, an update
 subroutine, optimizer step, backward call, or parameter/buffer mutation. Its
 local JSON output is kept under `results/`; the readiness matrix is retained in
 [`train_res.md`](train_res.md).
+
+Run the M2.4d-1 native full-update smoke:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=1 \
+SKATE_MAX_STEPS=1024 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.4d-1-native-full-update \
+python train/scripts/train_skate_bfm.py
+```
+
+`full` is fail-closed: it requires the official checkpoint, a fresh work
+directory, 1024 transitions, a 64/64 Base+Skate mixture, and exactly one
+native update. The smoke output is diagnostic-only and not an M2.5 baseline.
 
 Run the phase-wise raw-expert reward diagnostic:
 

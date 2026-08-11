@@ -45,7 +45,10 @@ the source of reward formulas; HUSKY's active MuJoCo model is the source of
 its 23 physical joint and torque constraints. M2.4c completed the shared
 native fall contract: only a confirmed physical fall terminates an online
 episode, while a fixed horizon truncates it. Full FB-CPR-Aux update
-dependencies are ready; M2.4d will perform the first native full-update smoke.
+dependencies were exercised by M2.4d-1's one native full-update smoke from the
+official checkpoint. The complete graph produced finite metrics, six optimizer
+steps, online and target parameter changes, and finite normalizers. M2.4d-2
+will run a short multi-update stability smoke.
 Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
@@ -109,6 +112,25 @@ deterministic normal, transient, fall, low-contact, and board-separation
 checks. It does not call a reward normalizer, training update, optimizer step,
 or backward. The local JSON report is written under ignored `results/`; the
 retained conclusion is recorded in [`train/train_res.md`](train/train_res.md).
+
+Run the M2.4d-1 native full-update smoke:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=1 \
+SKATE_MAX_STEPS=1024 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.4d-1-native-full-update \
+python train/scripts/train_skate_bfm.py
+```
+
+This is exactly one diagnostic-only vendored `FBcprAuxAgent.update()` from the
+official BFM0 checkpoint. It creates no reusable checkpoint and writes the
+machine-readable audit to the ignored smoke work directory.
 
 Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
 
