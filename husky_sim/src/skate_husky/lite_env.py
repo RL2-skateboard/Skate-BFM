@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -22,6 +24,9 @@ AUX_REWARD_KEYS = (
 CONTACT_FORCE_THRESHOLD = 1.0
 SOFT_LIMIT_RATIO = 0.95
 WORLD_UP = np.asarray((0.0, 0.0, 1.0), dtype=np.float64)
+DEFAULT_FALL_ORIENTATION_LIMIT_DEG = 70.0
+DEFAULT_FALL_ROOT_HEIGHT_MIN = 0.45
+DEFAULT_FALL_CONFIRM_TIME = 0.2
 
 
 def contact_tangential_speed(
@@ -44,6 +49,95 @@ def world_horizontal_orientation_penalty(foot_normal: np.ndarray) -> float:
     return float(np.sqrt(max(0.0, 1.0 - np.dot(normal, WORLD_UP) ** 2)))
 
 
+def fall_confirmation_steps(confirm_time: float, control_dt: float) -> int:
+    if confirm_time <= 0.0 or control_dt <= 0.0:
+        raise ValueError("Fall confirmation time and control_dt must be positive.")
+    return max(1, round(confirm_time / control_dt))
+
+
+class LiveFallDetector:
+    """Detect a persistent fall without treating foot lift-off as a fall."""
+
+    _illegal_geom = re.compile(
+        r"(left|right)_(shin|linkage_brace|shoulder_yaw|elbow_yaw|wrist|hand)_collision"
+        r"|robot/pelvis_collision$"
+    )
+
+    def __init__(
+        self,
+        model: mujoco.MjModel,
+        orientation_limit_deg: float,
+        root_height_min: float,
+        confirm_frames: int,
+    ) -> None:
+        self.model = model
+        self.orientation_limit_deg = float(orientation_limit_deg)
+        self.root_height_min = float(root_height_min)
+        self.confirm_frames = max(1, int(confirm_frames))
+        self.bad_frames = 0
+        self.foot_geoms: set[int] = set()
+        self.board_geoms: set[int] = set()
+        self.illegal_geoms: set[int] = set()
+
+        for geom_id in range(model.ngeom):
+            name = model.geom(geom_id).name or ""
+            if re.search(r"robot/(left|right)_foot[0-9]+_collision$", name):
+                self.foot_geoms.add(geom_id)
+            if name == "skateboard/skateboard_deck_collision":
+                self.board_geoms.add(geom_id)
+            if self._illegal_geom.search(name):
+                self.illegal_geoms.add(geom_id)
+
+    def reset(self) -> None:
+        self.bad_frames = 0
+
+    def check(
+        self,
+        data: mujoco.MjData,
+    ) -> tuple[bool, list[str], dict[str, float | bool | int]]:
+        quaternion = np.asarray(data.qpos[3:7], dtype=np.float64)
+        norm = np.linalg.norm(quaternion)
+        if norm <= 0.0:
+            tilt_deg = 180.0
+        else:
+            _, qx, qy, qz = quaternion / norm
+            gravity_z = 1.0 - 2.0 * (qx * qx + qy * qy)
+            tilt_deg = math.degrees(math.acos(np.clip(gravity_z, -1.0, 1.0)))
+
+        feet_on_board = False
+        illegal_contact = False
+        for contact_id in range(data.ncon):
+            contact = data.contact[contact_id]
+            first_geom, second_geom = int(contact.geom1), int(contact.geom2)
+            if (
+                first_geom in self.foot_geoms and second_geom in self.board_geoms
+            ) or (
+                second_geom in self.foot_geoms and first_geom in self.board_geoms
+            ):
+                feet_on_board = True
+            if first_geom in self.illegal_geoms or second_geom in self.illegal_geoms:
+                illegal_contact = True
+
+        root_height = float(data.qpos[2])
+        severe_tilt = tilt_deg > self.orientation_limit_deg
+        low_contact_fall = root_height < self.root_height_min and illegal_contact
+        candidate = severe_tilt or low_contact_fall
+        self.bad_frames = self.bad_frames + 1 if candidate else 0
+        reasons = []
+        if severe_tilt:
+            reasons.append(f"tilt>{self.orientation_limit_deg:.0f}deg")
+        if low_contact_fall:
+            reasons.append(f"height<{self.root_height_min:.2f}+illegal_contact")
+        return self.bad_frames >= self.confirm_frames, reasons, {
+            "tilt_deg": tilt_deg,
+            "root_height": root_height,
+            "feet_on_board": feet_on_board,
+            "illegal_contact": illegal_contact,
+            "fall_candidate": candidate,
+            "confirm_frames": self.bad_frames,
+        }
+
+
 class HuskyLiteEnv:
     """Small runtime around HUSKY's official generated MuJoCo scene."""
 
@@ -57,6 +151,9 @@ class HuskyLiteEnv:
         action_scale: float = 0.1,
         viewer: bool = False,
         realtime: bool = False,
+        fall_orientation_limit_deg: float = DEFAULT_FALL_ORIENTATION_LIMIT_DEG,
+        fall_root_height_min: float = DEFAULT_FALL_ROOT_HEIGHT_MIN,
+        fall_confirm_time: float = DEFAULT_FALL_CONFIRM_TIME,
     ) -> None:
         husky_root = Path(__file__).resolve().parents[2]
         default_xml = husky_root / "upstream/test_scene/mjlab_scene.xml"
@@ -78,6 +175,9 @@ class HuskyLiteEnv:
         self._last_action = np.zeros(self.robot_action_dim, dtype=np.float32)
         self._previous_action = np.zeros(self.robot_action_dim, dtype=np.float32)
         self._last_aux_rewards = self._zero_aux_rewards()
+        self._last_fall = False
+        self._last_fall_reasons: list[str] = []
+        self._last_fall_diagnostics: dict[str, float | bool | int] = {}
         self._reset_joint_offsets: dict[str, float] = {}
         self._robot_joints = [
             mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
@@ -107,6 +207,12 @@ class HuskyLiteEnv:
             dtype=np.int32,
         )
         self._configure_aux_reward_contract()
+        self.fall_detector = LiveFallDetector(
+            self.model,
+            fall_orientation_limit_deg,
+            fall_root_height_min,
+            fall_confirmation_steps(fall_confirm_time, self.control_dt),
+        )
 
     def set_control_mapping(
         self,
@@ -149,6 +255,10 @@ class HuskyLiteEnv:
         self._previous_action.fill(0.0)
         self._last_aux_rewards = self._zero_aux_rewards()
         mujoco.mj_forward(self.model, self.data)
+        self.fall_detector.reset()
+        self._last_fall = False
+        self._last_fall_reasons = []
+        self._last_fall_diagnostics = {}
         if self._viewer_requested and self._viewer is None:
             self._launch_viewer()
         self._sync_viewer()
@@ -165,7 +275,13 @@ class HuskyLiteEnv:
         )
         for _ in range(self.decimation):
             mujoco.mj_step(self.model, self.data)
+        self._require_valid_state()
         self._last_aux_rewards = self._compute_aux_rewards()
+        (
+            self._last_fall,
+            self._last_fall_reasons,
+            self._last_fall_diagnostics,
+        ) = self.fall_detector.check(self.data)
         self._previous_action = self._last_action.copy()
         self._sync_viewer()
         if self.realtime:
@@ -192,6 +308,18 @@ class HuskyLiteEnv:
         return dict(self._last_aux_rewards)
 
     @property
+    def fallen(self) -> bool:
+        return self._last_fall
+
+    @property
+    def last_fall_diagnostics(self) -> dict[str, float | bool | int | str]:
+        diagnostics: dict[str, float | bool | int | str] = dict(
+            self._last_fall_diagnostics
+        )
+        diagnostics["fall_reason"] = ",".join(self._last_fall_reasons)
+        return diagnostics
+
+    @property
     def physical_actuator_report(self) -> tuple[dict[str, object], ...]:
         """Return the validated HUSKY actuator-to-joint constraint mapping."""
 
@@ -199,6 +327,12 @@ class HuskyLiteEnv:
 
     def _zero_aux_rewards(self) -> dict[str, float]:
         return {name: 0.0 for name in AUX_REWARD_KEYS}
+
+    def _require_valid_state(self) -> None:
+        if not np.isfinite(self.data.qpos).all() or not np.isfinite(
+            self.data.qvel
+        ).all():
+            raise RuntimeError("HUSKY MuJoCo state contains NaN or Inf.")
 
     def _configure_aux_reward_contract(self) -> None:
         robot_actuator_ids = tuple(

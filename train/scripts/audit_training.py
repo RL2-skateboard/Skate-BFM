@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
 
+import mujoco
 import torch
-from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv
+from data_collection import rollout_split
+from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv, LiveFallDetector
 from torch.utils._pytree import tree_map
 from train_skate_bfm import (
     REPOSITORY_ROOT,
@@ -19,6 +22,8 @@ from train_skate_bfm import (
     hash_params,
 )
 
+from skate_bfm.integration import HuskyBfmOnlineEnv
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -27,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=REPOSITORY_ROOT / "results" / "m2.4b-2-reward-contract",
+        default=REPOSITORY_ROOT / "results" / "m2.4c-termination-contract",
     )
     return parser.parse_args()
 
@@ -105,6 +110,153 @@ def aux_reward_statistics(
             ),
         },
         "normalizer_updated": False,
+    }
+
+
+def termination_statistics(
+    replay_buffer: dict,
+    expected_transition_count: int,
+    discount_gamma: float,
+) -> dict[str, Any]:
+    full_replay = replay_buffer["train"].get_full_buffer()
+    terminated = full_replay["next"]["terminated"]
+    truncated = full_replay["next"]["truncated"]
+    expected_shape = (expected_transition_count, 1)
+    for name, values in {
+        "terminated": terminated,
+        "truncated": truncated,
+    }.items():
+        if tuple(values.shape) != expected_shape or values.dtype is not torch.bool:
+            raise RuntimeError(
+                f"next.{name} must be bool {expected_shape}, got "
+                f"{values.dtype} {tuple(values.shape)}."
+            )
+    overlap = terminated & truncated
+    if overlap.any():
+        raise RuntimeError("A fall transition cannot also be horizon-truncated.")
+    discount = discount_gamma * ~terminated
+    if tuple(discount.shape) != expected_shape or not discount.is_floating_point():
+        raise RuntimeError("FBcprAux discount has an invalid shape or dtype.")
+    if not torch.equal(
+        discount[terminated],
+        torch.zeros_like(discount[terminated]),
+    ):
+        raise RuntimeError("Terminal transitions must have zero discount.")
+    if not torch.allclose(
+        discount[~terminated],
+        torch.full_like(discount[~terminated], discount_gamma),
+    ):
+        raise RuntimeError("Non-terminal transitions must have gamma discount.")
+    terminated_count = int(terminated.sum())
+    truncated_count = int(truncated.sum())
+    return {
+        "terminated": tensor_info(terminated),
+        "truncated": tensor_info(truncated),
+        "terminated_count": terminated_count,
+        "truncated_count": truncated_count,
+        "normal_transition_count": expected_transition_count
+        - terminated_count
+        - truncated_count,
+        "overlap_count": int(overlap.sum()),
+        "discount": tensor_info(discount),
+        "discount_semantics": "gamma * ~terminated",
+    }
+
+
+def _set_root_tilt(env: HuskyLiteEnv) -> None:
+    env.data.qpos[3:7] = (
+        math.sqrt(0.5),
+        math.sqrt(0.5),
+        0.0,
+        0.0,
+    )
+    mujoco.mj_forward(env.model, env.data)
+
+
+def controlled_fall_validation() -> dict[str, Any]:
+    physical_env = HuskyLiteEnv()
+    try:
+        physical_env.reset()
+        normal, _, normal_diagnostics = physical_env.fall_detector.check(
+            physical_env.data
+        )
+
+        physical_env.fall_detector.reset()
+        _set_root_tilt(physical_env)
+        transient, _, transient_diagnostics = physical_env.fall_detector.check(
+            physical_env.data
+        )
+        persistent = transient
+        for _ in range(physical_env.fall_detector.confirm_frames - 1):
+            persistent, _, _ = physical_env.fall_detector.check(physical_env.data)
+
+        physical_env.reset()
+        physical_env.data.qpos[2] = 0.2
+        mujoco.mj_forward(physical_env.model, physical_env.data)
+        low_contact, _, low_contact_diagnostics = physical_env.fall_detector.check(
+            physical_env.data
+        )
+        for _ in range(physical_env.fall_detector.confirm_frames - 1):
+            low_contact, _, _ = physical_env.fall_detector.check(physical_env.data)
+
+        physical_env.reset()
+        board_joint = physical_env.model.joint(
+            "skateboard/floating_base_joint_skateboard"
+        )
+        physical_env.data.qpos[board_joint.qposadr[0]] += 5.0
+        mujoco.mj_forward(physical_env.model, physical_env.data)
+        board_separation, _, board_diagnostics = physical_env.fall_detector.check(
+            physical_env.data
+        )
+    finally:
+        physical_env.close()
+
+    online_env = HuskyBfmOnlineEnv()
+    try:
+        online_env.reset()
+        _set_root_tilt(online_env.env)
+        for frame in range(online_env.env.fall_detector.confirm_frames):
+            terminal_transition = online_env.step(
+                torch.zeros(29),
+                torch.zeros(256),
+                truncated=frame == online_env.env.fall_detector.confirm_frames - 1,
+            )
+        try:
+            online_env.step(torch.zeros(29), torch.zeros(256))
+        except RuntimeError:
+            reset_required = True
+        else:
+            reset_required = False
+    finally:
+        online_env.close()
+
+    if rollout_split.LiveFallDetector is not LiveFallDetector:
+        raise RuntimeError("Collection and online fall detectors diverged.")
+    if normal or transient or not persistent or not low_contact or board_separation:
+        raise RuntimeError("Controlled physical fall checks failed.")
+    if not (
+        terminal_transition.terminated
+        and not terminal_transition.truncated
+        and reset_required
+    ):
+        raise RuntimeError("Online terminal transition contract failed.")
+    return {
+        "collection_online_shared_implementation": True,
+        "confirm_frames": terminal_transition.raw_metadata["confirm_frames"],
+        "normal_terminated": normal,
+        "single_transient_bad_frame_terminated": transient,
+        "persistent_severe_tilt_terminated": persistent,
+        "low_height_illegal_contact_terminated": low_contact,
+        "board_separation_terminated": board_separation,
+        "feet_on_board_after_separation": board_diagnostics["feet_on_board"],
+        "normal_diagnostics": normal_diagnostics,
+        "transient_diagnostics": transient_diagnostics,
+        "low_contact_diagnostics": low_contact_diagnostics,
+        "online_terminal_transition": {
+            "terminated": terminal_transition.terminated,
+            "truncated": terminal_transition.truncated,
+            "reset_required": reset_required,
+        },
     }
 
 
@@ -421,8 +573,14 @@ def main() -> int:
         expected_transition_count=1024,
         scaling=dict(cfg.agent.aux_rewards_scaling),
     )
+    termination_report = termination_statistics(
+        replay_buffer,
+        expected_transition_count=1024,
+        discount_gamma=cfg.agent.train.discount,
+    )
+    controlled_fall_report = controlled_fall_validation()
     report = {
-        "milestone": "M2.4b-2 Skate Auxiliary Reward Contract",
+        "milestone": "M2.4c Native Fall Termination Contract",
         "resolved_config": config_report,
         "checkpoint": workspace.agent.pretrained_load_report,
         "runtime": runtime_report,
@@ -432,10 +590,21 @@ def main() -> int:
             "physical_actuators": physical_actuators,
             "replay": aux_report,
         },
+        "termination_contract": {
+            "fall_source": "shared Skate expert collection LiveFallDetector",
+            "definition": (
+                "persistent severe tilt OR persistent low root height with "
+                "illegal contact"
+            ),
+            "horizon_semantics": "truncated=True",
+            "fall_precedence": "terminated=True, truncated=False",
+            "replay": termination_report,
+            "controlled_validation": controlled_fall_report,
+        },
         "readiness": {
             "expert": "READY",
             "replay": "READY",
-            "termination": "PARTIAL",
+            "termination": "READY",
             "aux_reward_data": "READY",
             "discriminator": "READY",
             "F_B": "READY",
@@ -448,7 +617,7 @@ def main() -> int:
             "representation_training_ready": True,
             "critic_discriminator_interface_ready": True,
             "actor_training_interface_ready": True,
-            "full_FBcprAux_update_ready": False,
+            "full_FBcprAux_update_ready": True,
         },
         "prohibited_calls": {
             "optimizer_steps": 0,
@@ -460,24 +629,24 @@ def main() -> int:
             "update_aux_critic_calls": 0,
             "update_discriminator_calls": 0,
         },
-        "hard_blocker": (
-            "Native HUSKY physical termination is still unresolved. "
-            "Full FBcprAuxAgent.update() remains prohibited in this audit."
+        "training_boundary": (
+            "Full FBcprAux update dependencies are ready, but this audit "
+            "remains collect-only and calls no update method."
         ),
         "performance_limitation": (
             "The Skate expert source contains one 50-frame forward-push "
             "motion; it supports a technical feasibility audit but not final "
             "skateboarding skill coverage."
         ),
-        "next_milestone": "M2.4c — Native Termination Contract",
+        "next_milestone": "M2.4d — Native Full-Update Smoke",
     }
     report_path = output_dir / "training_readiness.json"
     with report_path.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
         handle.write("\n")
-    print(f"M2.4b-2 reward-contract report: {report_path}")
-    print("Full FBcprAux update ready: NO")
-    print("Next milestone: M2.4c — Native Termination Contract")
+    print(f"M2.4c termination-contract report: {report_path}")
+    print("Full FBcprAux update dependencies: READY")
+    print("Next milestone: M2.4d — Native Full-Update Smoke")
     return 0
 
 

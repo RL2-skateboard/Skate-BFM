@@ -24,7 +24,7 @@ class SkateOnlineTransition:
     terminated: bool
     truncated: bool
     step_count: int
-    raw_metadata: dict[str, np.ndarray | float]
+    raw_metadata: dict[str, object]
 
     def as_buffer_data(self) -> dict:
         return {
@@ -101,6 +101,8 @@ class HuskyBfmOnlineEnv:
         raw_next = self.env.step(action_husky.numpy())
         next_observation = self.observation_adapter(raw_next, action_bfm)
         aux_rewards = self.env.last_aux_rewards
+        terminated = self.env.fallen
+        fall_diagnostics = self.env.last_fall_diagnostics
         if tuple(aux_rewards) != AUX_REWARD_KEYS:
             raise RuntimeError("HUSKY auxiliary reward contract is incomplete.")
         transition = SkateOnlineTransition(
@@ -110,8 +112,8 @@ class HuskyBfmOnlineEnv:
             action_husky=action_husky,
             next_observation=next_observation,
             aux_rewards=aux_rewards,
-            terminated=False,
-            truncated=bool(truncated),
+            terminated=terminated,
+            truncated=bool(truncated) and not terminated,
             step_count=self._step_count,
             raw_metadata={
                 "root_height": float(raw_next["root_height"]),
@@ -137,6 +139,8 @@ class HuskyBfmOnlineEnv:
                 "board_angular_velocity": np.asarray(
                     raw_next["board_angular_velocity"]
                 ).copy(),
+                "fall": terminated,
+                **fall_diagnostics,
             },
         )
         self._observation = next_observation

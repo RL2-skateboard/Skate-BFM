@@ -42,8 +42,10 @@ with the skateboard, while surface-relative slippage removes that steer-phase
 conflict. M2.4b-2 implemented the eight-key raw auxiliary reward contract in
 the HUSKY MuJoCo runtime and formal 1024-transition replay. BFM-Zero remains
 the source of reward formulas; HUSKY's active MuJoCo model is the source of
-its 23 physical joint and torque constraints. Full training remains blocked
-only by native termination semantics, the next M2.4c milestone.
+its 23 physical joint and torque constraints. M2.4c completed the shared
+native fall contract: only a confirmed physical fall terminates an online
+episode, while a fixed horizon truncates it. Full FB-CPR-Aux update
+dependencies are ready; M2.4d will perform the first native full-update smoke.
 Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
@@ -92,17 +94,20 @@ injection. The generated JSON result is kept under the ignored `results/`
 directory; the summarized tables and boundary checks are recorded in
 [`train/train_res.md`](train/train_res.md).
 
-Run the M2.4b-2 read-only auxiliary reward-contract audit:
+Run the M2.4c read-only termination-contract audit:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py \
+  --output-dir results/m2.4c-termination-contract
 ```
 
 This builds the formal 1024-transition collect-only Skate replay, validates the
-eight raw auxiliary reward fields and their distributions, then performs
-forward-only checks for the discriminator, F/B, QD, Qaux, Actor, and targets.
-It does not call a reward normalizer, training update, optimizer step, or
-backward. The local JSON report is written under ignored `results/`; the
+eight raw auxiliary reward fields, native `terminated`/`truncated` fields, and
+the `gamma * ~terminated` discount contract, then performs forward-only checks
+for the discriminator, F/B, QD, Qaux, Actor, and targets. It also runs
+deterministic normal, transient, fall, low-contact, and board-separation
+checks. It does not call a reward normalizer, training update, optimizer step,
+or backward. The local JSON report is written under ignored `results/`; the
 retained conclusion is recorded in [`train/train_res.md`](train/train_res.md).
 
 Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:

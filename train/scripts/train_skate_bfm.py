@@ -1502,7 +1502,14 @@ class Workspace:
                     transition_ids.append(
                         f"{condition['rollout_id']}:{step:04d}"
                     )
-                    observation = transition.next_observation
+                    if transition.terminated or transition.truncated:
+                        observation = (
+                            transition.next_observation
+                            if step == rollout_steps - 1
+                            else env.reset()
+                        )
+                    else:
+                        observation = transition.next_observation
             finally:
                 env.close()
             rollout_reports.append(
@@ -1901,8 +1908,10 @@ class Workspace:
             raise RuntimeError(
                 f"Expected {self.cfg.skate_max_steps} transitions, got {len(transitions)}."
             )
-        if not transitions[-1].truncated:
-            raise RuntimeError("The bounded Skate rollout must end with truncation.")
+        if not (transitions[-1].terminated or transitions[-1].truncated):
+            raise RuntimeError(
+                "The bounded Skate rollout must end with termination or truncation."
+            )
         if any(
             transition.action_bfm.shape != (29,)
             or transition.action_husky.shape != (23,)

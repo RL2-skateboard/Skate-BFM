@@ -49,9 +49,12 @@ push/transition/left-steer/right-steer policy rollouts and found that original
 world-frame slippage conflicts with board-supported steering. M2.4b-2 then
 added the eight raw auxiliary penalties to HUSKY post-step transitions and the
 formal replay. BFM-Zero remains the formula source; active HUSKY MuJoCo
-actuators provide the physical 23D position and torque limits. The auxiliary
-reward data, Qaux data, and Actor training interface are now ready, while
-native termination semantics remain partial and block a full update.
+actuators provide the physical 23D position and torque limits. M2.4c then
+completed native termination: confirmed persistent physical falls write
+`terminated=True`, and fixed horizons write `truncated=True`. Temporary foot
+lift-off and board separation alone do not terminate. The auxiliary reward,
+Qaux, Actor, replay, and termination dependencies are ready; M2.4d is the
+first native full-update smoke.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -103,19 +106,21 @@ immutability. It is evaluation-only and makes no optimizer, backward,
 `agent.update`, or `update_fb` calls. Results are summarized in
 [`train_res.md`](train_res.md).
 
-Run the M2.4b-2 read-only auxiliary reward-contract audit:
+Run the M2.4c read-only termination-contract audit:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py \
+  --output-dir results/m2.4c-termination-contract
 ```
 
 The audit uses the official BFM0 checkpoint, 1024 formal HUSKY transitions,
 and 64 Base plus 64 Skate complete expert sequences. It validates all eight
-raw reward tensors as finite `[1024,1]` data, records their distributions, and
-does not update the reward normalizer. It performs no `agent.update()`, update
+raw reward tensors and boolean `[1024,1]` termination fields, verifies
+`gamma * ~terminated`, and runs deterministic fall and non-fall cases. It does
+not update the reward normalizer or perform `agent.update()`, an update
 subroutine, optimizer step, backward call, or parameter/buffer mutation. Its
-local JSON output is kept under `results/`; the readiness matrix and blocker
-are retained in [`train_res.md`](train_res.md).
+local JSON output is kept under `results/`; the readiness matrix is retained in
+[`train_res.md`](train_res.md).
 
 Run the phase-wise raw-expert reward diagnostic:
 

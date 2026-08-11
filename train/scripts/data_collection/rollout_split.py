@@ -28,6 +28,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from skate_husky import (
+    DEFAULT_FALL_CONFIRM_TIME,
+    DEFAULT_FALL_ORIENTATION_LIMIT_DEG,
+    DEFAULT_FALL_ROOT_HEIGHT_MIN,
+    LiveFallDetector,
+    fall_confirmation_steps,
+)
 from tqdm import tqdm
 
 UNKNOWN_FAILURE_DETECTION = "UNKNOWN_FAILURE_DETECTION"
@@ -329,87 +336,6 @@ class BoardSteerDirection:
             "board_heading_delta_deg": heading_delta_deg,
             "board_heading_delta_rad": -self.board_heading_delta,
         }
-
-
-class LiveFallDetector:
-    """Detect a persistent fall without treating foot lift-off as a fall."""
-
-    _illegal_geom = re.compile(
-        r"(left|right)_(shin|linkage_brace|shoulder_yaw|elbow_yaw|wrist|hand)_collision"
-        r"|robot/pelvis_collision$"
-    )
-
-    def __init__(
-        self,
-        model: Any,
-        orientation_limit_deg: float,
-        root_height_min: float,
-        confirm_frames: int,
-    ) -> None:
-        self.model = model
-        self.orientation_limit_deg = orientation_limit_deg
-        self.root_height_min = root_height_min
-        self.confirm_frames = max(1, confirm_frames)
-        self.bad_frames = 0
-        self.foot_geoms: set[int] = set()
-        self.board_geoms: set[int] = set()
-        self.illegal_geoms: set[int] = set()
-        import mujoco
-
-        for geom_id in range(model.ngeom):
-            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-            if not name:
-                continue
-            if re.search(r"robot/(left|right)_foot[0-9]+_collision$", name):
-                self.foot_geoms.add(geom_id)
-            if name == "skateboard/skateboard_deck_collision":
-                self.board_geoms.add(geom_id)
-            if self._illegal_geom.search(name):
-                self.illegal_geoms.add(geom_id)
-
-    def reset(self) -> None:
-        self.bad_frames = 0
-
-    def check(self, data: Any) -> tuple[bool, list[str], dict[str, Any]]:
-        qw, qx, qy, qz = np.asarray(data.qpos[3:7], dtype=float)
-        norm = np.linalg.norm((qw, qx, qy, qz))
-        if norm <= 0.0:
-            tilt_deg = 180.0
-        else:
-            qw, qx, qy, qz = np.asarray((qw, qx, qy, qz)) / norm
-            gravity_z = 1.0 - 2.0 * (qx * qx + qy * qy)
-            tilt_deg = math.degrees(math.acos(np.clip(gravity_z, -1.0, 1.0)))
-
-        feet_on_board = False
-        illegal_contact = False
-        for contact_index in range(data.ncon):
-            contact = data.contact[contact_index]
-            geom_a, geom_b = contact.geom1, contact.geom2
-            if (geom_a in self.foot_geoms and geom_b in self.board_geoms) or (
-                geom_b in self.foot_geoms and geom_a in self.board_geoms
-            ):
-                feet_on_board = True
-            if geom_a in self.illegal_geoms or geom_b in self.illegal_geoms:
-                illegal_contact = True
-        root_height = float(data.qpos[2])
-        severe_tilt = tilt_deg > self.orientation_limit_deg
-        low_contact_fall = root_height < self.root_height_min and illegal_contact
-        candidate = severe_tilt or low_contact_fall
-        self.bad_frames = self.bad_frames + 1 if candidate else 0
-        reasons = []
-        if severe_tilt:
-            reasons.append(f"tilt>{self.orientation_limit_deg:.0f}deg")
-        if low_contact_fall:
-            reasons.append(f"height<{self.root_height_min:.2f}+illegal_contact")
-        diagnostics = {
-            "tilt_deg": tilt_deg,
-            "root_height": root_height,
-            "feet_on_board": feet_on_board,
-            "illegal_contact": illegal_contact,
-            "fall_candidate": candidate,
-            "confirm_frames": self.bad_frames,
-        }
-        return self.bad_frames >= self.confirm_frames, reasons, diagnostics
 
 
 def unqualified_name(name: str) -> str:
@@ -1170,7 +1096,10 @@ def run_live(args: argparse.Namespace) -> int:
                 self.initial_joint_offsets = {}
             self.phase_clock = OfficialPhaseClock(args.policy_frequency, args.cycle_time)
             self.steer_direction = BoardSteerDirection(self.model)
-            confirm_frames = max(1, round(args.fall_confirm_time * args.policy_frequency))
+            confirm_frames = fall_confirmation_steps(
+                args.fall_confirm_time,
+                1.0 / args.policy_frequency,
+            )
             self.fall_detector = LiveFallDetector(
                 self.model,
                 args.fall_orientation_deg,
@@ -2041,9 +1970,21 @@ def parse_args() -> argparse.Namespace:
         help="Optional reproducible initial steering command for --live.",
     )
     parser.add_argument("--steer-confirm-time", type=float, default=0.1)
-    parser.add_argument("--fall-orientation-deg", type=float, default=70.0)
-    parser.add_argument("--fall-root-height-min", type=float, default=0.45)
-    parser.add_argument("--fall-confirm-time", type=float, default=0.2)
+    parser.add_argument(
+        "--fall-orientation-deg",
+        type=float,
+        default=DEFAULT_FALL_ORIENTATION_LIMIT_DEG,
+    )
+    parser.add_argument(
+        "--fall-root-height-min",
+        type=float,
+        default=DEFAULT_FALL_ROOT_HEIGHT_MIN,
+    )
+    parser.add_argument(
+        "--fall-confirm-time",
+        type=float,
+        default=DEFAULT_FALL_CONFIRM_TIME,
+    )
     parser.add_argument("--status-interval", type=float, default=0.2)
     parser.add_argument(
         "--max-policy-frames",

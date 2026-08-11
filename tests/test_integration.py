@@ -1,8 +1,13 @@
+import importlib.util
+import math
+import sys
+from pathlib import Path
+
 import mujoco
 import numpy as np
 import pytest
 import torch
-from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv
+from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv, LiveFallDetector
 from skate_husky.lite_env import (
     contact_tangential_speed,
     world_horizontal_orientation_penalty,
@@ -11,6 +16,34 @@ from skate_husky.lite_env import (
 from skate_bfm.integration.actions import BFM0_JOINTS, HUSKY_JOINTS, Bfm0ToHusky23
 from skate_bfm.integration.online import HuskyBfmOnlineEnv
 from skate_bfm.runner import run_smoke
+
+
+def _set_root_tilt(env: HuskyLiteEnv) -> None:
+    env.data.qpos[3:7] = (
+        math.sqrt(0.5),
+        math.sqrt(0.5),
+        0.0,
+        0.0,
+    )
+    mujoco.mj_forward(env.model, env.data)
+
+
+def _collection_rollout_split():
+    module_name = "rollout_split_for_test"
+    module_path = (
+        Path(__file__).resolve().parents[1]
+        / "train"
+        / "scripts"
+        / "data_collection"
+        / "rollout_split.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the collection fall detector.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_joint_mapping_is_name_based() -> None:
@@ -153,3 +186,79 @@ def test_ankle_roll_aux_reward_is_squared_joint_sum() -> None:
         env.close()
 
     assert np.isclose(reward, 0.2**2 + (-0.3) ** 2)
+
+
+def test_collection_and_online_share_the_fall_detector() -> None:
+    assert _collection_rollout_split().LiveFallDetector is LiveFallDetector
+
+
+def test_fall_detector_requires_persistent_physical_fall() -> None:
+    env = HuskyLiteEnv()
+    try:
+        env.reset()
+        fallen, _, diagnostics = env.fall_detector.check(env.data)
+        assert not fallen
+        assert diagnostics["feet_on_board"] is True
+
+        env.fall_detector.reset()
+        _set_root_tilt(env)
+        fallen, _, diagnostics = env.fall_detector.check(env.data)
+        assert not fallen
+        assert diagnostics["fall_candidate"] is True
+        assert diagnostics["confirm_frames"] == 1
+        for _ in range(env.fall_detector.confirm_frames - 1):
+            fallen, _, _ = env.fall_detector.check(env.data)
+        assert fallen
+
+        env.reset()
+        env.data.qpos[2] = 0.2
+        mujoco.mj_forward(env.model, env.data)
+        fallen, _, diagnostics = env.fall_detector.check(env.data)
+        assert not fallen
+        assert diagnostics["illegal_contact"] is True
+        assert diagnostics["feet_on_board"] is False
+        for _ in range(env.fall_detector.confirm_frames - 1):
+            fallen, _, _ = env.fall_detector.check(env.data)
+        assert fallen
+
+        env.reset()
+        board_joint = env.model.joint("skateboard/floating_base_joint_skateboard")
+        env.data.qpos[board_joint.qposadr[0]] += 5.0
+        mujoco.mj_forward(env.model, env.data)
+        fallen, _, diagnostics = env.fall_detector.check(env.data)
+        assert not fallen
+        assert diagnostics["feet_on_board"] is False
+        assert diagnostics["fall_candidate"] is False
+    finally:
+        env.close()
+
+
+def test_online_fall_terminates_and_horizon_truncates() -> None:
+    env = HuskyBfmOnlineEnv()
+    action = torch.zeros(29)
+    z = torch.zeros(256)
+    try:
+        env.reset()
+        horizon = env.step(action, z, truncated=True)
+        assert not horizon.terminated
+        assert horizon.truncated
+
+        env.reset()
+        _set_root_tilt(env.env)
+        for index in range(env.env.fall_detector.confirm_frames):
+            transition = env.step(
+                action,
+                z,
+                truncated=index == env.env.fall_detector.confirm_frames - 1,
+            )
+        assert transition.terminated
+        assert not transition.truncated
+        assert transition.raw_metadata["fall"] is True
+        assert (
+            transition.raw_metadata["confirm_frames"]
+            == env.env.fall_detector.confirm_frames
+        )
+        with pytest.raises(RuntimeError, match="reset"):
+            env.step(action, z)
+    finally:
+        env.close()

@@ -1299,3 +1299,23 @@ the formal Skate runtime action contract.
 - Evaluation protocol changed: `NO`.
 - Training performed: `NO`.
 - Next milestone: `M2.4c — Native Termination Contract`.
+
+## M2.4c Native Fall Termination Contract
+
+- Date: `2026-08-11`
+- Moved the existing Skate expert-collection `LiveFallDetector` into the
+  production HUSKY runtime so collection and online replay use one
+  implementation.
+- Online post-step semantics: a persistent severe tilt (`>70 deg`) or
+  persistent low root height (`<0.45 m`) plus illegal contact writes
+  `terminated=True`; the 0.2 s confirmation window is `10` control frames at
+  50 Hz. The fixed collection horizon writes `truncated=True`.
+- A confirmed fall takes precedence on a shared final step:
+  `terminated=True`, `truncated=False`; a subsequent step requires reset.
+- Temporary foot lift-off and board separation are diagnostics only and do not
+  terminate an episode. Fall recovery is outside the current task.
+- Completed a 1024-transition collect-only audit: 14 terminated, 1 truncated,
+  and 1009 normal transitions, with no termination/truncation overlap.
+- No model update, optimizer step, backward call, normalizer update, or
+  parameter/buffer mutation occurred.
+- Next milestone: `M2.4d — Native Full-Update Smoke`.

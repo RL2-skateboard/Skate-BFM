@@ -558,3 +558,55 @@ penalty remains low.
 
 The next blocker is native physical termination. Next milestone:
 `M2.4c — Native Termination Contract`.
+
+## M2.4c Native Fall Termination Contract
+
+This is a collect-only termination validation, not training.
+
+- Date: `2026-08-11`
+- Fall source: the shared `LiveFallDetector` used by raw Skate expert
+  collection and `HuskyLiteEnv`.
+- Fall definition: persistent root tilt above `70 deg`, or persistent root
+  height below `0.45 m` with an illegal collision. Confirmation is `0.2 s`,
+  computed from control time (`10` frames at 50 Hz).
+- Online fall: `terminated=True`, `truncated=False`.
+- Fixed horizon: `terminated=False`, `truncated=True`.
+- Precedence: a confirmed fall on the final collection step is terminal, not
+  horizon-truncated.
+- Board separation alone: `terminated=False`.
+- Temporary feet-off-board alone: `terminated=False`.
+- Fall recovery: `NOT SUPPORTED`.
+
+### Controlled Validation
+
+| Case | Result |
+| :--- | :--- |
+| Normal canonical state | `terminated=False` |
+| Single 90-degree tilt frame | `terminated=False` |
+| Persistent 90-degree tilt | `terminated=True` |
+| Persistent `0.2 m` root height plus illegal contact | `terminated=True` |
+| Board moved 5 m away | `terminated=False` |
+| Collection / online detector implementation | `PASS` (same class) |
+| Online terminal then step without reset | `PASS` (raises) |
+
+### Formal Replay
+
+- Formal collect-only replay: `1024` transitions; `train is train_skate`:
+  `YES`.
+- `next.terminated` and `next.truncated`: boolean `[1024,1]` tensors.
+- Counts: `14` terminated, `1` truncated, `1009` normal, `0` overlap.
+- Discount preflight: upstream `gamma * ~terminated`; terminal rows have
+  discount `0`, non-terminal rows have `gamma`.
+- Model parameters and buffers: unchanged.
+- `agent.update`, backward, and optimizer calls: `0`.
+
+| Readiness judgment | Result |
+| :--- | :--- |
+| Replay | `READY` |
+| Auxiliary reward data | `READY` |
+| Qaux data | `READY` |
+| Actor training interface | `READY` |
+| Native termination | `READY` |
+| Full `FBcprAuxAgent.update()` dependencies | `READY` |
+
+Next milestone: `M2.4d — Native Full-Update Smoke`.
