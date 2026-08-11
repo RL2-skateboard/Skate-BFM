@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
   <title id="title">Skate-BFM development substage pipeline as of 2026-08-11</title>
-  <desc id="desc">M0 baseline, M1 expert motion, M2.1 formal HUSKY online replay, M2.2a pretrained expert/replay merge, M2.2b adaptation boundaries, M2.3a-0 target-bank command audit, and M2.3b-0 frozen Actor target-conditioned evaluation are complete. Full FB-CPR-Aux training follows.</desc>
+  <desc id="desc">M0 baseline, M1 expert motion, M2.1 formal HUSKY online replay, M2.2 adaptation boundaries, M2.3 target-conditioned evaluation, and M2.4-0 behavior-preserving project cleanup are complete. M2.4a full-training dependency audit follows.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -19,8 +19,8 @@
 
   <rect x="1010" y="32" width="438" height="84" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="2"/>
   <text x="1032" y="59" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">LATEST COMPLETION - 2026-08-11</text>
-  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.3b-0 Frozen Actor preflight</text>
-  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">60 target-conditioned rollouts; frozen state verified</text>
+  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.4-0 Project code cleanup</text>
+  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">Behavior and numerical regressions verified</text>
 
   <line x1="302" y1="224" x2="365" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="690" y1="224" x2="753" y2="224" stroke="#d97706" stroke-width="5" marker-end="url(#arrow-active)"/>
@@ -99,6 +99,6 @@
     <text x="265" y="674" fill="#17212b" font-size="14" font-weight="700">ACTIVE</text>
     <circle cx="385" cy="668" r="10" fill="#94a3b8"/>
     <text x="405" y="674" fill="#17212b" font-size="14" font-weight="700">NEXT / LATER</text>
-    <text x="590" y="674" fill="#475569" font-size="14">M2.3b-0 evaluated; full FB-CPR-Aux training remains NOT STARTED.</text>
+    <text x="590" y="674" fill="#475569" font-size="14">M2.4-0 cleaned; M2.4a dependency audit is NEXT.</text>
   </g>
 </svg>

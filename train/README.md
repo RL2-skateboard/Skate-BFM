@@ -38,7 +38,8 @@ M2.3a-0 completed the target-bank and command-alignment audit, and M2.3b-0
 completed the evaluation-only frozen-Actor target-conditioned preflight. The
 forward-push target consistently increases forward response over matched
 random latents, while lateral and heading behavior remain mixed; no steer
-target is claimed.
+target is claimed. M2.4-0 completed the behavior-preserving project code
+cleanup, and M2.4a full-training dependency audit is next.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -67,7 +68,7 @@ evaluation results remain local under `results/`.
 Audit the current raw expert motion and compute frozen target latents:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_skate_target_bank.py \
+CUDA_VISIBLE_DEVICES=0 python train/scripts/build_target_bank.py \
   --raw-rollout /absolute/path/to/raw_rollout.npz
 ```
 
@@ -78,7 +79,7 @@ Actor execution, or optimizer step.
 Run the frozen-Actor target-conditioned evaluation:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_target_conditioned.py \
+CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
   --output-dir results/m2.3b-0-target-conditioned
 ```
 

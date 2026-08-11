@@ -29,8 +29,10 @@ audited the target bank and command alignment, and M2.3b-0 completed the
 evaluation-only frozen-Actor target-conditioned preflight: the forward-push
 target has a consistent forward-response advantage over matched random
 latents, but lateral and heading behavior remain mixed. Full FB-CPR-Aux
-training has not started. Interaction-JEPA, predictive closed-loop planning,
-and complete skateboarding-task evaluation remain later project modules.
+training has not started. M2.4-0 completed the behavior-preserving project
+code cleanup; M2.4a full-training dependency audit is next. Interaction-JEPA,
+predictive closed-loop planning, and complete skateboarding-task evaluation
+remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.
@@ -65,7 +67,7 @@ CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_bfm.py \
 Run the M2.3b-0 frozen-Actor target-conditioned preflight:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_target_conditioned.py \
+CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
   --output-dir results/m2.3b-0-target-conditioned
 ```
 
@@ -80,7 +82,7 @@ directory; the summarized tables and boundary checks are recorded in
 Audit the current expert target bank without training or rollout:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_skate_target_bank.py \
+CUDA_VISIBLE_DEVICES=0 python train/scripts/build_target_bank.py \
   --raw-rollout /absolute/path/to/raw_rollout.npz
 ```
 

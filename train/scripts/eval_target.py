@@ -22,22 +22,18 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 sys.path.insert(0, str(REPOSITORY_ROOT / "husky_sim" / "src"))
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
-from audit_skate_target_bank import (
-    encode_target,
-    load_expert_observations,
-    sha256_file,
-)
 from data_collection.rollout_split import randomize_husky_play_physics
-from evaluate_skate_bfm import (
-    build_frozen_agent,
-    data_fingerprint,
-    quaternion_yaw,
-)
 from skate_bfm.integration import HuskyBfmOnlineEnv
 from train_skate_bfm import (
-    _checkpoint_model_path,
-    _component_fingerprints,
-    _state_fingerprint,
+    checkpoint_model_path,
+    encode_target,
+    hash_buffers,
+    hash_components,
+    hash_data,
+    hash_file,
+    hash_params,
+    load_expert,
+    load_frozen_agent,
 )
 
 
@@ -110,7 +106,7 @@ def load_and_validate_target_bank(path: Path) -> tuple[dict[str, Any], str]:
         for record in target.get("latents", {}).values()
     ):
         raise RuntimeError("Tracked target bank must not contain latent values.")
-    return payload, sha256_file(path)
+    return payload, hash_file(path)
 
 
 def load_protocol(path: Path) -> dict[str, Any]:
@@ -160,12 +156,22 @@ def initial_state_payload(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def board_yaw(quaternion: np.ndarray) -> float:
+    """Return the scalar yaw angle of a MuJoCo wxyz quaternion."""
+
+    w, x, y, z = np.asarray(quaternion, dtype=np.float64)
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
 def physical_metrics(
     records: list[dict[str, Any]],
     initial_raw: dict[str, Any],
 ) -> dict[str, float]:
     initial_board_position = np.asarray(initial_raw["board_position"], dtype=float)
-    initial_board_yaw = quaternion_yaw(initial_raw["board_quaternion"])
+    initial_board_yaw = board_yaw(initial_raw["board_quaternion"])
     forward_axis = np.asarray(
         [math.cos(initial_board_yaw), math.sin(initial_board_yaw)]
     )
@@ -184,7 +190,7 @@ def physical_metrics(
         np.asarray(
             [initial_board_yaw]
             + [
-                quaternion_yaw(item["board_quaternion"])
+                board_yaw(item["board_quaternion"])
                 for item in records
             ],
             dtype=float,
@@ -254,9 +260,9 @@ def run_rollout(
     observation = env.reset()
     initial_raw = env.env._observation()
     initial_fingerprints = (
-        data_fingerprint(observation),
-        data_fingerprint(initial_state_payload(initial_raw)["root"]),
-        data_fingerprint(initial_state_payload(initial_raw)["board"]),
+        hash_data(observation),
+        hash_data(initial_state_payload(initial_raw)["root"]),
+        hash_data(initial_state_payload(initial_raw)["board"]),
     )
     reference_key = condition["rollout_id"]
     if reference_key in initial_reference:
@@ -286,7 +292,7 @@ def run_rollout(
                     mean=True,
                 )[0]
             if first_action_fingerprint is None:
-                first_action_fingerprint = data_fingerprint(action)
+                first_action_fingerprint = hash_data(action)
             transition = env.step(
                 action,
                 z,
@@ -301,17 +307,17 @@ def run_rollout(
         **condition,
         "latent_kind": latent_kind,
         "random_seed": random_seed,
-        "z_fingerprint": data_fingerprint(z),
+        "z_fingerprint": hash_data(z),
         "z_norm": float(torch.linalg.vector_norm(z)),
         "dynamics_realization": dynamics_report,
-        "dynamics_fingerprint": data_fingerprint(dynamics_report),
+        "dynamics_fingerprint": hash_data(dynamics_report),
         "initial_fingerprints": {
             "observation": initial_fingerprints[0],
             "root_state": initial_fingerprints[1],
             "board_state": initial_fingerprints[2],
         },
         "first_action_fingerprint": first_action_fingerprint,
-        "transition_fingerprint": data_fingerprint(records),
+        "transition_fingerprint": hash_data(records),
         "command_injected_into_actor": False,
         "metrics": physical_metrics(records, initial_raw),
         "mutation": {
@@ -333,6 +339,157 @@ def run_rollout(
     return payload
 
 
+def eval_checkpoint(
+    agent,
+    *,
+    checkpoint_name: str,
+    checkpoint_path: Path,
+    checkpoint_model_sha: str,
+    target: dict[str, Any],
+    target_bank_sha: str,
+    target_observations: dict[str, torch.Tensor],
+    protocol: dict[str, Any],
+    initial_reference: dict[str, tuple[str, str, str]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Evaluate random and target latents for one frozen checkpoint."""
+
+    target_start = target["frame_start"]
+    target_z = encode_target(agent, target_observations)
+    target_z_tensor = torch.from_numpy(target_z).to(agent.device)
+    target_fingerprint = hash_data(target_z)
+    expected_fingerprint = target["latents"][checkpoint_name]["latent"][
+        "fingerprint"
+    ]
+    if target_fingerprint != expected_fingerprint:
+        raise RuntimeError(
+            f"Runtime target latent mismatch for {checkpoint_name}: "
+            f"expected={expected_fingerprint}, actual={target_fingerprint}."
+        )
+
+    before = {
+        "parameters": hash_params(agent._model),
+        "buffers": hash_buffers(agent._model),
+        "components": hash_components(agent),
+    }
+    provenance = {
+        "checkpoint_name": checkpoint_name,
+        "checkpoint": str(checkpoint_path),
+        "checkpoint_model_sha256": checkpoint_model_sha,
+        "target_bank_sha256": target_bank_sha,
+        "target_id": target["target_id"],
+        "target_frame_start": target_start,
+        "target_frame_end_inclusive": target["frame_end_inclusive"],
+    }
+    rollouts = []
+    for condition in protocol["rollouts"]:
+        for random_seed in DEFAULT_RANDOM_SEEDS:
+            torch.manual_seed(random_seed)
+            random_z = agent._model.sample_z(1, device=agent.device)[0]
+            row = run_rollout(
+                agent,
+                condition=condition,
+                z=random_z,
+                latent_kind="random",
+                random_seed=random_seed,
+                horizon=protocol["rollout_horizon"],
+                control_dt=protocol["control_dt_s"],
+                initial_reference=initial_reference,
+                checkpoint_fingerprints=before,
+            )
+            row.update(provenance)
+            rollouts.append(row)
+        row = run_rollout(
+            agent,
+            condition=condition,
+            z=target_z_tensor,
+            latent_kind="target",
+            random_seed=None,
+            horizon=protocol["rollout_horizon"],
+            control_dt=protocol["control_dt_s"],
+            initial_reference=initial_reference,
+            checkpoint_fingerprints=before,
+        )
+        row.update(provenance)
+        rollouts.append(row)
+
+    after = {
+        "parameters": hash_params(agent._model),
+        "buffers": hash_buffers(agent._model),
+        "components": hash_components(agent),
+    }
+    parameters_changed = before["parameters"] != after["parameters"]
+    buffers_changed = before["buffers"] != after["buffers"]
+    components_changed = before["components"] != after["components"]
+    if parameters_changed or components_changed:
+        raise RuntimeError(f"Frozen model parameters changed for {checkpoint_name}.")
+    if buffers_changed:
+        raise RuntimeError(
+            f"Normalizer/model buffers changed for {checkpoint_name}."
+        )
+    for row in rollouts:
+        row["mutation"].update(
+            {
+                "parameters_changed": parameters_changed,
+                "buffers_changed": buffers_changed,
+                "components_changed": components_changed,
+                "after_parameter_fingerprint": after["parameters"],
+                "after_buffer_fingerprint": after["buffers"],
+                "after_component_fingerprints": after["components"],
+            }
+        )
+
+    aggregates = {}
+    for split in ("seen", "unseen"):
+        groups = {}
+        for latent_kind in ("random", "target"):
+            rows = [
+                row["metrics"]
+                for row in rollouts
+                if row["dynamics_split"] == split
+                and row["latent_kind"] == latent_kind
+            ]
+            groups[latent_kind] = aggregate(rows)
+        groups["target_advantage"] = {
+            name: {
+                "delta_target_minus_random_mean": (
+                    groups["target"][name]["mean"]
+                    - groups["random"][name]["mean"]
+                )
+            }
+            for name in METRIC_NAMES
+        }
+        aggregates[split] = groups
+
+    report = {
+        "checkpoint": str(checkpoint_path),
+        "checkpoint_model_sha256": checkpoint_model_sha,
+        "target_z_fingerprint": target_fingerprint,
+        "target_z_norm": float(np.linalg.norm(target_z)),
+        "target_source": {
+            "target_id": target["target_id"],
+            "frame_start": target_start,
+            "frame_end_inclusive": target["frame_end_inclusive"],
+            "latent_source": "runtime raw target window via MotionLib",
+        },
+        "random_seeds": list(DEFAULT_RANDOM_SEEDS),
+        "aggregates_by_split": aggregates,
+        "rollout_count": len(rollouts),
+        "inference_only": True,
+        "mutation": {
+            "parameters_changed": parameters_changed,
+            "buffers_changed": buffers_changed,
+            "components_changed": components_changed,
+            "optimizer_steps": 0,
+            "backward_calls": 0,
+            "agent_update_calls": 0,
+            "update_fb_calls": 0,
+            "before": before,
+            "after": after,
+        },
+    }
+    return rollouts, report
+
+
 def main() -> int:
     args = parse_args()
     target_bank_path = args.target_bank.expanduser().resolve()
@@ -345,7 +502,7 @@ def main() -> int:
     if not expert_motion.is_file():
         raise FileNotFoundError(expert_motion)
     source = target_bank["source"]
-    if source["expert_motion_sha256"] != sha256_file(expert_motion):
+    if source["expert_motion_sha256"] != hash_file(expert_motion):
         raise RuntimeError("Expert MotionLib SHA256 does not match target bank.")
 
     paths = checkpoint_paths()
@@ -359,192 +516,34 @@ def main() -> int:
     all_rollouts: list[dict[str, Any]] = []
     initial_reference: dict[str, tuple[str, str, str]] = {}
     checkpoint_reports: dict[str, Any] = {}
-    shared_target_observations: dict[str, torch.Tensor] | None = None
+    first_name, first_path = next(iter(paths.items()))
+    first_agent, _ = load_frozen_agent(first_path)
+    observations = load_expert(first_agent, expert_motion)
+    target_observations = {
+        key: value[target_start:target_end].clone()
+        for key, value in observations.items()
+    }
 
     for checkpoint_name, checkpoint_path in paths.items():
-        agent, _ = build_frozen_agent(checkpoint_path)
-        checkpoint_model_sha = sha256_file(_checkpoint_model_path(checkpoint_path))
-        if shared_target_observations is None:
-            observations = load_expert_observations(agent, expert_motion)
-            shared_target_observations = {
-                key: value[target_start:target_end].clone()
-                for key, value in observations.items()
-            }
-        target_z = encode_target(agent, shared_target_observations)
-        target_z_tensor = torch.from_numpy(target_z).to(agent.device)
-        target_fingerprint = data_fingerprint(target_z)
-        expected_fingerprint = target["latents"][checkpoint_name]["latent"][
-            "fingerprint"
-        ]
-        if target_fingerprint != expected_fingerprint:
-            raise RuntimeError(
-                f"Runtime target latent mismatch for {checkpoint_name}: "
-                f"expected={expected_fingerprint}, actual={target_fingerprint}."
-            )
-
-        before_fingerprints = {
-            "parameters": _state_fingerprint(
-                agent._model,
-                parameters=True,
-            ),
-            "buffers": _state_fingerprint(
-                agent._model,
-                parameters=False,
-            ),
-            "components": _component_fingerprints(agent),
-        }
-        checkpoint_rollouts = []
-        for condition in protocol["rollouts"]:
-            for random_seed in DEFAULT_RANDOM_SEEDS:
-                torch.manual_seed(random_seed)
-                random_z = agent._model.sample_z(1, device=agent.device)[0]
-                row = run_rollout(
-                    agent,
-                    condition=condition,
-                    z=random_z,
-                    latent_kind="random",
-                    random_seed=random_seed,
-                    horizon=protocol["rollout_horizon"],
-                    control_dt=protocol["control_dt_s"],
-                    initial_reference=initial_reference,
-                    checkpoint_fingerprints=before_fingerprints,
-                )
-                row.update(
-                    {
-                        "checkpoint_name": checkpoint_name,
-                        "checkpoint": str(checkpoint_path),
-                        "checkpoint_model_sha256": checkpoint_model_sha,
-                        "target_bank_sha256": target_bank_sha,
-                        "target_id": target["target_id"],
-                        "target_frame_start": target_start,
-                        "target_frame_end_inclusive": target[
-                            "frame_end_inclusive"
-                        ],
-                    }
-                )
-                checkpoint_rollouts.append(row)
-                all_rollouts.append(row)
-            row = run_rollout(
-                agent,
-                condition=condition,
-                z=target_z_tensor,
-                latent_kind="target",
-                random_seed=None,
-                horizon=protocol["rollout_horizon"],
-                control_dt=protocol["control_dt_s"],
-                initial_reference=initial_reference,
-                checkpoint_fingerprints=before_fingerprints,
-            )
-            row.update(
-                {
-                    "checkpoint_name": checkpoint_name,
-                    "checkpoint": str(checkpoint_path),
-                    "checkpoint_model_sha256": checkpoint_model_sha,
-                    "target_bank_sha256": target_bank_sha,
-                    "target_id": target["target_id"],
-                    "target_frame_start": target_start,
-                    "target_frame_end_inclusive": target[
-                        "frame_end_inclusive"
-                    ],
-                }
-            )
-            checkpoint_rollouts.append(row)
-            all_rollouts.append(row)
-
-        after_fingerprints = {
-            "parameters": _state_fingerprint(
-                agent._model,
-                parameters=True,
-            ),
-            "buffers": _state_fingerprint(
-                agent._model,
-                parameters=False,
-            ),
-            "components": _component_fingerprints(agent),
-        }
-        parameters_changed = (
-            before_fingerprints["parameters"]
-            != after_fingerprints["parameters"]
+        if checkpoint_name == first_name:
+            agent = first_agent
+            first_agent = None
+        else:
+            agent, _ = load_frozen_agent(checkpoint_path)
+        model_sha = hash_file(checkpoint_model_path(checkpoint_path))
+        rollouts, report = eval_checkpoint(
+            agent,
+            checkpoint_name=checkpoint_name,
+            checkpoint_path=checkpoint_path,
+            checkpoint_model_sha=model_sha,
+            target=target,
+            target_bank_sha=target_bank_sha,
+            target_observations=target_observations,
+            protocol=protocol,
+            initial_reference=initial_reference,
         )
-        buffers_changed = (
-            before_fingerprints["buffers"] != after_fingerprints["buffers"]
-        )
-        components_changed = (
-            before_fingerprints["components"]
-            != after_fingerprints["components"]
-        )
-        if parameters_changed or components_changed:
-            raise RuntimeError(
-                f"Frozen model parameters changed for {checkpoint_name}."
-            )
-        if buffers_changed:
-            raise RuntimeError(
-                f"Normalizer/model buffers changed for {checkpoint_name}."
-            )
-        for row in checkpoint_rollouts:
-            row["mutation"].update(
-                {
-                    "parameters_changed": parameters_changed,
-                    "buffers_changed": buffers_changed,
-                    "components_changed": components_changed,
-                    "after_parameter_fingerprint": after_fingerprints[
-                        "parameters"
-                    ],
-                    "after_buffer_fingerprint": after_fingerprints["buffers"],
-                    "after_component_fingerprints": after_fingerprints[
-                        "components"
-                    ],
-                }
-            )
-
-        checkpoint_groups = {}
-        for split in ("seen", "unseen"):
-            split_groups = {}
-            for latent_kind in ("random", "target"):
-                rows = [
-                    row["metrics"]
-                    for row in checkpoint_rollouts
-                    if row["dynamics_split"] == split
-                    and row["latent_kind"] == latent_kind
-                ]
-                split_groups[latent_kind] = aggregate(rows)
-            split_groups["target_advantage"] = {
-                name: {
-                    "delta_target_minus_random_mean": (
-                        split_groups["target"][name]["mean"]
-                        - split_groups["random"][name]["mean"]
-                    )
-                }
-                for name in METRIC_NAMES
-            }
-            checkpoint_groups[split] = split_groups
-        checkpoint_reports[checkpoint_name] = {
-            "checkpoint": str(checkpoint_path),
-            "checkpoint_model_sha256": checkpoint_model_sha,
-            "target_z_fingerprint": target_fingerprint,
-            "target_z_norm": float(np.linalg.norm(target_z)),
-            "target_source": {
-                "target_id": target["target_id"],
-                "frame_start": target_start,
-                "frame_end_inclusive": target["frame_end_inclusive"],
-                "latent_source": "runtime raw target window via MotionLib",
-            },
-            "random_seeds": list(DEFAULT_RANDOM_SEEDS),
-            "aggregates_by_split": checkpoint_groups,
-            "rollout_count": len(checkpoint_rollouts),
-            "inference_only": True,
-            "mutation": {
-                "parameters_changed": parameters_changed,
-                "buffers_changed": buffers_changed,
-                "components_changed": components_changed,
-                "optimizer_steps": 0,
-                "backward_calls": 0,
-                "agent_update_calls": 0,
-                "update_fb_calls": 0,
-                "before": before_fingerprints,
-                "after": after_fingerprints,
-            },
-        }
+        all_rollouts.extend(rollouts)
+        checkpoint_reports[checkpoint_name] = report
         del agent
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

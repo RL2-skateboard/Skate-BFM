@@ -619,3 +619,32 @@
   establish a downstream physical advantage for Base+Skate.
 - No training, Actor update, replay update, exploration change, action-format
   change, or evaluation-protocol-v1 change was performed.
+
+## 18. M2.4-0 Project Code Cleanup
+
+- Date: 2026-08-11
+- Status: `completed_behavior_preserving_cleanup`
+- Renamed current target-bank entrypoint
+  `train/scripts/audit_skate_target_bank.py` to
+  `train/scripts/build_target_bank.py`.
+- Renamed current target-conditioned entrypoint
+  `train/scripts/evaluate_skate_target_conditioned.py` to
+  `train/scripts/eval_target.py`.
+- Kept `train/scripts/evaluate_skate_bfm.py` unchanged as the canonical
+  representation evaluator filename because its path is part of historical
+  provenance records.
+- Centralized checkpoint resolution/loading, model/buffer/component hashing,
+  MotionLib expert loading, and runtime target encoding in the project-owned
+  training runtime. The target entrypoints no longer import one another.
+- Removed the confirmed unused `collect_skate_online_replay()` wrapper.
+  The formal `Workspace` collection path and `HuskyBfmOnlineEnv` semantics
+  were unchanged.
+- No vendored file under `train/scripts/isaac_env/humanoidverse/` changed.
+- Numerical regression passed:
+  - target bank JSON byte-identical; target `skate_target_00`, frames `24-31`,
+    physical fields, and all three latent fingerprints identical;
+  - one target-conditioned rollout had identical reset, first-action,
+    transition, and physical-metric fingerprints;
+  - canonical BFM evaluation had identical 512-transition metrics and
+    behavior coverage.
+- Training performed: no. Optimizer steps: `0`.

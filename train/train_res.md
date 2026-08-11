@@ -334,3 +334,24 @@ Base-only and Base+Skate update100 have similar target forward response.
 The current preflight does **not support** a downstream physical advantage
 for Base+Skate over Base-only. Native termination, Base retention, Qaux, and
 full FB-CPR-Aux training remain outside this evaluation.
+
+## M2.4-0 Project Code Cleanup
+
+This is an engineering-only refactor record, not a training experiment.
+
+- Date: `2026-08-11`
+- Training: `NO`
+- Optimizer steps: `0`
+- Model, loss, replay, sampling, observation, action, termination, reward,
+  metrics, and evaluation protocol behavior: unchanged.
+- Current entrypoints:
+  - `train/scripts/build_target_bank.py`
+  - `train/scripts/eval_target.py`
+  - `train/scripts/evaluate_skate_bfm.py` (historically retained filename)
+- The two target entrypoints no longer import each other or the canonical
+  evaluator. Shared checkpoint, hash, expert MotionLib, and target-encoding
+  operations use the project-owned training runtime.
+- Vendored BFM-Zero source changes: `0`.
+- Regression status: target-bank byte equality, target rollout fingerprint
+  equality, and canonical 512-transition evaluator numerical equality:
+  `PASS`.

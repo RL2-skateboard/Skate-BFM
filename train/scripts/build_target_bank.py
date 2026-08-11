@@ -6,17 +6,14 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import sys
 from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import torch
-from torch.utils._pytree import tree_map
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -24,13 +21,14 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 sys.path.insert(0, str(REPOSITORY_ROOT / "husky_sim" / "src"))
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
-from evaluate_skate_bfm import build_frozen_agent, data_fingerprint
 from train_skate_bfm import (
-    _checkpoint_model_path,
-    _state_fingerprint,
-    build_motion_only_expert_context,
-    build_train_config,
-    load_expert_trajectories_from_motion_lib,
+    checkpoint_model_path,
+    encode_target,
+    hash_data,
+    hash_file,
+    hash_params,
+    load_expert,
+    load_frozen_agent,
 )
 
 
@@ -41,14 +39,6 @@ DEFAULT_EXPERT_MOTION = (
 DEFAULT_OUTPUT_DIR = (
     REPOSITORY_ROOT / "train/dataset/skate-expert-pose/target_bank"
 )
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,18 +116,6 @@ def quaternion_yaw(quaternion: np.ndarray) -> np.ndarray:
     return np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
-def vector_summary(value: np.ndarray) -> dict[str, Any]:
-    value = np.asarray(value)
-    return {
-        "shape": list(value.shape),
-        "dtype": str(value.dtype),
-        "min": float(value.min()),
-        "max": float(value.max()),
-        "mean": float(value.mean()),
-        "finite": bool(np.isfinite(value).all()),
-    }
-
-
 def phase_runs(phase_ids: np.ndarray, mapping: dict[str, Any]) -> list[dict[str, Any]]:
     result = []
     start = 0
@@ -202,57 +180,6 @@ def physical_window(
     }
 
 
-def load_expert_observations(
-    agent,
-    expert_path: Path,
-) -> dict[str, torch.Tensor]:
-    from omegaconf import OmegaConf
-
-    if not OmegaConf.has_resolver("eval"):
-        OmegaConf.register_new_resolver("eval", lambda expression: eval(expression))
-    cfg = build_train_config()
-    context = build_motion_only_expert_context(cfg.env)
-    motion_cfg = copy.deepcopy(context.config.robot.motion)
-    motion_cfg.motion_file = str(expert_path)
-    motion_lib = type(context._motion_lib)(
-        motion_cfg,
-        num_envs=1,
-        device=context.device,
-    )
-    expert_env = SimpleNamespace(
-        _motion_lib=motion_lib,
-        num_envs=1,
-        dt=context.dt,
-        device=context.device,
-        default_dof_pos=context.default_dof_pos.to(context.device),
-        gravity_vec=context.gravity_vec.to(context.device),
-        config=context.config,
-    )
-    buffer = load_expert_trajectories_from_motion_lib(
-        expert_env,
-        agent.cfg,
-        device=agent.device,
-    )
-    storage = buffer.storage["observation"]
-    return {
-        key: value.detach().cpu()
-        for key, value in storage.items()
-        if key in {"state", "last_action", "privileged_state"}
-    }
-
-
-def encode_target(agent, observations: dict[str, torch.Tensor]) -> np.ndarray:
-    device = agent.device
-    next_obs = tree_map(lambda value: value.to(device), observations)
-    with torch.no_grad():
-        normalized = agent._model._normalize(next_obs)
-        backward = agent._model._backward_map(normalized)
-        z = agent._model.project_z(backward.mean(dim=0, keepdim=True))[0]
-    if not torch.isfinite(z).all():
-        raise ValueError("Target latent contains NaN/Inf.")
-    return z.detach().cpu().numpy().astype(np.float32)
-
-
 def latent_record(agent, observations: dict[str, torch.Tensor]) -> dict[str, Any]:
     z = encode_target(agent, observations)
     return {
@@ -260,13 +187,95 @@ def latent_record(agent, observations: dict[str, torch.Tensor]) -> dict[str, Any
         "shape": list(z.shape),
         "dtype": str(z.dtype),
         "norm": float(np.linalg.norm(z)),
-        "fingerprint": data_fingerprint(z),
+        "fingerprint": hash_data(z),
     }
 
 
 def cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
     denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
     return float(np.dot(left, right) / denominator) if denominator else 0.0
+
+
+def select_target(
+    arrays: dict[str, np.ndarray],
+    window_length: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select the fixed physically stable forward-push window."""
+
+    frame_count = len(arrays["sim_time"])
+    candidates = [
+        physical_window(arrays, start, start + window_length)
+        for start in range(0, frame_count - window_length + 1, window_length)
+    ]
+    eligible = [
+        item
+        for item in candidates
+        if abs(item["board_lateral_velocity_mean_mps"]) <= 0.01
+        and abs(item["board_heading_delta_deg"]) <= 1.0
+        and item["fall_frames"] == 0
+    ]
+    if not eligible:
+        raise ValueError("No physically stable target window was found.")
+    selected = max(
+        eligible,
+        key=lambda item: item["board_forward_velocity_mean_mps"],
+    )
+    return candidates, selected
+
+
+def encode_checkpoints(
+    checkpoints: dict[str, Path],
+    expert_path: Path,
+    start: int,
+    end: int,
+) -> tuple[dict[str, dict[str, Any]], dict[str, float]]:
+    """Encode one target window for each frozen checkpoint."""
+
+    records: dict[str, dict[str, Any]] = {}
+    observations = None
+    for name, checkpoint in checkpoints.items():
+        agent, _ = load_frozen_agent(checkpoint)
+        if observations is None:
+            all_observations = load_expert(agent, expert_path)
+            observations = {
+                key: value[start:end]
+                for key, value in all_observations.items()
+            }
+        parameters_before = hash_params(agent._model)
+        latent = latent_record(agent, observations)
+        parameters_after = hash_params(agent._model)
+        if parameters_before != parameters_after:
+            raise RuntimeError("Target inference changed model parameters.")
+        records[name] = {
+            "checkpoint": str(checkpoint),
+            "checkpoint_model_sha256": hash_file(
+                checkpoint_model_path(checkpoint)
+            ),
+            "parameter_fingerprint_before": parameters_before,
+            "parameter_fingerprint_after": parameters_after,
+            "parameters_changed": False,
+            "latent": latent,
+        }
+        del agent
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    values = {
+        name: np.asarray(record["latent"]["values"], dtype=np.float32)
+        for name, record in records.items()
+    }
+    cosine = {
+        f"{left}_vs_{right}": cosine_similarity(
+            values[left],
+            values[right],
+        )
+        for left, right in (
+            ("official_bfm0", "base_only_update100"),
+            ("official_bfm0", "base_skate_update100"),
+            ("base_only_update100", "base_skate_update100"),
+        )
+    }
+    return records, cosine
 
 
 def main() -> int:
@@ -292,24 +301,7 @@ def main() -> int:
         else {}
     )
     phase_mapping = raw_metadata.get("phase_mapping", {})
-    candidates = [
-        physical_window(arrays, start, start + args.window_length)
-        for start in range(0, frame_count - args.window_length + 1, args.window_length)
-    ]
-    # Choose one stable forward window after startup, with low lateral drift.
-    eligible = [
-        item
-        for item in candidates
-        if abs(item["board_lateral_velocity_mean_mps"]) <= 0.01
-        and abs(item["board_heading_delta_deg"]) <= 1.0
-        and item["fall_frames"] == 0
-    ]
-    if not eligible:
-        raise ValueError("No physically stable target window was found.")
-    selected = max(
-        eligible,
-        key=lambda item: item["board_forward_velocity_mean_mps"],
-    )
+    candidates, selected = select_target(arrays, args.window_length)
     target_start = int(selected["start_frame"])
     target_end = int(selected["end_frame"]) + 1
 
@@ -322,56 +314,12 @@ def main() -> int:
         if not path.exists():
             raise FileNotFoundError(f"{name} checkpoint not found: {path}")
 
-    latent_by_checkpoint: dict[str, dict[str, Any]] = {}
-    observations = None
-    for name, checkpoint in checkpoint_paths.items():
-        agent, _ = build_frozen_agent(checkpoint)
-        if observations is None:
-            all_observations = load_expert_observations(agent, expert_path)
-            observations = {
-                key: value[target_start:target_end]
-                for key, value in all_observations.items()
-            }
-        parameter_fingerprint_before = _state_fingerprint(
-            agent._model,
-            parameters=True,
-        )
-        latent = latent_record(agent, observations)
-        parameter_fingerprint_after = _state_fingerprint(
-            agent._model,
-            parameters=True,
-        )
-        if parameter_fingerprint_before != parameter_fingerprint_after:
-            raise RuntimeError("Target inference changed model parameters.")
-        latent_by_checkpoint[name] = {
-            "checkpoint": str(checkpoint),
-            "checkpoint_model_sha256": sha256_file(
-                _checkpoint_model_path(checkpoint)
-            ),
-            "parameter_fingerprint_before": parameter_fingerprint_before,
-            "parameter_fingerprint_after": parameter_fingerprint_after,
-            "parameters_changed": False,
-            "latent": latent,
-        }
-        del agent
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    latent_values = {
-        name: np.asarray(record["latent"]["values"], dtype=np.float32)
-        for name, record in latent_by_checkpoint.items()
-    }
-    pairwise_cosine = {
-        f"{left}_vs_{right}": cosine_similarity(
-            latent_values[left],
-            latent_values[right],
-        )
-        for left, right in (
-            ("official_bfm0", "base_only_update100"),
-            ("official_bfm0", "base_skate_update100"),
-            ("base_only_update100", "base_skate_update100"),
-        )
-    }
+    latent_by_checkpoint, pairwise_cosine = encode_checkpoints(
+        checkpoint_paths,
+        expert_path,
+        target_start,
+        target_end,
+    )
     public_latents = copy.deepcopy(latent_by_checkpoint)
     for record in public_latents.values():
         record["latent"].pop("values", None)
@@ -478,15 +426,15 @@ def main() -> int:
         },
         "source": {
             "raw_rollout": str(raw_path),
-            "raw_rollout_sha256": sha256_file(raw_path),
+            "raw_rollout_sha256": hash_file(raw_path),
             "raw_metadata": str(raw_metadata_path),
             "raw_metadata_sha256": (
-                sha256_file(raw_metadata_path)
+                hash_file(raw_metadata_path)
                 if raw_metadata_path.is_file()
                 else None
             ),
             "expert_motion": str(expert_path),
-            "expert_motion_sha256": sha256_file(expert_path),
+            "expert_motion_sha256": hash_file(expert_path),
             "motion_key": "skate/push/m1_1_rollout_001_push_000",
             "source_segment": raw_metadata.get("episode_id"),
             "raw_phase_runs": phase_runs(arrays["phase_id"], phase_mapping),

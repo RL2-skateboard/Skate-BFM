@@ -16,7 +16,6 @@ import platform
 from pathlib import Path
 from typing import Any
 
-import gymnasium
 import mujoco
 import numpy as np
 import torch
@@ -31,10 +30,12 @@ sys.path.insert(0, str(SCRIPT_DIRECTORY))
 from data_collection.rollout_split import randomize_husky_play_physics
 from skate_bfm.integration import HuskyBfmOnlineEnv
 from train_skate_bfm import (
-    _checkpoint_model_path,
-    _state_fingerprint,
-    build_train_config,
-    load_pretrained_bfm0_agent,
+    checkpoint_model_path,
+    hash_buffers,
+    hash_data,
+    hash_file,
+    hash_params,
+    load_frozen_agent,
 )
 from humanoidverse.agents.buffers.transition import DictBuffer
 
@@ -68,14 +69,6 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
         handle.write("\n")
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def canonical_json_sha256(payload: Any) -> str:
     encoded = json.dumps(
         payload,
@@ -83,42 +76,6 @@ def canonical_json_sha256(payload: Any) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def data_fingerprint(payload: Any) -> str:
-    digest = hashlib.sha256()
-
-    def update(value: Any, path: str) -> None:
-        digest.update(path.encode("utf-8"))
-        if isinstance(value, dict):
-            digest.update(b"dict")
-            for key in sorted(value):
-                update(value[key], f"{path}/{key}")
-            return
-        if isinstance(value, (list, tuple)):
-            digest.update(type(value).__name__.encode("ascii"))
-            for index, item in enumerate(value):
-                update(item, f"{path}/{index}")
-            return
-        if torch.is_tensor(value):
-            array = value.detach().cpu().contiguous().numpy()
-        elif isinstance(value, np.ndarray):
-            array = np.ascontiguousarray(value)
-        else:
-            digest.update(
-                json.dumps(
-                    value,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
-            return
-        digest.update(str(array.shape).encode("ascii"))
-        digest.update(str(array.dtype).encode("ascii"))
-        digest.update(array.tobytes())
-
-    update(payload, "root")
-    return digest.hexdigest()
 
 
 def git_commit_sha() -> str:
@@ -158,7 +115,7 @@ def source_provenance(protocol_path: Path) -> dict[str, Any]:
     return {
         name: {
             "path": str(path),
-            "sha256": sha256_file(path),
+            "sha256": hash_file(path),
         }
         for name, path in sources.items()
     }
@@ -210,31 +167,25 @@ def checkpoint_provenance(
     checkpoint: Path,
     agent,
 ) -> dict[str, Any]:
-    model_path = _checkpoint_model_path(checkpoint)
+    model_path = checkpoint_model_path(checkpoint)
     config_path = model_path.parent / "config.json"
     init_kwargs_path = model_path.parent / "init_kwargs.json"
     return {
         "resolved_path": str(checkpoint),
         "model": {
             "path": str(model_path),
-            "sha256": sha256_file(model_path),
+            "sha256": hash_file(model_path),
         },
         "config": {
             "path": str(config_path),
-            "sha256": sha256_file(config_path),
+            "sha256": hash_file(config_path),
         },
         "init_kwargs": {
             "path": str(init_kwargs_path),
-            "sha256": sha256_file(init_kwargs_path),
+            "sha256": hash_file(init_kwargs_path),
         },
-        "loaded_parameter_fingerprint": _state_fingerprint(
-            agent._model,
-            parameters=True,
-        ),
-        "loaded_buffer_fingerprint": _state_fingerprint(
-            agent._model,
-            parameters=False,
-        ),
+        "loaded_parameter_fingerprint": hash_params(agent._model),
+        "loaded_buffer_fingerprint": hash_buffers(agent._model),
     }
 
 
@@ -263,36 +214,6 @@ def quaternion_yaw(quaternion: np.ndarray) -> float:
         2.0 * (w * z + x * y),
         1.0 - 2.0 * (y * y + z * z),
     )
-
-
-def observation_space(observation: dict[str, torch.Tensor]) -> gymnasium.spaces.Dict:
-    return gymnasium.spaces.Dict(
-        {
-            key: gymnasium.spaces.Box(
-                low=-np.inf,
-                high=np.inf,
-                shape=tuple(value.shape),
-                dtype=np.float32,
-            )
-            for key, value in observation.items()
-        }
-    )
-
-
-def build_frozen_agent(checkpoint: Path):
-    os.environ["SKATE_ONLINE_ENV"] = "skate"
-    os.environ["SKATE_COLLECT_ONLY"] = "1"
-    cfg = build_train_config()
-    shape_env = HuskyBfmOnlineEnv()
-    try:
-        obs_space = observation_space(shape_env.reset())
-    finally:
-        shape_env.close()
-    agent = cfg.agent.build(obs_space=obs_space, action_dim=29)
-    load_report = load_pretrained_bfm0_agent(agent, checkpoint)
-    agent._model.eval()
-    agent._model.requires_grad_(False)
-    return agent, load_report
 
 
 def physical_metrics(
@@ -383,7 +304,7 @@ def collect_fixed_rollouts(
         env.env.set_reset_joint_offsets(joint_offsets)
         mujoco.mj_setConst(env.env.model, env.env.data)
         observation = env.reset()
-        initial_observation_fingerprint = data_fingerprint(observation)
+        initial_observation_fingerprint = hash_data(observation)
         z = None
         first_z_fingerprint = None
         first_action_fingerprint = None
@@ -405,8 +326,8 @@ def collect_fixed_rollouts(
                         mean=True,
                     )[0]
                 if first_z_fingerprint is None:
-                    first_z_fingerprint = data_fingerprint(z)
-                    first_action_fingerprint = data_fingerprint(action)
+                    first_z_fingerprint = hash_data(z)
+                    first_action_fingerprint = hash_data(action)
                 transition = env.step(
                     action,
                     z,
@@ -678,9 +599,9 @@ def main() -> int:
     random.seed(protocol["protocol_seed"])
     np.random.seed(protocol["protocol_seed"])
     torch.manual_seed(protocol["protocol_seed"])
-    agent, checkpoint_report = build_frozen_agent(checkpoint)
-    parameter_before = _state_fingerprint(agent._model, parameters=True)
-    buffer_before = _state_fingerprint(agent._model, parameters=False)
+    agent, checkpoint_report = load_frozen_agent(checkpoint)
+    parameter_before = hash_params(agent._model)
+    buffer_before = hash_buffers(agent._model)
     provenance = {
         "repository": {
             "git_commit": git_commit_sha(),
@@ -744,15 +665,15 @@ def main() -> int:
         for record in records
     ]
     evaluation_inputs = {
-        "eval_transition_buffer": data_fingerprint(
+        "eval_transition_buffer": hash_data(
             eval_buffer.get_full_buffer()
         ),
         "transition_ids": canonical_json_sha256(transition_ids),
         "fixed_diagnostic_batch_indices": diagnostic_indices.tolist(),
-        "fixed_diagnostic_batch_indices_fingerprint": data_fingerprint(
+        "fixed_diagnostic_batch_indices_fingerprint": hash_data(
             diagnostic_indices
         ),
-        "diagnostic_batch": data_fingerprint(batch),
+        "diagnostic_batch": hash_data(batch),
         "rollouts": {
             rollout["rollout_id"]: rollout["input_fingerprints"]
             for rollout in rollouts
@@ -760,8 +681,8 @@ def main() -> int:
     }
     provenance["evaluation_inputs"] = evaluation_inputs
 
-    parameter_after = _state_fingerprint(agent._model, parameters=True)
-    buffer_after = _state_fingerprint(agent._model, parameters=False)
+    parameter_after = hash_params(agent._model)
+    buffer_after = hash_buffers(agent._model)
     if parameter_before != parameter_after:
         raise RuntimeError("Evaluation mutated model parameters.")
     if buffer_before != buffer_after:

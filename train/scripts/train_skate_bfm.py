@@ -328,7 +328,7 @@ class BaseSkateExpertSampler:
         return getattr(self.expert_base, name)
 
 
-def register_skate_train_replay(replay_buffer: dict, train_skate) -> dict:
+def register_skate_replay(replay_buffer: dict, train_skate) -> dict:
     """Register Skate online replay and retain the official train alias."""
 
     replay_buffer["train_skate"] = train_skate
@@ -336,53 +336,9 @@ def register_skate_train_replay(replay_buffer: dict, train_skate) -> dict:
     return replay_buffer
 
 
-def collect_skate_online_replay(
-    model,
-    *,
-    steps: int = 64,
-    capacity: int | None = None,
-    device: str = "cuda",
-    update_z_every: int = 150,
-) -> tuple[dict, list]:
-    """Collect a bounded frozen-model HUSKY rollout into official DictBuffer."""
+def checkpoint_model_path(checkpoint_dir: Path) -> Path:
+    """Resolve the model file in an official or saved Skate checkpoint."""
 
-    if steps <= 0:
-        raise ValueError("steps must be positive.")
-    if update_z_every <= 0:
-        raise ValueError("update_z_every must be positive.")
-
-    replay_buffer = register_skate_train_replay(
-        {},
-        DictBuffer(capacity=capacity or steps, device="cpu"),
-    )
-    online_env = HuskyBfmOnlineEnv()
-    observation = online_env.reset()
-    z = None
-    transitions = []
-    try:
-        for step in range(steps):
-            if z is None or step % update_z_every == 0:
-                z = model.sample_z(1, device=device)[0]
-            model_observation = {
-                key: value.unsqueeze(0).to(device)
-                for key, value in observation.items()
-            }
-            with torch.no_grad():
-                action_bfm = model.act(model_observation, z.unsqueeze(0), mean=True)[0]
-            transition = online_env.step(
-                action_bfm,
-                z,
-                truncated=step == steps - 1,
-            )
-            replay_buffer["train_skate"].extend(transition.as_buffer_data())
-            transitions.append(transition)
-            observation = transition.next_observation
-    finally:
-        online_env.close()
-    return replay_buffer, transitions
-
-
-def _checkpoint_model_path(checkpoint_dir: Path) -> Path:
     direct_path = checkpoint_dir / "model.safetensors"
     nested_path = checkpoint_dir / "model" / "model.safetensors"
     if direct_path.is_file():
@@ -394,11 +350,8 @@ def _checkpoint_model_path(checkpoint_dir: Path) -> Path:
     )
 
 
-def _state_fingerprint(module: torch.nn.Module, *, parameters: bool) -> str:
-    """Hash model state incrementally without creating a second full model copy."""
-
+def _hash_tensors(tensors) -> str:
     digest = hashlib.sha256()
-    tensors = module.named_parameters() if parameters else module.named_buffers()
     for name, tensor in tensors:
         digest.update(name.encode("utf-8"))
         digest.update(str(tuple(tensor.shape)).encode("ascii"))
@@ -407,7 +360,21 @@ def _state_fingerprint(module: torch.nn.Module, *, parameters: bool) -> str:
     return digest.hexdigest()
 
 
-def _tensor_fingerprint(tensor: torch.Tensor) -> str:
+def hash_params(module: torch.nn.Module) -> str:
+    """Hash module parameters without copying the complete model."""
+
+    return _hash_tensors(module.named_parameters())
+
+
+def hash_buffers(module: torch.nn.Module) -> str:
+    """Hash module buffers without copying the complete model."""
+
+    return _hash_tensors(module.named_buffers())
+
+
+def hash_tensor(tensor: torch.Tensor) -> str:
+    """Hash one tensor by shape, dtype, and values."""
+
     digest = hashlib.sha256()
     digest.update(str(tuple(tensor.shape)).encode("ascii"))
     digest.update(str(tensor.dtype).encode("ascii"))
@@ -415,7 +382,9 @@ def _tensor_fingerprint(tensor: torch.Tensor) -> str:
     return digest.hexdigest()
 
 
-def _data_fingerprint(payload: tp.Any) -> str:
+def hash_data(payload: tp.Any) -> str:
+    """Hash nested JSON-compatible data, NumPy arrays, and tensors."""
+
     digest = hashlib.sha256()
 
     def update(value: tp.Any, path: str) -> None:
@@ -451,7 +420,9 @@ def _data_fingerprint(payload: tp.Any) -> str:
     return digest.hexdigest()
 
 
-def _file_sha256(path: Path) -> str:
+def hash_file(path: Path) -> str:
+    """Return the SHA256 digest of a file."""
+
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -459,34 +430,21 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _component_fingerprints(agent) -> dict[str, str]:
+def hash_components(agent) -> dict[str, str]:
+    """Hash every trainable BFM model component independently."""
+
     model = agent._model
     return {
-        "F": _state_fingerprint(model._forward_map, parameters=True),
-        "B": _state_fingerprint(model._backward_map, parameters=True),
-        "target_F": _state_fingerprint(
-            model._target_forward_map,
-            parameters=True,
-        ),
-        "target_B": _state_fingerprint(
-            model._target_backward_map,
-            parameters=True,
-        ),
-        "Actor": _state_fingerprint(model._actor, parameters=True),
-        "discriminator": _state_fingerprint(
-            model._discriminator,
-            parameters=True,
-        ),
-        "QD": _state_fingerprint(model._critic, parameters=True),
-        "target_QD": _state_fingerprint(
-            model._target_critic,
-            parameters=True,
-        ),
-        "Qaux": _state_fingerprint(model._aux_critic, parameters=True),
-        "target_Qaux": _state_fingerprint(
-            model._target_aux_critic,
-            parameters=True,
-        ),
+        "F": hash_params(model._forward_map),
+        "B": hash_params(model._backward_map),
+        "target_F": hash_params(model._target_forward_map),
+        "target_B": hash_params(model._target_backward_map),
+        "Actor": hash_params(model._actor),
+        "discriminator": hash_params(model._discriminator),
+        "QD": hash_params(model._critic),
+        "target_QD": hash_params(model._target_critic),
+        "Qaux": hash_params(model._aux_critic),
+        "target_Qaux": hash_params(model._target_aux_critic),
     }
 
 
@@ -499,7 +457,7 @@ def _space_signature(space: gymnasium.spaces.Space) -> dict[str, tuple[int, ...]
     }
 
 
-def load_pretrained_bfm0_agent(
+def load_bfm_checkpoint(
     agent,
     checkpoint_dir: Path,
 ) -> dict[str, tp.Any]:
@@ -508,7 +466,7 @@ def load_pretrained_bfm0_agent(
     checkpoint_dir = checkpoint_dir.expanduser().resolve()
     if not checkpoint_dir.is_dir():
         raise FileNotFoundError(f"Official BFM0 checkpoint directory not found: {checkpoint_dir}")
-    model_path = _checkpoint_model_path(checkpoint_dir)
+    model_path = checkpoint_model_path(checkpoint_dir)
     config_path = model_path.parent / "config.json"
     init_kwargs_path = model_path.parent / "init_kwargs.json"
     if not config_path.is_file() or not init_kwargs_path.is_file():
@@ -618,8 +576,8 @@ def load_pretrained_bfm0_agent(
     }
 
 
-def build_motion_only_expert_context(env_cfg: HumanoidVerseIsaacConfig):
-    """Build the vendored MotionLib expert context without IsaacLab."""
+def make_expert_env(env_cfg: HumanoidVerseIsaacConfig):
+    """Build a MotionLib expert environment without IsaacLab."""
 
     import hydra
     from humanoidverse.utils.helpers import pre_process_config
@@ -678,6 +636,91 @@ def build_motion_only_expert_context(env_cfg: HumanoidVerseIsaacConfig):
     )
 
 
+def load_expert(agent, motion_file: str | Path) -> dict[str, torch.Tensor]:
+    """Load BFM observations from one MotionLib file."""
+
+    from omegaconf import OmegaConf
+
+    if not OmegaConf.has_resolver("eval"):
+        OmegaConf.register_new_resolver("eval", lambda expression: eval(expression))
+    env = make_expert_env(build_train_config().env)
+    motion_cfg = copy.deepcopy(env.config.robot.motion)
+    motion_cfg.motion_file = str(motion_file)
+    motion_lib = type(env._motion_lib)(
+        motion_cfg,
+        num_envs=1,
+        device=env.device,
+    )
+    expert_env = SimpleNamespace(
+        _motion_lib=motion_lib,
+        num_envs=1,
+        dt=env.dt,
+        device=env.device,
+        default_dof_pos=env.default_dof_pos.to(env.device),
+        gravity_vec=env.gravity_vec.to(env.device),
+        config=env.config,
+    )
+    buffer = load_expert_trajectories_from_motion_lib(
+        expert_env,
+        agent.cfg,
+        device=agent.device,
+    )
+    storage = buffer.storage["observation"]
+    return {
+        key: value.detach().cpu()
+        for key, value in storage.items()
+        if key in {"state", "last_action", "privileged_state"}
+    }
+
+
+def encode_target(
+    agent,
+    observations: dict[str, torch.Tensor],
+) -> np.ndarray:
+    """Encode an expert window with the checkpoint's normalizer and B map."""
+
+    next_obs = tree_map(
+        lambda value: value.to(agent.device),
+        observations,
+    )
+    with torch.no_grad():
+        normalized = agent._model._normalize(next_obs)
+        backward = agent._model._backward_map(normalized)
+        z = agent._model.project_z(backward.mean(dim=0, keepdim=True))[0]
+    if not torch.isfinite(z).all():
+        raise ValueError("Target latent contains NaN/Inf.")
+    return z.detach().cpu().numpy().astype(np.float32)
+
+
+def load_frozen_agent(checkpoint: Path):
+    """Build the Skate BFM agent, load a checkpoint, and freeze inference."""
+
+    os.environ["SKATE_ONLINE_ENV"] = "skate"
+    os.environ["SKATE_COLLECT_ONLY"] = "1"
+    cfg = build_train_config()
+    env = HuskyBfmOnlineEnv()
+    try:
+        observation = env.reset()
+    finally:
+        env.close()
+    obs_space = gymnasium.spaces.Dict(
+        {
+            key: gymnasium.spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=tuple(value.shape),
+                dtype=np.float32,
+            )
+            for key, value in observation.items()
+        }
+    )
+    agent = cfg.agent.build(obs_space=obs_space, action_dim=29)
+    report = load_bfm_checkpoint(agent, checkpoint)
+    agent._model.eval()
+    agent._model.requires_grad_(False)
+    return agent, report
+
+
 def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_build_kwargs: dict[str, tp.Any]):
     checkpoint_dir = work_dir / CHECKPOINT_DIR_NAME
     checkpoint_time = 0
@@ -704,7 +747,7 @@ def create_agent_or_load_checkpoint(work_dir: Path, cfg: TrainConfig, agent_buil
         agent = cfg.agent.build(**agent_build_kwargs)
         checkpoint_source = "random_initialization"
         if cfg.online_env == "skate":
-            agent.pretrained_load_report = load_pretrained_bfm0_agent(
+            agent.pretrained_load_report = load_bfm_checkpoint(
                 agent,
                 Path(cfg.pretrained_checkpoint),
             )
@@ -857,7 +900,7 @@ class Workspace:
                         "data-only expert context."
                     )
                     expert_loader_env_owner = None
-                    expert_loader_env = build_motion_only_expert_context(
+                    expert_loader_env = make_expert_env(
                         self.cfg.env,
                     )
             else:
@@ -918,7 +961,7 @@ class Workspace:
                 motion_records = skate_motion_lib._motion_data_load
                 expert_skate.source_metadata = {
                     "resolved_path": str(skate_motion_path),
-                    "sha256": _file_sha256(skate_motion_path),
+                    "sha256": hash_file(skate_motion_path),
                     "motion_count": len(motion_records),
                     "frame_count": sum(
                         int(record["dof"].shape[0])
@@ -980,7 +1023,7 @@ class Workspace:
                     capacity=self.cfg.buffer_size,
                     device=self.cfg.buffer_device,
                 )
-        register_skate_train_replay(replay_buffer, train_skate)
+        register_skate_replay(replay_buffer, train_skate)
         if self.training_with_expert_data:
             replay_buffer["expert_base"] = expert_base
             replay_buffer["expert_tracking"] = expert_base
@@ -1602,22 +1645,21 @@ class Workspace:
             for rollout in rollout_reports
             for transition_id in rollout["transition_ids"]
         ]
-        replay_fingerprint = _data_fingerprint(
+        replay_fingerprint = hash_data(
             replay_buffer["train_skate"].get_full_buffer()
         )
-        transition_ids_fingerprint = _data_fingerprint(transition_ids)
-        dynamics_fingerprint = _data_fingerprint(
+        transition_ids_fingerprint = hash_data(transition_ids)
+        dynamics_fingerprint = hash_data(
             [
                 rollout["dynamics_realization"]
                 for rollout in rollout_reports
             ]
         )
-        before = _component_fingerprints(self.agent)
-        normalizer_before = _state_fingerprint(
+        before = hash_components(self.agent)
+        normalizer_before = hash_buffers(
             self.agent._model._obs_normalizer,
-            parameters=False,
         )
-        z_buffer_before = _tensor_fingerprint(self.agent.z_buffer._storage)
+        z_buffer_before = hash_tensor(self.agent.z_buffer._storage)
         metric_history = []
         max_gradient = {"F": 0.0, "B": 0.0}
 
@@ -1654,7 +1696,7 @@ class Workspace:
             metric_history.append(scalar_metrics)
             self.fb_update_calls += 1
 
-        after = _component_fingerprints(self.agent)
+        after = hash_components(self.agent)
         changed = {
             name: before[name] != after[name]
             for name in before
@@ -1667,11 +1709,10 @@ class Workspace:
             if changed[name]:
                 raise RuntimeError(f"Forbidden component changed: {name}.")
 
-        normalizer_after = _state_fingerprint(
+        normalizer_after = hash_buffers(
             self.agent._model._obs_normalizer,
-            parameters=False,
         )
-        z_buffer_after = _tensor_fingerprint(self.agent.z_buffer._storage)
+        z_buffer_after = hash_tensor(self.agent.z_buffer._storage)
         report = {
             "stage": "M2.2b-1",
             "method": "Original FB + Skate",
@@ -1807,14 +1848,8 @@ class Workspace:
 
         self.preflight_report.update(
             {
-                "model_parameters_before": _state_fingerprint(
-                    self.agent._model,
-                    parameters=True,
-                ),
-                "model_buffers_before": _state_fingerprint(
-                    self.agent._model,
-                    parameters=False,
-                ),
+                "model_parameters_before": hash_params(self.agent._model),
+                "model_buffers_before": hash_buffers(self.agent._model),
             }
         )
         print(
@@ -1893,8 +1928,8 @@ class Workspace:
         if self.agent_update_calls != 0:
             raise RuntimeError("Collect-only mode must not call agent.update().")
         self._run_skate_preflight(replay_buffer)
-        model_parameters_after = _state_fingerprint(self.agent._model, parameters=True)
-        model_buffers_after = _state_fingerprint(self.agent._model, parameters=False)
+        model_parameters_after = hash_params(self.agent._model)
+        model_buffers_after = hash_buffers(self.agent._model)
         if model_parameters_after != self.preflight_report["model_parameters_before"]:
             raise RuntimeError("Pretrained model parameters changed during collect-only preflight.")
         if model_buffers_after != self.preflight_report["model_buffers_before"]:

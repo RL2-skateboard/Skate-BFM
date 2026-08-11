@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
 import math
+from collections import deque
 
 import numpy as np
 import torch
