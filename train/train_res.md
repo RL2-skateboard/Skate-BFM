@@ -471,3 +471,90 @@ The ignored detailed report is
 `results/m2.4b-1-reward-audit/summary.json`, with a frame trace and four
 diagnostic figures. Full `FBcprAuxAgent.update()` remains `NOT READY`. Next
 milestone: `M2.4b-2 — Skate Aux Reward Contract`.
+
+## M2.4b-2 Skate Auxiliary Reward Contract
+
+This is a collect-only replay validation, not a training experiment.
+
+- Date: `2026-08-11`
+- Formula authority: vendored BFM-Zero reward definitions.
+- Physical constraint authority: the active HUSKY MuJoCo `MjModel`.
+- Physical mapping: all 23 robot actuators are one-to-one `mjTRN_JOINT`
+  hinge transmissions with finite symmetric force ranges and
+  `gear=[1, 0, 0, 0, 0, 0]`. `qfrc_actuator[joint_dof]` and the derived
+  `forcerange * gear[0]` joint-torque limit are therefore in the same units.
+- Position limits: all 23 HUSKY limits match the mapped upstream positions.
+- Torque-limit provenance difference: `g1_29dof_hard_waist` has two
+  hip-pitch limits at `139` where HUSKY uses `88`; `g1_29dof` instead differs
+  at the two hip-roll limits. These are not used as HUSKY physical limits.
+- Formal replay: `1024` transitions; `train is train_skate`: `YES`.
+- Reward keys: `8 / 8`, all finite `[1024,1]`; reward normalizer updates:
+  `0`.
+- Training, optimizer steps, backward calls, `agent.update`, `update_fb`, and
+  `update_actor`: `0`.
+
+### Raw Contract
+
+The replay stores positive raw penalty magnitudes only. Scaling remains in the
+vendored agent and is unchanged:
+
+| Key | Physical definition | Scale |
+| :--- | :--- | ---: |
+| `penalty_torques` | sum of squared 23D `qfrc_actuator` joint torques | `0.0` |
+| `penalty_action_rate` | squared delta of consecutive clipped executed 23D actions | `-0.1` |
+| `limits_dof_pos` | sum outside the 95% HUSKY joint-position soft range | `-10.0` |
+| `limits_torque` | sum above 95% of HUSKY derived joint torque limits | `0.0` |
+| `penalty_undesired_contact` | binary pelvis/shoulder/hip contact with ground or board above force threshold | `-1.0` |
+| `penalty_feet_ori` | contact-gated world-horizontal foot-normal penalty | `-0.4` |
+| `penalty_ankle_roll` | left plus right ankle-roll joint square | `-4.0` |
+| `penalty_slippage` | dominant-contact surface-relative tangential foot velocity | `-2.0` |
+
+No task, command, balance, steering, board-displacement, or forward reward was
+added. The 29D BFM action remains the replay action; only action-rate uses the
+executed 23D HUSKY action.
+
+### Formal Replay Distribution
+
+| Key | Mean | Std | P50 | P90 | P99 | Max | Nonzero |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `penalty_torques` | 5035.389 | 1272.722 | 4807.947 | 5031.573 | 12397.271 | 18206.387 | 1.000 |
+| `penalty_action_rate` | 0.00994 | 0.06245 | 0.000002 | 0.00442 | 0.21524 | 0.97349 | 0.956 |
+| `limits_dof_pos` | 0.23317 | 0.03750 | 0.25138 | 0.25611 | 0.26182 | 0.33150 | 0.996 |
+| `limits_torque` | 0.00406 | 0.06398 | 0.00000 | 0.00000 | 0.01449 | 1.55018 | 0.018 |
+| `penalty_undesired_contact` | 0.94531 | 0.22737 | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 0.945 |
+| `penalty_feet_ori` | 0.89169 | 0.38899 | 0.81264 | 1.84089 | 1.87563 | 1.93118 | 0.979 |
+| `penalty_ankle_roll` | 0.00892 | 0.00613 | 0.00736 | 0.01380 | 0.03058 | 0.09096 | 1.000 |
+| `penalty_slippage` | 0.03366 | 0.09158 | 0.00741 | 0.08801 | 0.47460 | 1.08866 | 0.979 |
+
+The weighted raw auxiliary diagnostic has mean `-3.73774`, standard deviation
+`0.46718`, P50 `-3.90735`, P90 `-3.54140`, P99 `-1.76675`, and max
+`-0.05905`. It is a sanity metric only; the upstream agent retains the
+weighted-sum implementation and the normalizer was not updated.
+
+### M2.4b-1 Regression
+
+Two independent phase-rich HUSKY policy rollouts replayed with phase-local
+fidelity `PASS`. Production reward computation agreed with the audit for
+action rate, DoF limits, undesired contact, world-horizontal feet orientation,
+ankle roll, and surface-relative slippage across all `350 + 350` frames.
+
+| Rollout | Steer world slip | Production surface-relative slip |
+| :--- | ---: | ---: |
+| left steer | 3.14840 | 0.04082 |
+| right steer | 3.10389 | 0.04815 |
+
+This preserves M2.4b-1's conclusion: world-frame foot velocity is high during
+legitimate board transport, while the production contact-surface-relative
+penalty remains low.
+
+| Readiness judgment | Result |
+| :--- | :--- |
+| Replay | `READY` |
+| Auxiliary reward data | `READY` |
+| Qaux data | `READY` |
+| Actor training interface | `READY` |
+| Native termination | `PARTIAL` |
+| Full `FBcprAuxAgent.update()` | `NO` |
+
+The next blocker is native physical termination. Next milestone:
+`M2.4c — Native Termination Contract`.

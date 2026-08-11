@@ -46,8 +46,12 @@ target-network interfaces, but the replay does not contain the eight
 configured auxiliary reward fields. Full FB-CPR-Aux training is blocked by
 that data contract. M2.4b-1 audited phase-wise reward semantics on raw
 push/transition/left-steer/right-steer policy rollouts and found that original
-world-frame slippage conflicts with board-supported steering. The formal
-replay remains unchanged; M2.4b-2 will define its auxiliary reward contract.
+world-frame slippage conflicts with board-supported steering. M2.4b-2 then
+added the eight raw auxiliary penalties to HUSKY post-step transitions and the
+formal replay. BFM-Zero remains the formula source; active HUSKY MuJoCo
+actuators provide the physical 23D position and torque limits. The auxiliary
+reward data, Qaux data, and Actor training interface are now ready, while
+native termination semantics remain partial and block a full update.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -99,17 +103,19 @@ immutability. It is evaluation-only and makes no optimizer, backward,
 `agent.update`, or `update_fb` calls. Results are summarized in
 [`train_res.md`](train_res.md).
 
-Run the read-only full-training dependency audit:
+Run the M2.4b-2 read-only auxiliary reward-contract audit:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py
 ```
 
 The audit uses the official BFM0 checkpoint, 1024 formal HUSKY transitions,
-and 64 Base plus 64 Skate complete expert sequences. It performs no
-`agent.update()`, update subroutine, optimizer step, backward call, or
-parameter/buffer mutation. Its local JSON output is kept under `results/`;
-the readiness matrix and blocker are retained in [`train_res.md`](train_res.md).
+and 64 Base plus 64 Skate complete expert sequences. It validates all eight
+raw reward tensors as finite `[1024,1]` data, records their distributions, and
+does not update the reward normalizer. It performs no `agent.update()`, update
+subroutine, optimizer step, backward call, or parameter/buffer mutation. Its
+local JSON output is kept under `results/`; the readiness matrix and blocker
+are retained in [`train_res.md`](train_res.md).
 
 Run the phase-wise raw-expert reward diagnostic:
 

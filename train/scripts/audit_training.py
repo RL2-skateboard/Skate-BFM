@@ -1,4 +1,4 @@
-"""Read-only full-training dependency audit for Skate-BFM."""
+"""Read-only Skate replay and auxiliary-reward contract audit."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv
 from torch.utils._pytree import tree_map
 from train_skate_bfm import (
     REPOSITORY_ROOT,
@@ -21,12 +22,12 @@ from train_skate_bfm import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Audit FBcprAux full-update dependencies without training."
+        description="Audit Skate replay and aux rewards without training."
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=REPOSITORY_ROOT / "results" / "m2.4a-training-audit",
+        default=REPOSITORY_ROOT / "results" / "m2.4b-2-reward-contract",
     )
     return parser.parse_args()
 
@@ -51,6 +52,60 @@ def tree_info(value: Any) -> Any:
 def require_finite(name: str, value: torch.Tensor) -> None:
     if not torch.isfinite(value).all():
         raise RuntimeError(f"{name} produced NaN or Inf.")
+
+
+def aux_reward_statistics(
+    replay_buffer: dict,
+    expected_transition_count: int,
+    scaling: dict[str, float],
+) -> dict[str, Any]:
+    full_replay = replay_buffer["train"].get_full_buffer()
+    aux_rewards = full_replay.get("aux_rewards")
+    if not isinstance(aux_rewards, dict) or tuple(aux_rewards) != AUX_REWARD_KEYS:
+        raise RuntimeError("Formal Skate replay is missing the 8-key aux reward contract.")
+
+    report = {}
+    weighted_raw_aux = torch.zeros(
+        expected_transition_count,
+        1,
+        dtype=torch.float32,
+    )
+    for name in AUX_REWARD_KEYS:
+        values = aux_rewards[name]
+        if tuple(values.shape) != (expected_transition_count, 1):
+            raise RuntimeError(
+                f"{name} has shape {tuple(values.shape)}, expected "
+                f"({expected_transition_count}, 1)."
+            )
+        require_finite(f"aux_rewards.{name}", values)
+        weighted_raw_aux += values * float(scaling[name])
+        report[name] = {
+            "shape": list(values.shape),
+            "mean": float(values.mean()),
+            "std": float(values.std(unbiased=False)),
+            "p50": float(torch.quantile(values, 0.50)),
+            "p90": float(torch.quantile(values, 0.90)),
+            "p99": float(torch.quantile(values, 0.99)),
+            "max": float(values.max()),
+            "nonzero_fraction": float((values.abs() > 1e-8).float().mean()),
+        }
+    require_finite("weighted_raw_aux", weighted_raw_aux)
+    return {
+        "keys": list(AUX_REWARD_KEYS),
+        "statistics": report,
+        "weighted_raw_aux": {
+            "mean": float(weighted_raw_aux.mean()),
+            "std": float(weighted_raw_aux.std(unbiased=False)),
+            "p50": float(torch.quantile(weighted_raw_aux, 0.50)),
+            "p90": float(torch.quantile(weighted_raw_aux, 0.90)),
+            "p99": float(torch.quantile(weighted_raw_aux, 0.99)),
+            "max": float(weighted_raw_aux.max()),
+            "nonzero_fraction": float(
+                (weighted_raw_aux.abs() > 1e-8).float().mean()
+            ),
+        },
+        "normalizer_updated": False,
+    }
 
 
 def target_pair_info(source: tuple, target: tuple) -> dict[str, Any]:
@@ -356,27 +411,43 @@ def main() -> int:
         raise RuntimeError("Collect-only Workspace did not return replay buffers.")
 
     runtime_report = audit_networks(workspace, replay_buffer)
+    physical_env = HuskyLiteEnv()
+    try:
+        physical_actuators = physical_env.physical_actuator_report
+    finally:
+        physical_env.close()
+    aux_report = aux_reward_statistics(
+        replay_buffer,
+        expected_transition_count=1024,
+        scaling=dict(cfg.agent.aux_rewards_scaling),
+    )
     report = {
-        "milestone": "M2.4a Full Training Dependency Audit",
+        "milestone": "M2.4b-2 Skate Auxiliary Reward Contract",
         "resolved_config": config_report,
         "checkpoint": workspace.agent.pretrained_load_report,
         "runtime": runtime_report,
+        "aux_reward_contract": {
+            "reward_semantics_source": "vendored BFM-Zero",
+            "physical_constraint_source": "HUSKY MuJoCo runtime",
+            "physical_actuators": physical_actuators,
+            "replay": aux_report,
+        },
         "readiness": {
             "expert": "READY",
-            "replay": "PARTIAL",
+            "replay": "READY",
             "termination": "PARTIAL",
-            "aux_reward_data": "BLOCKED",
+            "aux_reward_data": "READY",
             "discriminator": "READY",
             "F_B": "READY",
             "main_critic_QD": "READY",
             "Qaux_network": "READY",
-            "Qaux_data": "BLOCKED",
-            "Actor_training_interface": "BLOCKED",
+            "Qaux_data": "READY",
+            "Actor_training_interface": "READY",
             "target_networks": "READY",
             "normalizers": "READY",
             "representation_training_ready": True,
             "critic_discriminator_interface_ready": True,
-            "actor_training_interface_ready": False,
+            "actor_training_interface_ready": True,
             "full_FBcprAux_update_ready": False,
         },
         "prohibited_calls": {
@@ -390,24 +461,23 @@ def main() -> int:
             "update_discriminator_calls": 0,
         },
         "hard_blocker": (
-            "Configured Skate auxiliary reward fields are absent from the "
-            "formal train replay, so FBcprAuxAgent.update() fails at "
-            "train_batch['aux_rewards'] before Qaux and Actor updates."
+            "Native HUSKY physical termination is still unresolved. "
+            "Full FBcprAuxAgent.update() remains prohibited in this audit."
         ),
         "performance_limitation": (
             "The Skate expert source contains one 50-frame forward-push "
             "motion; it supports a technical feasibility audit but not final "
             "skateboarding skill coverage."
         ),
-        "next_milestone": "M2.4b — Skate Auxiliary Reward Contract",
+        "next_milestone": "M2.4c — Native Termination Contract",
     }
     report_path = output_dir / "training_readiness.json"
     with report_path.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, sort_keys=True)
         handle.write("\n")
-    print(f"M2.4a audit report: {report_path}")
+    print(f"M2.4b-2 reward-contract report: {report_path}")
     print("Full FBcprAux update ready: NO")
-    print("Next milestone: M2.4b — Skate Auxiliary Reward Contract")
+    print("Next milestone: M2.4c — Native Termination Contract")
     return 0
 
 

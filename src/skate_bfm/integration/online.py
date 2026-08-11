@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from skate_husky import HuskyLiteEnv
+from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv
 
 from skate_bfm.integration.actions import (
     Bfm0ToHusky23,
@@ -20,6 +20,7 @@ class SkateOnlineTransition:
     action_bfm: torch.Tensor
     action_husky: torch.Tensor
     next_observation: dict[str, torch.Tensor]
+    aux_rewards: dict[str, float]
     terminated: bool
     truncated: bool
     step_count: int
@@ -34,6 +35,10 @@ class SkateOnlineTransition:
             "action": self.action_bfm.unsqueeze(0),
             "z": self.z.unsqueeze(0),
             "step_count": torch.tensor([[self.step_count]], dtype=torch.int64),
+            "aux_rewards": {
+                name: torch.tensor([[self.aux_rewards[name]]], dtype=torch.float32)
+                for name in AUX_REWARD_KEYS
+            },
             "next": {
                 "observation": {
                     key: value.unsqueeze(0)
@@ -95,12 +100,16 @@ class HuskyBfmOnlineEnv:
         action_husky = self.action_adapter(action_bfm)
         raw_next = self.env.step(action_husky.numpy())
         next_observation = self.observation_adapter(raw_next, action_bfm)
+        aux_rewards = self.env.last_aux_rewards
+        if tuple(aux_rewards) != AUX_REWARD_KEYS:
+            raise RuntimeError("HUSKY auxiliary reward contract is incomplete.")
         transition = SkateOnlineTransition(
             observation=self._observation,
             z=z,
             action_bfm=action_bfm,
             action_husky=action_husky,
             next_observation=next_observation,
+            aux_rewards=aux_rewards,
             terminated=False,
             truncated=bool(truncated),
             step_count=self._step_count,

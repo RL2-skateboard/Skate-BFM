@@ -39,7 +39,11 @@ contract. M2.4b-1 then audited the eight original auxiliary reward semantics
 across recorded push, transition, left-steer, right-steer, and return phases.
 The audit found that world-frame slippage systematically penalizes feet moving
 with the skateboard, while surface-relative slippage removes that steer-phase
-conflict. The auxiliary reward contract remains the next blocker.
+conflict. M2.4b-2 implemented the eight-key raw auxiliary reward contract in
+the HUSKY MuJoCo runtime and formal 1024-transition replay. BFM-Zero remains
+the source of reward formulas; HUSKY's active MuJoCo model is the source of
+its 23 physical joint and torque constraints. Full training remains blocked
+only by native termination semantics, the next M2.4c milestone.
 Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
@@ -88,18 +92,18 @@ injection. The generated JSON result is kept under the ignored `results/`
 directory; the summarized tables and boundary checks are recorded in
 [`train/train_res.md`](train/train_res.md).
 
-Run the M2.4a read-only full-training dependency audit:
+Run the M2.4b-2 read-only auxiliary reward-contract audit:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py
 ```
 
-This builds the formal 1024-transition collect-only Skate replay, samples a
-1024-item 50/50 Base+Skate expert batch, and performs forward-only checks for
-the discriminator, F/B, QD, Qaux, Actor, and target networks. It performs no
-training, optimizer step, backward call, or model-state mutation. The local
-JSON report is written under ignored `results/`; the retained conclusion is
-recorded in [`train/train_res.md`](train/train_res.md).
+This builds the formal 1024-transition collect-only Skate replay, validates the
+eight raw auxiliary reward fields and their distributions, then performs
+forward-only checks for the discriminator, F/B, QD, Qaux, Actor, and targets.
+It does not call a reward normalizer, training update, optimizer step, or
+backward. The local JSON report is written under ignored `results/`; the
+retained conclusion is recorded in [`train/train_res.md`](train/train_res.md).
 
 Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
 

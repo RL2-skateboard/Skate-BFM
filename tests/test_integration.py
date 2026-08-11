@@ -1,9 +1,15 @@
+import mujoco
 import numpy as np
 import pytest
 import torch
-from skate_husky import HuskyLiteEnv
+from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv
+from skate_husky.lite_env import (
+    contact_tangential_speed,
+    world_horizontal_orientation_penalty,
+)
 
 from skate_bfm.integration.actions import BFM0_JOINTS, HUSKY_JOINTS, Bfm0ToHusky23
+from skate_bfm.integration.online import HuskyBfmOnlineEnv
 from skate_bfm.runner import run_smoke
 
 
@@ -65,3 +71,85 @@ def test_husky_reset_applies_configured_joint_offsets() -> None:
 def test_infinite_smoke_requires_viewer() -> None:
     with pytest.raises(ValueError, match="viewer=True"):
         run_smoke(steps=0)
+
+
+def test_husky_aux_reward_contract_uses_physical_actuators() -> None:
+    env = HuskyLiteEnv()
+    try:
+        env.reset()
+        assert env.last_aux_rewards == {name: 0.0 for name in AUX_REWARD_KEYS}
+
+        action = np.full(23, 0.2, dtype=np.float32)
+        env.step(action)
+        rewards = env.last_aux_rewards
+    finally:
+        env.close()
+
+    assert tuple(rewards) == AUX_REWARD_KEYS
+    assert all(np.isfinite(value) and value >= 0.0 for value in rewards.values())
+    assert np.isclose(rewards["penalty_action_rate"], 23 * 0.2**2)
+    assert len(env.physical_actuator_report) == 23
+    for item in env.physical_actuator_report:
+        assert item["actuator_name"] == item["joint_name"]
+        assert item["transmission_type"] == "mjTRN_JOINT"
+        assert item["force_limited"] is True
+        assert item["derived_joint_torque_limit"] > 0.0
+
+
+def test_aux_action_rate_uses_executed_husky_action_without_wrists() -> None:
+    env = HuskyBfmOnlineEnv()
+    try:
+        env.reset()
+        action = torch.zeros(29)
+        action[19:22] = 1.0
+        action[26:29] = -1.0
+        transition = env.step(action, torch.zeros(256), truncated=True)
+    finally:
+        env.close()
+
+    assert torch.equal(transition.action_husky, torch.zeros(23))
+    assert transition.aux_rewards["penalty_action_rate"] == 0.0
+    buffer_data = transition.as_buffer_data()
+    assert tuple(buffer_data["aux_rewards"]) == AUX_REWARD_KEYS
+    assert {
+        name: tuple(value.shape)
+        for name, value in buffer_data["aux_rewards"].items()
+    } == {name: (1, 1) for name in AUX_REWARD_KEYS}
+
+
+def test_surface_relative_slippage_and_world_orientation_formulas() -> None:
+    world_velocity = np.array((1.0, 0.0, 0.0))
+    board_velocity = np.array((1.0, 0.0, 0.0))
+
+    assert contact_tangential_speed(np.zeros(3), np.array((0.0, 0.0, 1.0))) == 0.0
+    assert np.linalg.norm(world_velocity) > 0.0
+    assert contact_tangential_speed(
+        world_velocity - board_velocity,
+        np.array((0.0, 0.0, 1.0)),
+    ) == 0.0
+    assert contact_tangential_speed(
+        np.array((0.5, 0.0, 0.0)),
+        np.array((0.0, 0.0, 1.0)),
+    ) == 0.5
+    assert world_horizontal_orientation_penalty(
+        np.array((0.0, 0.0, 1.0))
+    ) == 0.0
+    assert world_horizontal_orientation_penalty(
+        np.array((1.0, 0.0, 0.0))
+    ) == 1.0
+
+
+def test_ankle_roll_aux_reward_is_squared_joint_sum() -> None:
+    env = HuskyLiteEnv()
+    try:
+        env.reset()
+        left = env.model.joint("robot/left_ankle_roll_joint")
+        right = env.model.joint("robot/right_ankle_roll_joint")
+        env.data.qpos[left.qposadr[0]] = 0.2
+        env.data.qpos[right.qposadr[0]] = -0.3
+        mujoco.mj_forward(env.model, env.data)
+        reward = env._compute_aux_rewards()["penalty_ankle_roll"]
+    finally:
+        env.close()
+
+    assert np.isclose(reward, 0.2**2 + (-0.3) ** 2)

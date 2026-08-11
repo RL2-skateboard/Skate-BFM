@@ -1145,3 +1145,157 @@ and nonzero fraction for every trace field are in the generated JSON.
 - Aux reward diagnostics added: `YES`.
 - Evaluation protocol changed: `NO`.
 - Training performed: `NO`.
+
+## 21. M2.4b-2 Skate Auxiliary Reward Contract
+
+- Date: 2026-08-11
+- Status: `completed_collect_only_validation`
+- Scope: add the eight upstream-required raw auxiliary penalties to HUSKY
+  post-step transitions and formal Skate replay. No task reward, model update,
+  optimizer step, backward pass, termination change, or reward-normalizer
+  update was performed.
+- Reward formula authority: vendored BFM-Zero.
+- Physical position and torque constraint authority: the active HUSKY MuJoCo
+  `MjModel`, queried at runtime.
+
+### Runtime Physical Mapping
+
+All 23 HUSKY robot actuators passed fail-closed validation:
+
+- one named actuator maps to one named hinge joint;
+- transmission type is `mjTRN_JOINT`;
+- `gear=[1, 0, 0, 0, 0, 0]`;
+- force limiting is enabled with finite symmetric force ranges;
+- `qfrc_actuator[joint_dof]` is therefore the same physical generalized-torque
+  quantity as the derived `forcerange * gear[0]` joint limit.
+
+All 23 physical HUSKY position ranges match their name-mapped upstream G1
+position ranges. The upstream torque YAML files are not physical-limit sources:
+`g1_29dof_hard_waist` differs at both hip-pitch limits (`139` upstream versus
+`88` HUSKY), while `g1_29dof` differs at both hip-roll limits (`88` upstream
+versus `139` HUSKY). HUSKY runtime limits are authoritative for the physical
+23D reward, so neither mismatch is used as a fallback or blocker.
+
+### Implemented Contract
+
+- `penalty_torques`: sum of squared actual 23D `qfrc_actuator` torques.
+- `penalty_action_rate`: sum of squared current minus previous executed,
+  clipped 23D normalized HUSKY actions; previous action resets to zeros.
+- `limits_dof_pos`: 95% soft-range violation over the actual 23 HUSKY
+  position ranges.
+- `limits_torque`: 95% derived actual 23D joint-torque-limit violation.
+- `penalty_undesired_contact`: binary force-thresholded pelvis/shoulder/hip
+  contact with ground or skateboard. Foot-ground and foot-board contact are
+  allowed.
+- `penalty_feet_ori`: original, contact-gated world-horizontal foot-normal
+  penalty.
+- `penalty_ankle_roll`: original squared left plus right ankle-roll position.
+- `penalty_slippage`: dominant per-foot contact's surface-relative tangential
+  velocity. Ground is stationary; board velocity is evaluated at the actual
+  contact point from the board surface body.
+
+Raw penalty values are positive and unscaled in the environment and replay.
+The upstream agent still owns the weighted sum. Existing scales remain:
+action rate `-0.1`, feet orientation `-0.4`, ankle roll `-4.0`, DoF limit
+`-10.0`, slippage `-2.0`, undesired contact `-1.0`, torque `0.0`, and torque
+limit `0.0`.
+
+### Transition and Replay Validation
+
+- `HuskyLiteEnv.reset()` clears previous executed action and returns a
+  zero-valued 8-key auxiliary dictionary.
+- `HuskyLiteEnv.step()` applies the action, advances MuJoCo, computes the raw
+  post-step penalties, then advances the previous-action state.
+- `SkateOnlineTransition` stores the 8-key reward snapshot without changing
+  observation, 29D replay action, 23D executed action, z, or truncation
+  semantics.
+- `as_buffer_data()` writes every key as a float `[1,1]` tensor.
+- Formal collect-only replay: `1024` transitions; `train is train_skate`:
+  `YES`; all eight sampled fields are finite `[1024,1]`.
+- The complete distributions and weighted raw sanity statistic are in
+  [`train_res.md`](train_res.md); the ignored machine-readable report is
+  `results/m2.4b-2-reward-contract/training_readiness.json`.
+
+### M2.4b-1 Regression
+
+The two phase-rich HUSKY raw policy rollouts were replayed with phase-local
+fidelity `PASS`. Production and audit calculations agreed over all 700 frames
+for action rate, DoF limit, undesired contact, world-horizontal feet
+orientation, ankle roll, and surface-relative slippage.
+
+- Left steer: world slip `3.14840`; production surface-relative slip
+  `0.04082`.
+- Right steer: world slip `3.10389`; production surface-relative slip
+  `0.04815`.
+
+The historical raw policy archive contains unclipped controls, so the
+state-by-state regression reproduces those original targets to recover its
+post-step contact state while comparing action-rate with the new clipped 23D
+production convention. This preserves the M2.4b-1 conclusion without changing
+the formal Skate runtime action contract.
+
+### Code Change Summary
+
+1. `husky_sim/src/skate_husky/lite_env.py`
+
+   - Changed: added fail-closed physical actuator mapping and post-step
+     eight-key raw auxiliary reward calculation.
+   - Why: formal Skate replay requires physical HUSKY reward data.
+   - Original logic: environment exposed only observations and last action.
+   - New logic: reset clears reward/action state; step records original BFM
+     penalties with surface-relative slippage and HUSKY physical constraints.
+   - Algorithm behavior changed: `YES`, replay now has auxiliary reward data.
+   - Affected module: HUSKY MuJoCo runtime and training data collection.
+
+2. `src/skate_bfm/integration/online.py`
+
+   - Changed: added an auxiliary reward snapshot to Skate online transitions
+     and buffer serialization.
+   - Why: preserve post-step environment penalties with their transition.
+   - Original logic: no `aux_rewards` replay field.
+   - New logic: all eight keys are serialized as `[1,1]` tensors.
+   - Algorithm behavior changed: `YES`, replay schema now contains rewards.
+   - Affected module: HUSKY-to-BFM online replay boundary.
+
+3. `train/scripts/audit_training.py` and `train/scripts/audit_rewards.py`
+
+   - Changed: added read-only 1024-replay reward distributions, physical
+     actuator reporting, and production-versus-phase-audit regression.
+   - Why: validate the reward contract without training.
+   - Original logic: reward fields were absent and phase audit was
+     diagnostic-only.
+   - New logic: collect-only replay and phase-rich states validate production
+     reward calculations.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: read-only validation only.
+
+4. `tests/test_integration.py`, `README.md`, `train/README.md`,
+   `train/train_log.md`, `train/train_res.md`, and progress SVGs
+
+   - Changed: added contract regression tests and synchronized project status.
+   - Why: retain reproducible evidence and the current readiness boundary.
+   - Original logic: auxiliary reward data was blocked.
+   - New logic: replay/Qaux/Actor interfaces are ready; termination is the
+     remaining blocker.
+   - Algorithm behavior changed: `NO` for documentation and tests.
+   - Affected module: validation and documentation.
+
+### Overall Code Change Summary
+
+- Model architecture changed: `NO`.
+- Loss changed: `NO`.
+- Optimizer behavior changed: `NO`.
+- Training loop changed: `NO`.
+- Expert sampling changed: `NO`.
+- Online latent sampling changed: `NO`.
+- Exploration changed: `NO`.
+- Replay semantics changed: `YES`, real `aux_rewards` are stored.
+- Observation format changed: `NO`.
+- Action format changed: `NO`.
+- Termination semantics changed: `NO`.
+- Aux reward training semantics changed: `YES`, physical Skate reward
+  contract added with contact-surface-relative slippage.
+- Aux reward scaling changed: `NO`.
+- Evaluation protocol changed: `NO`.
+- Training performed: `NO`.
+- Next milestone: `M2.4c — Native Termination Contract`.

@@ -19,6 +19,7 @@ import yaml
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from skate_husky import HuskyLiteEnv  # noqa: E402
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -775,6 +776,142 @@ def evaluate_rollout(
     }
 
 
+def production_reward_regression(
+    rollout: RawRollout,
+    audit_trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compare production HUSKY penalties with the M2.4b-1 audit equations."""
+
+    env = HuskyLiteEnv(
+        xml_path=rollout.metadata["robot_xml"],
+        control_dt=float(rollout.metadata["dt"]),
+    )
+    try:
+        # Match the raw rollout's recorded HUSKY solver settings for this
+        # state-by-state regression without changing production defaults.
+        env.model.opt.timestep = 0.005
+        env.model.opt.iterations = 10
+        env.model.opt.ls_iterations = 20
+        env.model.opt.ccd_iterations = 50
+        physics = rollout.metadata.get("physics_randomization", {})
+        if physics.get("enabled", False):
+            randomize_husky_play_physics(
+                env.model,
+                str(rollout.metadata["rollout_id"]),
+                int(physics["seed"]),
+            )
+            mujoco.mj_setConst(env.model, env.data)
+
+        defaults, scales, reindex = control_spec()
+        production_rows = []
+        for frame, audit_row in enumerate(audit_trace):
+            env.data.qpos[:] = rollout.arrays["qpos"][frame]
+            env.data.qvel[:] = rollout.arrays["qvel"][frame]
+            env.data.time = float(rollout.arrays["sim_time"][frame])
+            env._last_action = np.clip(
+                rollout.arrays["action"][frame][reindex],
+                -1.0,
+                1.0,
+            )
+            env._previous_action = (
+                np.zeros(23, dtype=np.float32)
+                if frame == 0
+                else np.clip(
+                    rollout.arrays["action"][frame - 1][reindex],
+                    -1.0,
+                    1.0,
+                )
+            )
+            # The historical raw HUSKY policy archive stored unclipped control
+            # targets. Reproduce those targets to recover its post-step state,
+            # while evaluating action-rate from the production clipped action.
+            env.data.ctrl[:23] = (
+                defaults + scales * rollout.arrays["action"][frame]
+            )[reindex]
+            mujoco.mj_forward(env.model, env.data)
+            production = env._compute_aux_rewards()
+            production_rows.append(production)
+
+            expected = {
+                "penalty_action_rate": float(
+                    np.sum(
+                        np.square(
+                            np.clip(rollout.arrays["action"][frame], -1.0, 1.0)
+                            - (
+                                np.zeros(23, dtype=np.float32)
+                                if frame == 0
+                                else np.clip(
+                                    rollout.arrays["action"][frame - 1],
+                                    -1.0,
+                                    1.0,
+                                )
+                            )
+                        )
+                    )
+                ),
+                "limits_dof_pos": audit_row["limits_dof_pos"],
+                "penalty_undesired_contact": audit_row[
+                    "penalty_undesired_contact"
+                ],
+                "penalty_feet_ori": audit_row["penalty_feet_ori_world"],
+                "penalty_ankle_roll": audit_row["penalty_ankle_roll"],
+                "penalty_slippage": (
+                    audit_row["penalty_slippage_ground"]
+                    + audit_row["penalty_slippage_board"]
+                ),
+            }
+            for name, expected_value in expected.items():
+                if not np.isclose(
+                    production[name],
+                    expected_value,
+                    rtol=2e-3,
+                    atol=1e-5,
+                ):
+                    raise RuntimeError(
+                        f"Production reward regression failed for "
+                        f"{rollout.name} frame {frame} {name}: "
+                        f"{production[name]} != {expected_value}."
+                    )
+
+        steer_rows = [
+            (row, production)
+            for row, production in zip(audit_trace, production_rows, strict=True)
+            if row["phase"].startswith("steer_")
+        ]
+        if steer_rows:
+            mean_world_slip = float(
+                np.mean([row["penalty_slippage_world"] for row, _ in steer_rows])
+            )
+            mean_surface_slip = float(
+                np.mean([production["penalty_slippage"] for _, production in steer_rows])
+            )
+            if not mean_world_slip > mean_surface_slip:
+                raise RuntimeError(
+                    "Steer regression no longer shows world slip above "
+                    "surface-relative slip."
+                )
+        else:
+            mean_world_slip = None
+            mean_surface_slip = None
+
+        return {
+            "status": "PASS",
+            "checked_fields": [
+                "penalty_action_rate",
+                "limits_dof_pos",
+                "penalty_undesired_contact",
+                "penalty_feet_ori",
+                "penalty_ankle_roll",
+                "penalty_slippage",
+            ],
+            "frame_count": len(production_rows),
+            "steer_mean_world_slip": mean_world_slip,
+            "steer_mean_surface_relative_slip": mean_surface_slip,
+        }
+    finally:
+        env.close()
+
+
 def numeric_stats(values: np.ndarray) -> dict[str, float | int | None]:
     finite = values[np.isfinite(values)]
     if not len(finite):
@@ -926,10 +1063,15 @@ def main() -> int:
     fidelities = {}
     trace = []
     contact_pairs = {}
+    production_regressions = {}
     for rollout in rollouts:
         passed, report = replay_fidelity(rollout, args)
         fidelities[rollout.name] = report
         rollout_trace, pairs = evaluate_rollout(rollout, passed)
+        production_regressions[rollout.name] = production_reward_regression(
+            rollout,
+            rollout_trace,
+        )
         trace.extend(rollout_trace)
         contact_pairs[rollout.name] = pairs
 
@@ -951,6 +1093,7 @@ def main() -> int:
             for rollout in rollouts
         ],
         "replay_fidelity": fidelities,
+        "production_reward_regression": production_regressions,
         "phase_statistics": phase_statistics(trace),
         "contact_pairs": contact_pairs,
         "unavailable_reason": {
