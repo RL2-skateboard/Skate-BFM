@@ -268,3 +268,69 @@ Cosine similarities are diagnostics only:
 The target label was assigned from raw physical state and command metadata,
 never from latent similarity. The target bank is a definition/audit artifact,
 not evidence of command-aligned downstream task success.
+
+## M2.3b-0 Downstream Target-Conditioned Evaluation
+
+- Date: `2026-08-11`
+- Status: `completed_evaluation_only`
+- Target: `skate_target_00`, frames `24-31`, aligned forward push.
+- Checkpoints: `official_bfm0`, `base_only_update100`, and
+  `base_skate_update100`.
+- Random bank: fixed seeds `2026081101`, `2026081102`, `2026081103`, and
+  `2026081104`; each checkpoint used its own matched random controls.
+- Dynamics: `seen_001`, `seen_002`, `unseen_001`, and `unseen_002`.
+- Horizon: `128` steps at `0.02 s`; canonical reset; no frame-24 teleport;
+  no command injection into the Actor.
+- Rollout count: `60` (`3 x 4 x (4 random + 1 target)`).
+- Result artifact:
+  `results/m2.3b-0-target-conditioned/target_conditioned_metrics.json`.
+- Target latent fingerprints and norms:
+
+  | Checkpoint | z fingerprint | z norm |
+  | :--- | :--- | ---: |
+  | Official BFM0 | `097548...` | 16.000000 |
+  | Base-only update100 | `8cd703...` | 15.999999 |
+  | Base+Skate update100 | `fc203e...` | 16.000000 |
+
+### Seen Dynamics
+
+Values are `random mean +/- std; target mean; target minus random mean`.
+
+| Checkpoint | Forward displacement (m) | Forward velocity (m/s) | Lateral drift (m) | Heading drift (deg) |
+| :--- | ---: | ---: | ---: | ---: |
+| Official BFM0 | `-0.104 +/- 0.279; 1.239; +1.343` | `-0.041 +/- 0.109; 0.485; +0.526` | `0.058 +/- 0.081; 0.088; +0.030` | `10.116 +/- 10.738; 5.543; -4.573` |
+| Base-only update100 | `1.007 +/- 0.345; 1.641; +0.634` | `0.394 +/- 0.135; 0.642; +0.248` | `0.092 +/- 0.036; 0.177; +0.085` | `5.650 +/- 1.656; 6.677; +1.028` |
+| Base+Skate update100 | `0.880 +/- 0.517; 1.637; +0.758` | `0.344 +/- 0.202; 0.641; +0.297` | `0.086 +/- 0.041; 0.187; +0.102` | `6.071 +/- 1.272; 7.199; +1.129` |
+
+### Unseen Dynamics
+
+| Checkpoint | Forward displacement (m) | Forward velocity (m/s) | Lateral drift (m) | Heading drift (deg) |
+| :--- | ---: | ---: | ---: | ---: |
+| Official BFM0 | `-0.364 +/- 0.835; 0.209; +0.573` | `-0.142 +/- 0.328; 0.082; +0.224` | `0.070 +/- 0.081; 0.307; +0.237` | `9.992 +/- 8.832; 17.528; +7.536` |
+| Base-only update100 | `1.218 +/- 0.172; 1.781; +0.563` | `0.477 +/- 0.067; 0.697; +0.221` | `0.113 +/- 0.040; 0.186; +0.073` | `5.695 +/- 1.991; 6.540; +0.845` |
+| Base+Skate update100 | `1.203 +/- 0.236; 1.734; +0.532` | `0.471 +/- 0.092; 0.679; +0.208` | `0.106 +/- 0.036; 0.175; +0.068` | `5.617 +/- 1.958; 6.350; +0.733` |
+
+### Boundary Checks
+
+- Target-bank schema and command alignment: `PASS`.
+- Runtime target encoding: `PASS` for all three checkpoint fingerprints.
+- Canonical reset reproducibility: `PASS` for all four dynamics IDs.
+- Full parameter, component, and buffer mutation: `NO`.
+- Optimizer steps: `0`; backward calls: `0`; `agent.update`: `0`;
+  `update_fb`: `0`.
+- Target latent was runtime-recomputed from the frozen checkpoint and the
+  expert window. The tracked JSON stores fingerprints and metadata, not the
+  full 256-dimensional latent values.
+
+### Conclusion
+
+The target shows a **consistent forward-response advantage** over the matched
+random bank for both seen and unseen dynamics on all three checkpoints.
+However, lateral drift and heading drift are not consistently reduced, and
+the target can increase them. The overall target-conditioned physical
+response is therefore **mixed**, not a task-success result.
+
+Base-only and Base+Skate update100 have similar target forward response.
+The current preflight does **not support** a downstream physical advantage
+for Base+Skate over Base-only. Native termination, Base retention, Qaux, and
+full FB-CPR-Aux training remain outside this evaluation.

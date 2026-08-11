@@ -372,6 +372,9 @@ def main() -> int:
             ("base_only_update100", "base_skate_update100"),
         )
     }
+    public_latents = copy.deepcopy(latent_by_checkpoint)
+    for record in public_latents.values():
+        record["latent"].pop("values", None)
 
     command_v = np.asarray(arrays["command_v"])
     command_h = np.asarray(arrays["command_h"])
@@ -519,7 +522,12 @@ def main() -> int:
         "unavailable_fields": [],
         "global_physical_summary": global_physical,
         "candidate_windows": candidates,
-        "targets": [target],
+        "targets": [
+            {
+                **target,
+                "latents": public_latents,
+            }
+        ],
     }
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

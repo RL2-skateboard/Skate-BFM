@@ -571,3 +571,51 @@
 - Full field inventory, raw hashes, checkpoint hashes, latent fingerprints,
   candidate windows, selection rule, and command evidence are recorded in the
   target bank JSON.
+
+## 17. M2.3b-0 Frozen Actor Target-Conditioned Rollout Preflight
+
+- Date: 2026-08-11
+- Status: `completed_evaluation_only`
+- Target: `skate_target_00`, frames `24-31`, the aligned forward-push
+  window with `command_v=1.0` and `command_h=0.0`.
+- Checkpoints: official BFM0, Base-only `update_100`, and Base+Skate
+  `update_100`.
+- Latent conditions: four fixed random latents with seeds
+  `2026081101..2026081104`, plus one runtime-recomputed target latent per
+  checkpoint. Every latent remained fixed for its complete rollout.
+- Protocol: `skate-bfm-fixed-eval-v1`, four dynamics conditions
+  (`seen_001`, `seen_002`, `unseen_001`, `unseen_002`), 128 steps, and
+  `control_dt=0.02 s`. The HUSKY reset remained canonical; the simulator was
+  not teleported to expert frame 24, and no command was injected into the
+  BFM Actor input.
+- Scale: `3 checkpoints x 4 dynamics x (4 random + 1 target) = 60`
+  inference-only rollouts.
+- Expert observations for frames `24-31` were loaded once from the Skate
+  MotionLib and reused as CPU tensors. Each checkpoint then applied its
+  native normalizer and backward map to recompute its own target latent.
+  Runtime fingerprints matched the audited target-bank fingerprints:
+  official `097548...`, Base-only `8cd703...`, Base+Skate `fc203e...`.
+- Reproducibility: `PASS`. Initial observation, root-state, and board-state
+  fingerprints were byte-identical across random/target conditions for each
+  dynamics rollout ID.
+- Frozen-state audit: `PASS`. Full model parameters, model components
+  (`F`, `B`, target maps, Actor, discriminator, QD, and Qaux), and buffers
+  were unchanged before/after all 20 rollouts for each checkpoint. The
+  evaluation made `0` optimizer steps, `0` backward calls, `0` `agent.update`
+  calls, and `0` `update_fb` calls.
+- Physical metrics were projected in the initial board-heading frame and are
+  recorded in `results/m2.3b-0-target-conditioned/target_conditioned_metrics.json`.
+  This result directory is local and ignored because it contains generated
+  evaluation artifacts.
+- Directional result: the target increased forward displacement and mean
+  forward velocity over the matched random mean in all six
+  checkpoint-by-split comparisons. Lateral drift and heading drift did not
+  improve consistently, so the overall target-conditioned response is
+  `mixed`, with a consistent forward-response advantage but no task-success
+  claim.
+- Base-only versus Base+Skate: the adapted checkpoints had similar target
+  forward response, while neither treatment produced a consistent stability
+  advantage over the other. The representation result therefore does not
+  establish a downstream physical advantage for Base+Skate.
+- No training, Actor update, replay update, exploration change, action-format
+  change, or evaluation-protocol-v1 change was performed.

@@ -24,12 +24,13 @@ controlled F/B-only Skate adaptation boundary. M2.2b-2 completed evaluator
 fidelity and clean-process reproducibility auditing. M2.2b-3 completed the
 auditable Base+Skate 50/50 expert-mixture boundary experiment at independent
 1/10/100 update milestones. Its representation metrics are mixed at 1/10 and
-favorable at 100, so it is not yet a downstream task-success claim. Full
-FB-CPR-Aux training has not started. M2.3a-0 completed a read-only target-bank
-and command-alignment audit: the current artifact supports one aligned
-forward-push target, while steer targets remain unverified. Interaction-JEPA,
-predictive closed-loop planning, and complete skateboarding-task evaluation
-remain later project modules.
+favorable at 100, so it is not yet a downstream task-success claim. M2.3a-0
+audited the target bank and command alignment, and M2.3b-0 completed the
+evaluation-only frozen-Actor target-conditioned preflight: the forward-push
+target has a consistent forward-response advantage over matched random
+latents, but lateral and heading behavior remain mixed. Full FB-CPR-Aux
+training has not started. Interaction-JEPA, predictive closed-loop planning,
+and complete skateboarding-task evaluation remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
 stage, image, and branch-specific records together whenever a milestone changes.
@@ -60,6 +61,21 @@ CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_bfm.py \
   --checkpoint results/m2.2b-3/base_skate_50_50/update_100/checkpoint \
   --output-dir results/m2.2b-3/base_skate_50_50/eval_100
 ```
+
+Run the M2.3b-0 frozen-Actor target-conditioned preflight:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_target_conditioned.py \
+  --output-dir results/m2.3b-0-target-conditioned
+```
+
+This is evaluation-only: it uses `skate_target_00`, four fixed random latent
+controls, the four fixed seen/unseen dynamics conditions, and 128-step
+canonical-reset rollouts for each of the three frozen checkpoints. It performs
+no training, optimizer step, backward call, replay update, or command
+injection. The generated JSON result is kept under the ignored `results/`
+directory; the summarized tables and boundary checks are recorded in
+[`train/train_res.md`](train/train_res.md).
 
 Audit the current expert target bank without training or rollout:
 

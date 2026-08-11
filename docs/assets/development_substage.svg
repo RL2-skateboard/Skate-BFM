@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
   <title id="title">Skate-BFM development substage pipeline as of 2026-08-11</title>
-  <desc id="desc">M0 baseline, M1 expert motion, M2.1 formal HUSKY online replay, M2.2a pretrained expert/replay merge, M2.2b-1 F/B-only adaptation, M2.2b-2 evaluator audit, M2.2b-3 expert mixture, and M2.3a-0 target-bank command audit are complete. Full FB-CPR-Aux training follows.</desc>
+  <desc id="desc">M0 baseline, M1 expert motion, M2.1 formal HUSKY online replay, M2.2a pretrained expert/replay merge, M2.2b adaptation boundaries, M2.3a-0 target-bank command audit, and M2.3b-0 frozen Actor target-conditioned evaluation are complete. Full FB-CPR-Aux training follows.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -19,8 +19,8 @@
 
   <rect x="1010" y="32" width="438" height="84" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="2"/>
   <text x="1032" y="59" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">LATEST COMPLETION - 2026-08-11</text>
-  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.3a-0 Target bank audit</text>
-  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">One forward-push target; command evidence recorded</text>
+  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.3b-0 Frozen Actor preflight</text>
+  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">60 target-conditioned rollouts; frozen state verified</text>
 
   <line x1="302" y1="224" x2="365" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="690" y1="224" x2="753" y2="224" stroke="#d97706" stroke-width="5" marker-end="url(#arrow-active)"/>
@@ -84,13 +84,13 @@
 
     <line x1="908" y1="509" x2="948" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
 
-    <rect x="948" y="432" width="500" height="155" rx="7" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
-    <text x="974" y="471" fill="#64748b" font-size="14" font-weight="700">M2.3b  NEXT</text>
-    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Execute target latent</text>
-    <text x="974" y="532" fill="#475569" font-size="14">Run frozen Actor with command evidence</text>
-    <text x="974" y="555" fill="#475569" font-size="14">Then address retention, Qaux, termination</text>
-    <circle cx="1402" cy="505" r="19" fill="#94a3b8"/>
-    <path d="M1394 505 L1410 505" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+    <rect x="948" y="432" width="500" height="155" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="3"/>
+    <text x="974" y="471" fill="#1f7a4d" font-size="14" font-weight="700">M2.3b-0  COMPLETE</text>
+    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Target-conditioned preflight</text>
+    <text x="974" y="532" fill="#475569" font-size="14">Frozen Actor; canonical reset; no updates</text>
+    <text x="974" y="555" fill="#475569" font-size="14">Forward response positive; stability mixed</text>
+    <circle cx="1402" cy="505" r="19" fill="#1f7a4d"/>
+    <path d="M1392 505 L1399 512 L1412 497" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
 
     <rect x="52" y="640" width="1396" height="56" rx="7" fill="#eef2ff" stroke="#c7d2fe" stroke-width="2"/>
     <circle cx="78" cy="668" r="10" fill="#1f7a4d"/>
@@ -99,6 +99,6 @@
     <text x="265" y="674" fill="#17212b" font-size="14" font-weight="700">ACTIVE</text>
     <circle cx="385" cy="668" r="10" fill="#94a3b8"/>
     <text x="405" y="674" fill="#17212b" font-size="14" font-weight="700">NEXT / LATER</text>
-    <text x="590" y="674" fill="#475569" font-size="14">Target bank audited; full FB-CPR-Aux training remains NOT STARTED.</text>
+    <text x="590" y="674" fill="#475569" font-size="14">M2.3b-0 evaluated; full FB-CPR-Aux training remains NOT STARTED.</text>
   </g>
 </svg>

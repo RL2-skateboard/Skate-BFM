@@ -30,13 +30,15 @@ capability audit are complete. Base and Skate expert sources, M2.1 Skate
 online replay, and M2.2a official BFM0 initialization plus expert/replay merge
 are complete. M2.2b-1 completed the first controlled F/B-only Skate adaptation
 boundary, and M2.2b-2 completed evaluator fidelity and clean-process
-reproducibility auditing. Full FB-CPR-Aux training has not started.
-M2.2b-3 completed the intended Base+Skate 50/50 expert-mixture treatment at
-independent update 1/10/100 boundaries. The result is mixed at early
-milestones and favorable on several representation metrics at update 100, but
-is not a downstream skate-task success claim.
-M2.3a-0 completed a read-only target-bank and command-alignment audit with one
-aligned forward-push target; no steer target is claimed.
+reproducibility auditing. M2.2b-3 completed the intended Base+Skate 50/50
+expert-mixture treatment at independent update 1/10/100 boundaries. The
+result is mixed at early milestones and favorable on several representation
+metrics at update 100, but is not a downstream skate-task success claim.
+M2.3a-0 completed the target-bank and command-alignment audit, and M2.3b-0
+completed the evaluation-only frozen-Actor target-conditioned preflight. The
+forward-push target consistently increases forward response over matched
+random latents, while lateral and heading behavior remain mixed; no steer
+target is claimed.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -72,6 +74,21 @@ CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_skate_target_bank.py \
 This produces one auditable 8-frame target under
 `dataset/skate-expert-pose/target_bank/` and performs no training, rollout,
 Actor execution, or optimizer step.
+
+Run the frozen-Actor target-conditioned evaluation:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_target_conditioned.py \
+  --output-dir results/m2.3b-0-target-conditioned
+```
+
+The evaluator uses the runtime-recomputed `skate_target_00` latent, four
+checkpoint-matched fixed random latents, and all four fixed seen/unseen
+dynamics conditions. It runs 128-step canonical-reset MuJoCo rollouts and
+checks exact reset reproducibility plus parameter, component, and normalizer
+immutability. It is evaluation-only and makes no optimizer, backward,
+`agent.update`, or `update_fb` calls. Results are summarized in
+[`train_res.md`](train_res.md).
 
 ## Isaac training runtime
 
