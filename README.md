@@ -35,7 +35,12 @@ representation, discriminator, main critic, Actor network, Qaux network, and
 all target-network shapes are compatible with a 1024-transition Skate batch,
 but the formal replay does not contain the configured auxiliary rewards.
 Full FB-CPR-Aux training is therefore blocked by the Skate auxiliary reward
-contract. Interaction-JEPA, predictive closed-loop planning, and complete
+contract. M2.4b-1 then audited the eight original auxiliary reward semantics
+across recorded push, transition, left-steer, right-steer, and return phases.
+The audit found that world-frame slippage systematically penalizes feet moving
+with the skateboard, while surface-relative slippage removes that steer-phase
+conflict. The auxiliary reward contract remains the next blocker.
+Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
 This section is the project-level progress snapshot. Update the date, current
@@ -95,6 +100,19 @@ the discriminator, F/B, QD, Qaux, Actor, and target networks. It performs no
 training, optimizer step, backward call, or model-state mutation. The local
 JSON report is written under ignored `results/`; the retained conclusion is
 recorded in [`train/train_res.md`](train/train_res.md).
+
+Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_rewards.py \
+  --rollout /absolute/path/to/left_phase_rich_raw_rollout.npz \
+  --rollout /absolute/path/to/right_phase_rich_raw_rollout.npz
+```
+
+The audit first verifies deterministic MuJoCo fidelity independently for each
+recorded phase, then writes a frame-level reward trace, phase statistics,
+contact pairs, and four diagnostic figures under ignored `results/`. It does
+not modify the formal replay or write auxiliary rewards for training.
 
 Audit the current expert target bank without training or rollout:
 

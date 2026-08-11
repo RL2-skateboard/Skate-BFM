@@ -426,3 +426,48 @@ Validation:
 - `agent.update`, `update_fb`, `update_actor`, `update_critic`,
   `update_aux_critic`, and `update_discriminator` calls: `0`.
 - Training performed: `NO`.
+
+## M2.4b-1 Phase-wise Expert Reward Audit
+
+This is a read-only reward-semantics audit, not a training experiment.
+
+- Date: `2026-08-11`
+- Training, optimizer steps, backward calls, `agent.update`, `update_fb`, and
+  `update_actor`: `NO`
+- Formal replay modification: `NO`
+- Auxiliary reward training-semantics modification: `NO`
+- Formal MotionLib scope: one 50-frame forward-push expert. It is insufficient
+  for steer-phase analysis.
+- Diagnostic-only sources: one recorded left-steer and one recorded
+  right-steer HUSKY policy rollout. They were not added to MotionLib or
+  training replay.
+- Recorded phase coverage: push `342` frames, push2steer `58`, steer `270`,
+  steer2push `30`; `steer_forward` and `fall`: `PHASE NOT AVAILABLE`.
+- Phase-local MuJoCo fidelity: `PASS` for both rollouts. Joint RMSE was
+  `6.79e-6` / `6.04e-6` rad; root-position RMSE was `6.23e-6` /
+  `4.13e-6` m; board-position RMSE was `5.56e-6` / `4.99e-6` m.
+
+| Phase | 29D action rate | World slip | Board-relative slip | World feet ori | Surface feet ori | Ankle roll | Original aux | Surface candidate |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| push | 30.070 | 1.028 | 0.020 | 0.035 | 0.040 | 0.011 | -5.130 | -3.206 |
+| push2steer | 66.355 | 2.883 | 0.202 | 0.122 | 0.113 | 0.013 | -12.501 | -7.204 |
+| steer | 1.496 | 3.126 | 0.044 | 0.297 | 0.294 | 0.024 | -6.615 | -0.450 |
+| steer2push | 46.363 | 1.754 | 0.204 | 0.075 | 0.085 | 0.013 | -8.228 | -5.275 |
+
+Conclusions:
+
+- `penalty_slippage`: `REDEFINE`. World-frame slippage penalizes legitimate
+  board-supported foot transport during steer; board-relative slippage removes
+  that sustained conflict.
+- `penalty_action_rate`: `KEEP_WITH_MAPPING`. The fixed BFM wrist dimensions
+  contribute zero; high action rates are confined to phase transitions.
+- `limits_dof_pos`: `KEEP_WITH_MAPPING`; `penalty_undesired_contact`: `KEEP`;
+  `penalty_feet_ori`: `KEEP`.
+- `penalty_torques` and `limits_torque`: `DIAGNOSTIC_ONLY`.
+- `penalty_ankle_roll`: `ABLATION_REQUIRED`; its steer increase was not
+  consistently coupled to board roll across the two directions.
+
+The ignored detailed report is
+`results/m2.4b-1-reward-audit/summary.json`, with a frame trace and four
+diagnostic figures. Full `FBcprAuxAgent.update()` remains `NOT READY`. Next
+milestone: `M2.4b-2 — Skate Aux Reward Contract`.

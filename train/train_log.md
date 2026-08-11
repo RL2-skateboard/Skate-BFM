@@ -973,3 +973,175 @@ configured key before applying its scale.
 - Training-readiness audit added: `YES`.
 - Vendored BFM-Zero source modified: `NO`.
 - Training performed: `NO`.
+
+## 20. M2.4b-1 Phase-wise Expert Reward Audit
+
+- Date: 2026-08-11
+- Status: `completed_read_only_audit`
+- Scope: phase-wise semantics of the eight currently configured BFM auxiliary
+  rewards. No training, replay mutation, optimizer step, backward call, or
+  agent update was performed.
+- Retained diagnostic entrypoint: `train/scripts/audit_rewards.py`.
+- Source of truth:
+  - official reward definitions in vendored
+    `legged_robot_base.py` and `legged_robot_motions.py`;
+  - current `aux_rewards_scaling` in `train/scripts/train_skate_bfm.py`;
+  - original raw rollout phase mapping, state, action, and board fields;
+  - HUSKY's generated MuJoCo XML and recorded physics randomization.
+
+### Expert Phase Structure
+
+The current tracked MotionLib expert remains one 50-frame forward push.
+It cannot answer phase-wise steering questions. This read-only diagnostic
+therefore used two separate phase-rich, recorded HUSKY policy rollouts and
+did not add them to MotionLib or the formal training replay.
+
+| Raw rollout | Phase | Frame range | Frames | Duration (s) |
+| :--- | :--- | :--- | ---: | ---: |
+| `round998_rollout9981_h_pos020` | push | `[0,120)`, `[299,350)` | `171` | `3.42` |
+| same | push2steer | `[120,149)` | `29` | `0.58` |
+| same | steer_left | `[149,284)` | `135` | `2.70` |
+| same | steer2push | `[284,299)` | `15` | `0.30` |
+| `round998_rollout9982_h_neg020` | push | `[0,120)`, `[299,350)` | `171` | `3.42` |
+| same | push2steer | `[120,149)` | `29` | `0.58` |
+| same | steer_right | `[149,284)` | `135` | `2.70` |
+| same | steer2push | `[284,299)` | `15` | `0.30` |
+
+Aggregate requested groups: push `342` frames (`6.84 s`), push2steer `58`
+(`1.16 s`), steer `270` (`5.40 s`, preserving left/right source labels), and
+steer2push `30` (`0.60 s`). `steer_forward` and `fall` are
+`PHASE NOT AVAILABLE`.
+
+### Phase-Local Replay Fidelity
+
+Each phase was independently replayed from its recorded start `qpos/qvel`;
+recorded `action[t]` was applied to reconstruct `state[t+1]`. This avoids
+contact-solver drift from one phase contaminating later phase evidence.
+
+- `round998_rollout9981_h_pos020`: `PASS`; aggregate RMSE joint position
+  `6.79e-6 rad`, root position `6.23e-6 m`, board position `5.56e-6 m`,
+  board linear velocity `1.93e-5 m/s`.
+- `round998_rollout9982_h_neg020`: `PASS`; aggregate RMSE joint position
+  `6.04e-6 rad`, root position `4.13e-6 m`, board position `4.99e-6 m`,
+  board linear velocity `1.64e-5 m/s`.
+- Per-phase root/joint/board position, root/board orientation, and board
+  velocity all passed. The detailed RMSE and max-error report is retained in
+  ignored `results/m2.4b-1-reward-audit/summary.json`.
+
+### Key Phase Statistics
+
+Values are phase means. Full count, mean, standard deviation, p50, p90, max,
+and nonzero fraction for every trace field are in the generated JSON.
+
+| Phase | Action rate 29D | World slip | Board-relative slip | World feet ori | Surface feet ori | Ankle roll | Original weighted aux | Surface candidate aux |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| push | `30.070` | `1.028` | `0.020` | `0.035` | `0.040` | `0.011` | `-5.130` | `-3.206` |
+| push2steer | `66.355` | `2.883` | `0.202` | `0.122` | `0.113` | `0.013` | `-12.501` | `-7.204` |
+| steer | `1.496` | `3.126` | `0.044` | `0.297` | `0.294` | `0.024` | `-6.615` | `-0.450` |
+| steer2push | `46.363` | `1.754` | `0.204` | `0.075` | `0.085` | `0.013` | `-8.228` | `-5.275` |
+
+- 29D action rate uses the BFM action convention (`5x` normalized action);
+  23D executed target-rate statistics are also retained. The six omitted
+  BFM wrist dimensions contribute exactly `0`.
+- Transition action-rate spikes are expected: 29D mean is `66.355` in
+  push2steer and `46.363` in steer2push, versus `1.496` during steady steer.
+- `limits_dof_pos` is zero in all transition/steer frames and only sparse in
+  push (`1.46%` nonzero); `limits_torque` is sparse push-only. Both are
+  23-to-29 mapped physical diagnostics.
+- `penalty_torques` phase means are push `3768`, push2steer `5936`, steer
+  `1423`, steer2push `6206`; it and `limits_torque` retain zero Qaux scale.
+- No penalized pelvis/shoulder/hip contact was observed. Contact pairs show
+  expected foot-ground and foot-board switching in push/transitions and
+  two board-supported feet throughout steady left/right steer.
+
+### Semantic Conclusions
+
+- **PUSH:** world slip includes the support foot's legitimate skateboard
+  transport. Surface-relative slip is much lower; ground push contact is
+  separately represented.
+- **PUSH2STEER:** action rate and board-relative slip have short transition
+  spikes. These are acceptable transient costs, not evidence against the
+  action-rate reward.
+- **STEER:** world slip is continuously high (`3.126`) while board-relative
+  slip is low (`0.044`). The original world-frame slippage term contributes
+  about `-6.25` of the `-6.615` original weighted auxiliary objective.
+  This is a systematic semantic conflict, not a transition spike.
+- **STEER2PUSH:** action-rate and board-relative-slip increases are transition
+  costs. The candidate remains negative mainly because switching is active;
+  no new sustained conflict was identified.
+- Feet orientation is sustained in steer, but world and contact-surface
+  versions are nearly identical (`0.297` versus `0.294`). Current evidence
+  does not support a frame-definition conflict.
+- Ankle-roll penalty is roughly twice push during steer (`0.024` versus
+  `0.011`), while board roll is small and not consistently correlated across
+  left/right rollouts. It requires an ablation before retaining or removing.
+
+### Reward Semantic Matrix
+
+| Reward | Classification | Evidence |
+| :--- | :--- | :--- |
+| `penalty_torques` | `DIAGNOSTIC_ONLY` | reliable HUSKY torque query, zero current scale, 23-to-29 mapping |
+| `penalty_action_rate` | `KEEP_WITH_MAPPING` | transition spikes; steady steer is low; wrist contribution is zero |
+| `limits_dof_pos` | `KEEP_WITH_MAPPING` | sparse/near-zero mapped limit violation |
+| `limits_torque` | `DIAGNOSTIC_ONLY` | mapped effort limits and zero current scale |
+| `penalty_undesired_contact` | `KEEP` | no penalized non-foot contact in either rollout |
+| `penalty_feet_ori` | `KEEP` | surface frame does not materially change steer penalty |
+| `penalty_ankle_roll` | `ABLATION_REQUIRED` | sustained steering increase without consistent board-roll coupling |
+| `penalty_slippage` | `REDEFINE` | world-frame term penalizes legitimate board transport |
+
+### Outputs and Boundary
+
+- Ignored output directory:
+  `results/m2.4b-1-reward-audit/`.
+- Trace: `expert_reward_trace.csv`, containing all required raw/original,
+  surface-relative, and candidate columns; unavailable values would be
+  `NaN`.
+- Figures: `reward_traces.png`, `slippage_comparison.png`,
+  `feet_orientation_comparison.png`, and `ankle_roll_board_roll.png`.
+- Full raw-expert video: not available; no replacement video was generated.
+- Formal replay modified: `NO`.
+- Aux reward training semantics changed: `NO`.
+- Full `FBcprAuxAgent.update()` ready: `NO`.
+- Next milestone: `M2.4b-2 — Skate Aux Reward Contract`.
+
+### Code Change Summary
+
+1. `train/scripts/audit_rewards.py`
+
+   - Changed: added a phase-local raw-rollout reward diagnostic.
+   - Why: audit original auxiliary semantics before defining any replay
+     reward contract.
+   - Original logic: no phase-wise auxiliary reward audit.
+   - New logic: validates phase-local MuJoCo replay fidelity, emits a
+     frame-level trace, phase statistics, contact pairs, and four figures.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: read-only training diagnostics only.
+
+2. `README.md`, `train/README.md`, `train/train_log.md`, and
+   `train/train_res.md`
+
+   - Changed: recorded M2.4b-1 evidence, command, semantic matrix, and next
+     milestone.
+   - Why: synchronize project status with the reward audit.
+   - Original logic: M2.4a dependency audit was current.
+   - New logic: M2.4b-1 semantics audit completed; M2.4b-2 is next.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: documentation only.
+
+### Overall Code Change Summary
+
+- Model architecture changed: `NO`.
+- Loss changed: `NO`.
+- Optimizer behavior changed: `NO`.
+- Training loop changed: `NO`.
+- Expert sampling changed: `NO`.
+- Online latent sampling changed: `NO`.
+- Exploration changed: `NO`.
+- Replay semantics changed: `NO`.
+- Observation format changed: `NO`.
+- Action format changed: `NO`.
+- Termination changed: `NO`.
+- Aux reward training semantics changed: `NO`.
+- Aux reward diagnostics added: `YES`.
+- Evaluation protocol changed: `NO`.
+- Training performed: `NO`.

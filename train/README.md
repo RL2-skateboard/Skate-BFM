@@ -44,8 +44,12 @@ cleanup. M2.4a completed the read-only full-training dependency audit. The
 with the representation, discriminator, QD, Qaux-network, Actor-network, and
 target-network interfaces, but the replay does not contain the eight
 configured auxiliary reward fields. Full FB-CPR-Aux training is blocked by
-that data contract. Interaction-JEPA and predictive closed-loop control are
-separate downstream modules, not part of the current Motion Library milestone.
+that data contract. M2.4b-1 audited phase-wise reward semantics on raw
+push/transition/left-steer/right-steer policy rollouts and found that original
+world-frame slippage conflicts with board-supported steering. The formal
+replay remains unchanged; M2.4b-2 will define its auxiliary reward contract.
+Interaction-JEPA and predictive closed-loop control are separate downstream
+modules, not part of the current Motion Library milestone.
 
 Update this snapshot, [`train_log.md`](train_log.md), and
 [`train_res.md`](train_res.md) together whenever the active milestone changes.
@@ -106,6 +110,19 @@ and 64 Base plus 64 Skate complete expert sequences. It performs no
 `agent.update()`, update subroutine, optimizer step, backward call, or
 parameter/buffer mutation. Its local JSON output is kept under `results/`;
 the readiness matrix and blocker are retained in [`train_res.md`](train_res.md).
+
+Run the phase-wise raw-expert reward diagnostic:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_rewards.py \
+  --rollout /absolute/path/to/left_phase_rich_raw_rollout.npz \
+  --rollout /absolute/path/to/right_phase_rich_raw_rollout.npz
+```
+
+The current formal MotionLib expert is only a 50-frame push, so this diagnostic
+requires phase-rich raw rollout inputs. It validates phase-local replay
+fidelity before using contact and torque diagnostics, writes only ignored
+results, and does not add `aux_rewards` to the training replay.
 
 ## Isaac training runtime
 
