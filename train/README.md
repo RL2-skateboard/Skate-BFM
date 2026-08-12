@@ -60,7 +60,9 @@ all online/target modules changed with finite state. M2.4d-2 is the next,
 short multi-update stability smoke. M2.4d-2 then completed 10 consecutive
 native updates on one frozen 1024-transition replay. All metrics and training
 state remained finite, with the z-buffer saturating at its configured capacity.
-M2.4d-3 is the next 100-update stability smoke.
+M2.4d-3 then completed 100 fixed-replay native updates with finite metrics and
+no value-scale runaway. M2.4 training preparation is complete. M2.5 must
+restart from the official BFM0 checkpoint and does not reuse a smoke model.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -162,9 +164,28 @@ SKATE_WORK_DIR=$PWD/results/m2.4d-2-short-stability \
 python train/scripts/train_skate_bfm.py
 ```
 
-For `full`, `SKATE_ADAPTATION_UPDATES` is restricted to `1` or `10`. The
-10-update smoke reuses one fixed replay dataset, resamples the 64/64 expert
-mixture on every native update, and saves only an ignored `summary.json`.
+For `full`, `SKATE_ADAPTATION_UPDATES` is restricted to `1`, `10`, or `100`.
+The stability smokes reuse one fixed replay dataset, resample the 64/64 expert
+mixture on every native update, and save only an ignored `summary.json`.
+
+Run the M2.4d-3 100-update stability smoke:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=100 \
+SKATE_MAX_STEPS=1024 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.4d-3-100-update-stability \
+python train/scripts/train_skate_bfm.py
+```
+
+`full` accepts only `1`, `10`, or `100` diagnostic updates. The 100-update
+smoke freezes the single collected replay, resamples the expert mixture per
+update, and retains no checkpoint.
 
 Run the phase-wise raw-expert reward diagnostic:
 

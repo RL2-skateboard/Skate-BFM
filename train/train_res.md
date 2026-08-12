@@ -711,3 +711,57 @@ The ignored machine-readable result is
 skating performance was evaluated.
 
 Next milestone: `M2.4d-3 — 100-Update Stability Smoke`.
+
+## M2.4d-3 100-Update Stability Smoke
+
+This is a fixed-replay stability diagnostic, not a convergence or control
+performance experiment.
+
+- Date: `2026-08-12`
+- Checkpoint SHA256:
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Replay: 1024 transitions, 14 terminated, 1 truncated, 1009 normal;
+  `train is train_skate`: `YES`.
+- Expert mixture: 64 Base plus 64 Skate complete sequences per update.
+- Native updates: `100 / 100`; no project-owned direct component update,
+  optimizer, or target-soft-update call.
+
+### Core Metric Summary
+
+| Metric | First | Min | Max | Last |
+| :--- | ---: | ---: | ---: | ---: |
+| `fb_loss` | 1283845 | 277162 | 1307751 | 286643 |
+| `disc_loss` | 0.4494 | 0.0119 | 0.4494 | 0.0125 |
+| `critic_loss` | 1796.0 | 29.2 | 2607.9 | 39.6 |
+| `aux_critic_loss` | 248.9 | 28.0 | 279.1 | 53.5 |
+| `actor_loss` | 50068 | 20833 | 50068 | 22388 |
+| `Q_fb` | 2837.2 | 1238.8 | 2842.5 | 1490.2 |
+| `Q_discriminator` | -332.2 | -334.2 | -289.5 | -289.5 |
+| `Q_aux` | -101.3 | -101.3 | -67.9 | -67.9 |
+
+`B_norm` and `z_norm` remained exactly `16.0`. QD scale remained finite:
+`target_Q` ended at `-305.3`, `Q1` at `-306.0`, and `unc_Q` at `1.28`.
+Qaux scale remained finite: `target_auxQ` ended at `-73.7`, `auxQ1` at
+`-74.1`, and `unc_auxQ` at `1.76`.
+
+| Stability audit | Result |
+| :--- | :--- |
+| All returned scalar metrics finite | `PASS` |
+| Monitored 100x scale warning | `NONE` |
+| F / B / D / QD / Qaux / Actor changed | `PASS` |
+| target F / B / QD / Qaux changed | `PASS` |
+| Six optimizer steps | `100` each |
+| Optimizer state finite | `PASS` |
+| Observation normalizer finite | `PASS` at all 100 updates |
+| Auxiliary reward normalizer finite | `PASS` at all 100 updates |
+| z-buffer | `0 -> 8192`, capacity `8192` |
+| Numerical stability | `PASS` |
+
+The ignored machine-readable result is
+`results/m2.4d-3-100-update-stability/summary.json`. No smoke checkpoint was
+saved. M2.5 must begin from a fresh official BFM0 checkpoint, not this smoke
+state.
+
+M2.4 Training Preparation: `COMPLETE`.
+
+Next milestone: `M2.5 — Original BFM-Zero Skate Baseline`.

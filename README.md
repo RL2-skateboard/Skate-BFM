@@ -50,7 +50,9 @@ official checkpoint. The complete graph produced finite metrics, six optimizer
 steps, online and target parameter changes, and finite normalizers. M2.4d-2
 then completed 10 consecutive native updates on one frozen 1024-transition
 replay. All metrics, parameters, optimizer states, and normalizers remained
-finite; M2.4d-3 is the next 100-update stability smoke.
+finite. M2.4d-3 then completed 100 native updates on one frozen replay without
+numerical or value-scale runaway. M2.4 training preparation is complete; M2.5
+will restart from the official BFM0 checkpoint.
 Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
@@ -152,6 +154,24 @@ python train/scripts/train_skate_bfm.py
 This collects the 1024-transition replay once, freezes it, and calls the
 vendored native update exactly 10 times. The output is diagnostic-only and
 does not save a checkpoint.
+
+Run the M2.4d-3 100-update stability smoke:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=100 \
+SKATE_MAX_STEPS=1024 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.4d-3-100-update-stability \
+python train/scripts/train_skate_bfm.py
+```
+
+This diagnostic fixed-data smoke accepts only 1, 10, or 100 native updates.
+It is not a checkpoint continuation or a control-performance evaluation.
 
 Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
 

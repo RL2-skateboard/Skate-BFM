@@ -1352,3 +1352,21 @@ the formal Skate runtime action contract.
   8192, 8192` with capacity `8192`.
 - No checkpoint or performance evaluation was produced.
 - Next milestone: `M2.4d-3 — 100-Update Stability Smoke`.
+
+## M2.4d-3 100-Update Stability Smoke
+
+- Date: `2026-08-12`
+- Extended fail-closed `full` smoke mode to the only allowed counts `1`, `10`,
+  and `100`.
+- Collected one fixed 1024-transition HUSKY replay and executed exactly 100
+  native `FBcprAuxAgent.update()` calls with a fresh official BFM0 load.
+- All 100 returned metric dictionaries, online/target module states, optimizer
+  states, and normalizer states remained finite. No 100x scale warning was
+  triggered for monitored losses or Q metrics.
+- All six Adam optimizers reached step 100. The z-buffer saturated normally at
+  its configured capacity 8192 and remained finite.
+- The fixed-replay experiment is diagnostic only: no checkpoint, online
+  collect-update alternation, or skating-performance evaluation was used.
+- M2.4 training preparation: `COMPLETE`.
+- Next milestone: `M2.5 — Original BFM-Zero Skate Baseline`, restarting from
+  the official checkpoint.

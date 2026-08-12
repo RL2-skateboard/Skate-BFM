@@ -211,10 +211,10 @@ class TrainConfig(BaseConfig):
                 )
             if (
                 self.skate_update_mode == "full"
-                and self.adaptation_updates not in {1, 10}
+                and self.adaptation_updates not in {1, 10, 100}
             ):
                 raise ValueError(
-                    "Native full-update smoke requires adaptation_updates=1 or 10."
+                    "Native full-update smoke requires adaptation_updates=1, 10, or 100."
                 )
             if self.skate_update_mode == "full" and self.skate_max_steps != 1024:
                 raise ValueError(
@@ -1903,9 +1903,9 @@ class Workspace:
     def _full_skate_update(self, replay_buffer: dict) -> dict:
         if self.cfg.collect_only or self.cfg.skate_update_mode != "full":
             raise RuntimeError("Native full update requires full Skate mode.")
-        if self.cfg.adaptation_updates not in {1, 10}:
+        if self.cfg.adaptation_updates not in {1, 10, 100}:
             raise RuntimeError(
-                "Native full-update smoke requires exactly one or ten updates."
+                "Native full-update smoke requires exactly one, ten, or 100 updates."
             )
         if self.agent.checkpoint_source != "official_bfm0_pretrained":
             raise RuntimeError("Native full-update smoke requires official BFM0.")
@@ -2139,11 +2139,57 @@ class Workspace:
                 "max": max(values),
                 "last": values[-1],
             }
+        metric_snapshots = {
+            str(index): metrics_by_update[index - 1]
+            for index in range(1, self.cfg.adaptation_updates + 1)
+            if index == 1
+            or index == self.cfg.adaptation_updates
+            or index % 10 == 0
+        }
+        monitored_metrics = (
+            "fb_loss",
+            "disc_loss",
+            "critic_loss",
+            "aux_critic_loss",
+            "actor_loss",
+            "Q_fb",
+            "Q_discriminator",
+            "Q_aux",
+            "target_Q",
+            "Q1",
+            "unc_Q",
+            "target_auxQ",
+            "auxQ1",
+            "unc_auxQ",
+            "B_norm",
+            "z_norm",
+        )
+        scale_warnings = []
+        for name in monitored_metrics:
+            values = [abs(metrics[name]) for metrics in metrics_by_update]
+            first = max(values[0], 1e-12)
+            if max(values) > first * 100.0:
+                scale_warnings.append(
+                    f"{name} exceeded 100x its first absolute value."
+                )
+        stability = (
+            "PASS WITH WARNING" if scale_warnings else "PASS"
+        )
+        if self.cfg.adaptation_updates == 100:
+            next_milestone = "M2.5 — Original BFM-Zero Skate Baseline"
+        elif self.cfg.adaptation_updates == 10:
+            next_milestone = "M2.4d-3 — 100-Update Stability Smoke"
+        else:
+            next_milestone = "M2.4d-2 — Short Multi-Update Stability Smoke"
         summary = {
             "milestone": (
                 "M2.4d-1 Native Full-Update Smoke"
                 if self.cfg.adaptation_updates == 1
-                else "M2.4d-2 Short Multi-Update Stability Smoke"
+                else (
+                    "M2.4d-2 Short Multi-Update Stability Smoke"
+                    if self.cfg.adaptation_updates == 10
+                    else "M2.4d-3 100-Update Stability Smoke"
+                )
             ),
             "checkpoint": {
                 **self.agent.pretrained_load_report,
@@ -2172,6 +2218,7 @@ class Workspace:
                 "direct_update_fb_calls": self.fb_update_calls,
                 "update_count": self.cfg.adaptation_updates,
                 "metrics_by_update": metrics_by_update,
+                "metric_snapshots": metric_snapshots,
                 "metric_summary": metric_summary,
             },
             "aux_rewards": {
@@ -2206,12 +2253,12 @@ class Workspace:
             "smoke_checkpoint_saved": False,
             "all_metrics_finite": True,
             "all_parameters_finite": True,
-            "numerical_stability": "PASS",
-            "next_milestone": (
-                "M2.4d-2 — Short Multi-Update Stability Smoke"
-                if self.cfg.adaptation_updates == 1
-                else "M2.4d-3 — 100-Update Stability Smoke"
+            "scale_warnings": scale_warnings,
+            "numerical_stability": stability,
+            "training_preparation": (
+                "COMPLETE" if self.cfg.adaptation_updates == 100 else "IN PROGRESS"
             ),
+            "next_milestone": next_milestone,
         }
         with (self.work_dir / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True)
