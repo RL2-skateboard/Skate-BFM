@@ -25,7 +25,7 @@ Git.
 
 ![Skate-BFM development substages](../docs/assets/development_substage.svg)
 
-**Status as of 2026-08-11:** the project-level BFM0-HUSKY foundation and frozen
+**Status as of 2026-08-12:** the project-level BFM0-HUSKY foundation and frozen
 capability audit are complete. Base and Skate expert sources, M2.1 Skate
 online replay, and M2.2a official BFM0 initialization plus expert/replay merge
 are complete. M2.2b-1 completed the first controlled F/B-only Skate adaptation
@@ -61,8 +61,14 @@ short multi-update stability smoke. M2.4d-2 then completed 10 consecutive
 native updates on one frozen 1024-transition replay. All metrics and training
 state remained finite, with the z-buffer saturating at its configured capacity.
 M2.4d-3 then completed 100 fixed-replay native updates with finite metrics and
-no value-scale runaway. M2.4 training preparation is complete. M2.5 must
-restart from the official BFM0 checkpoint and does not reuse a smoke model.
+no value-scale runaway. M2.4 training preparation is complete. M2.5a restarted
+from the official BFM0 checkpoint and completed the first native closed-loop
+bring-up: 2,000 online nominal-HUSKY transitions, two 50-update native blocks,
+and post-update Actor data in the growing replay. It uses a pretrained-Actor
+stochastic warmup rather than the original Base random-action seed phase. This
+is a training-interface/adaptation-schedule difference, not a BFM loss or
+algorithm change. It is not a performance evaluation or final checkpoint.
+M2.5b is next.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -164,9 +170,33 @@ SKATE_WORK_DIR=$PWD/results/m2.4d-2-short-stability \
 python train/scripts/train_skate_bfm.py
 ```
 
-For `full`, `SKATE_ADAPTATION_UPDATES` is restricted to `1`, `10`, or `100`.
-The stability smokes reuse one fixed replay dataset, resample the 64/64 expert
-mixture on every native update, and save only an ignored `summary.json`.
+For the M2.4 fixed-replay smoke, `SKATE_ADAPTATION_UPDATES` is restricted to
+`1`, `10`, or `100`. The stability smokes reuse one fixed replay dataset,
+resample the 64/64 expert mixture on every native update, and save only an
+ignored `summary.json`.
+
+Run the M2.5a native closed-loop bring-up:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=0 \
+SKATE_MAX_STEPS=2000 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.5a-closed-loop-bringup \
+python train/scripts/train_skate_bfm.py
+```
+
+`full + SKATE_ADAPTATION_UPDATES=0` is reserved for the M2.5 closed-loop path.
+It collects with the official pretrained Actor using its native stochastic
+distribution (`mean=False`), samples rollout latents through `model.sample_z()`,
+resets the latent after every terminal or truncated episode, and calls only
+vendored `FBcprAuxAgent.update()`. The `1`, `10`, and `100` values remain the
+unchanged M2.4 fixed-replay smokes. The ignored M2.5a summary records the
+Actor hashes and transition ranges; it saves no training checkpoint.
 
 Run the M2.4d-3 100-update stability smoke:
 

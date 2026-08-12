@@ -1370,3 +1370,70 @@ the formal Skate runtime action contract.
 - M2.4 training preparation: `COMPLETE`.
 - Next milestone: `M2.5 — Original BFM-Zero Skate Baseline`, restarting from
   the official checkpoint.
+
+## M2.5a Native Closed-Loop Baseline Bring-Up
+
+- Date: `2026-08-12`
+- Restarted from the strict official BFM0 checkpoint, SHA256
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Added the minimal `full + adaptation_updates=0` route in the project-owned
+  training entry. Existing `full + {1, 10, 100}` fixed-replay smokes remain
+  unchanged.
+- Executed 2,000 nominal-HUSKY online transitions with one growing Skate
+  replay. The first 1,500 transitions used A0, then 50 native updates produced
+  A1; transitions 1,501-2,000 were collected by A1 before the final 50 native
+  updates produced A2.
+- The 1,024-row warmup uses the official pretrained Actor's native stochastic
+  action distribution and `model.sample_z()`. It does not use the original
+  Base-training random-action seed phase. Episode reset also clears the
+  rollout latent before a new one is sampled.
+- No randomization, loss, optimizer, reward, termination, expert-mixture,
+  observation, action, or replay-schema change was made. No checkpoint was
+  saved. This is a closed-loop health check, not a skating-quality result.
+- Next milestone: `M2.5b — Original BFM-Zero Skate Baseline Training`.
+
+### Code Change Summary
+
+1. `train/scripts/train_skate_bfm.py`
+
+   - Changed: added the `full + adaptation_updates=0` closed-loop collection
+     and two native-update blocks.
+   - Why: prove that updated-Actor HUSKY data re-enters the replay before a
+     subsequent untouched vendored native update.
+   - Original logic: `full` supported only 1/10/100 fixed-replay diagnostics.
+   - New logic: zero selects the fixed 2,000-transition M2.5a schedule;
+     positive supported values preserve the existing smoke path.
+   - Algorithm behavior changed: `YES`, only the project training-loop
+     schedule and online action sampling for M2.5a.
+   - Affected module: project-owned Skate training entry.
+
+2. `tests/test_integration.py`
+
+   - Changed: covered full-mode routing for 0, 1, 10, and 100 updates.
+   - Why: prevent the M2.5a path from replacing M2.4 smoke behavior.
+   - Original logic: configuration-only full-mode coverage.
+   - New logic: zero dispatches to closed loop; positive supported values
+     dispatch to the existing smoke method and retain `train is train_skate`.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: regression validation.
+
+### Overall Code Change Summary
+
+- Model architecture changed: `NO`.
+- Loss changed: `NO`.
+- Optimizer configuration changed: `NO`.
+- Native update algorithm changed: `NO`.
+- Training loop changed: `YES`; zero updates selects online
+  collect/update/collect/update instead of a fixed replay smoke.
+- Expert sampling and Expert MotionLib changed: `NO`.
+- Online latent sampling changed: `NO`; retained `sample_z()`.
+- Online action sampling changed: `YES`; M2.5a uses the native stochastic
+  Actor distribution while diagnostic smoke collection remains deterministic.
+- Exploration algorithm changed: `NO`; no wrapper noise or random-action
+  warmup was added.
+- Replay distribution behavior changed: `YES`; A1 data enters the replay.
+- Replay schema, observations, actions, rewards, reward scaling, termination,
+  domain randomization, evaluation protocol, and vendored BFM-Zero changed:
+  `NO`.
+- Training performed: `YES`; 2,000 transitions and 100 native updates.
+- Performance conclusion: `NO`.

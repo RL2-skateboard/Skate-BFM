@@ -2,6 +2,7 @@ import importlib.util
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -306,6 +307,13 @@ def test_native_full_update_mode_is_single_step_only(monkeypatch) -> None:
     assert not cfg.collect_only
     assert cfg.adaptation_updates == 1
 
+    monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "0")
+    monkeypatch.delenv("SKATE_MAX_STEPS")
+    cfg = module.build_train_config()
+    assert cfg.adaptation_updates == 0
+    assert cfg.skate_max_steps == module.SKATE_CLOSED_LOOP_TRANSITIONS
+
+    monkeypatch.setenv("SKATE_MAX_STEPS", "1024")
     monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "10")
     cfg = module.build_train_config()
     assert cfg.adaptation_updates == 10
@@ -321,13 +329,67 @@ def test_native_full_update_mode_is_single_step_only(monkeypatch) -> None:
     monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "2")
     with pytest.raises(
         ValueError,
-        match="adaptation_updates=1, 10, or 100",
+        match="adaptation_updates=0, 1, 10, or 100",
     ):
         module.build_train_config()
 
     monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "1000")
     with pytest.raises(
         ValueError,
-        match="adaptation_updates=1, 10, or 100",
+        match="adaptation_updates=0, 1, 10, or 100",
     ):
         module.build_train_config()
+
+
+@pytest.mark.parametrize(
+    ("adaptation_updates", "expected_route"),
+    ((0, "closed_loop"), (1, "smoke"), (10, "smoke"), (100, "smoke")),
+)
+def test_full_mode_routes_closed_loop_only_for_zero_updates(
+    monkeypatch,
+    tmp_path: Path,
+    adaptation_updates: int,
+    expected_route: str,
+) -> None:
+    module = _train_skate_bfm_module()
+    workspace = object.__new__(module.Workspace)
+    workspace.cfg = SimpleNamespace(
+        use_trajectory_buffer=False,
+        buffer_size=8,
+        buffer_device="cpu",
+        skate_update_mode="full",
+        adaptation_updates=adaptation_updates,
+    )
+    workspace.work_dir = tmp_path
+    workspace.training_with_expert_data = False
+    workspace.uses_base_online_env = False
+    workspace.train_env = object()
+    workspace.train_env_info = None
+    routes = []
+
+    class FakeBuffer:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+    monkeypatch.setattr(module, "DictBuffer", FakeBuffer)
+    monkeypatch.setattr(
+        workspace,
+        "_closed_loop_skate_baseline",
+        lambda replay: routes.append(("closed_loop", replay)),
+    )
+    monkeypatch.setattr(
+        workspace,
+        "_full_skate_update",
+        lambda replay: routes.append(("smoke", replay)),
+    )
+    monkeypatch.setattr(
+        workspace,
+        "_collect_skate_online",
+        lambda replay: routes.append(("collect", replay)),
+    )
+
+    workspace.train_online()
+
+    assert [route for route, _ in routes] == [expected_route]
+    replay = routes[0][1]
+    assert replay["train"] is replay["train_skate"]

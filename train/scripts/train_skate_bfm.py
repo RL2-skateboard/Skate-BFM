@@ -78,6 +78,12 @@ REWARD_EVAL_LOG_FILENAME = "reward_eval_log.csv"
 TRACKING_EVAL_LOG_FILENAME = "tracking_eval_log.csv"
 
 CHECKPOINT_DIR_NAME = "checkpoint"
+SKATE_EPISODE_HORIZON = 1024
+SKATE_CLOSED_LOOP_TRANSITIONS = 2000
+SKATE_CLOSED_LOOP_WARMUP = 1024
+SKATE_CLOSED_LOOP_UPDATE_EVERY = 500
+SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK = 50
+SKATE_CLOSED_LOOP_FIRST_UPDATE = 1500
 
 _ENC_CONFIG_TO_EXPERT_DATA_OBS_MAPPER = {
     HumanoidVerseIsaacConfig: None,
@@ -211,14 +217,27 @@ class TrainConfig(BaseConfig):
                 )
             if (
                 self.skate_update_mode == "full"
-                and self.adaptation_updates not in {1, 10, 100}
+                and self.adaptation_updates not in {0, 1, 10, 100}
             ):
                 raise ValueError(
-                    "Native full-update smoke requires adaptation_updates=1, 10, or 100."
+                    "Native full-update mode requires adaptation_updates=0, 1, 10, or 100."
                 )
-            if self.skate_update_mode == "full" and self.skate_max_steps != 1024:
+            if (
+                self.skate_update_mode == "full"
+                and self.adaptation_updates > 0
+                and self.skate_max_steps != 1024
+            ):
                 raise ValueError(
                     "Native full-update smoke requires skate_max_steps=1024."
+                )
+            if (
+                self.skate_update_mode == "full"
+                and self.adaptation_updates == 0
+                and self.skate_max_steps != SKATE_CLOSED_LOOP_TRANSITIONS
+            ):
+                raise ValueError(
+                    "Native closed-loop baseline requires skate_max_steps="
+                    f"{SKATE_CLOSED_LOOP_TRANSITIONS}."
                 )
             if self.skate_update_mode == "fb_only" and self.adaptation_protocol is None:
                 raise ValueError(
@@ -1094,6 +1113,8 @@ class Workspace:
             if self.cfg.skate_update_mode == "fb_only":
                 return self._adapt_skate_fb(replay_buffer)
             if self.cfg.skate_update_mode == "full":
+                if self.cfg.adaptation_updates == 0:
+                    return self._closed_loop_skate_baseline(replay_buffer)
                 return self._full_skate_update(replay_buffer)
             return self._collect_skate_online(replay_buffer)
 
@@ -1900,6 +1921,296 @@ class Workspace:
         )
         return replay_buffer
 
+    def _closed_loop_skate_baseline(self, replay_buffer: dict) -> dict:
+        if self.cfg.collect_only or self.cfg.skate_update_mode != "full":
+            raise RuntimeError("Native closed-loop baseline requires full Skate mode.")
+        if self.cfg.adaptation_updates != 0:
+            raise RuntimeError("Native closed-loop baseline requires adaptation_updates=0.")
+        if not isinstance(self.train_env, HuskyBfmOnlineEnv):
+            raise RuntimeError(
+                "Native closed-loop baseline requires HuskyBfmOnlineEnv."
+            )
+        if self.agent.checkpoint_source != "official_bfm0_pretrained":
+            raise RuntimeError("Native closed-loop baseline requires official BFM0.")
+        if (self.work_dir / "summary.json").exists():
+            raise RuntimeError("Native closed-loop baseline requires a fresh work directory.")
+        if replay_buffer["train"] is not replay_buffer["train_skate"]:
+            raise RuntimeError("train must remain an alias of train_skate.")
+
+        model = self.agent._model
+        model.eval()
+        observation = self.train_env.reset()
+        z = None
+        transitions = []
+        transition_ranges = []
+        update_blocks = []
+        components_before = hash_components(self.agent)
+        actor_hashes = {"A0": components_before["Actor"]}
+        optimizers = {
+            "forward": self.agent.forward_optimizer,
+            "backward": self.agent.backward_optimizer,
+            "discriminator": self.agent.discriminator_optimizer,
+            "critic": self.agent.critic_optimizer,
+            "aux_critic": self.agent.aux_critic_optimizer,
+            "actor": self.agent.actor_optimizer,
+        }
+        optimizer_before = {
+            name: optimizer_step_report(optimizer)
+            for name, optimizer in optimizers.items()
+        }
+        if any(report["state_entries"] != 0 for report in optimizer_before.values()):
+            raise RuntimeError("Native closed-loop baseline requires fresh optimizers.")
+
+        def collect_range(start: int, end: int, policy_hash: str) -> None:
+            nonlocal observation, z
+            range_transitions = []
+            for step in range(start, end + 1):
+                if z is None or (step - 1) % self.agent.cfg.train.update_z_every_step == 0:
+                    z = self.agent._model.sample_z(1, device=self.agent.device)[0]
+                model_observation = {
+                    key: value.unsqueeze(0).to(self.agent.device)
+                    for key, value in observation.items()
+                }
+                with torch.no_grad():
+                    action_bfm = self.agent.act(
+                        obs=model_observation,
+                        z=z.unsqueeze(0),
+                        mean=False,
+                    )[0]
+                transition = self.train_env.step(
+                    action_bfm,
+                    z,
+                    truncated=step % SKATE_EPISODE_HORIZON == 0,
+                )
+                replay_buffer["train_skate"].extend(transition.as_buffer_data())
+                transitions.append(transition)
+                range_transitions.append(transition)
+                if transition.terminated or transition.truncated:
+                    observation = self.train_env.reset()
+                    z = None
+                else:
+                    observation = transition.next_observation
+            transition_ranges.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "policy_actor_hash": policy_hash,
+                    "transition_count": len(range_transitions),
+                    "terminated_count": sum(
+                        transition.terminated for transition in range_transitions
+                    ),
+                    "truncated_count": sum(
+                        transition.truncated for transition in range_transitions
+                    ),
+                }
+            )
+
+        def update_block(env_step: int) -> dict[str, tp.Any]:
+            self._run_skate_preflight(replay_buffer)
+            model.train()
+            model.requires_grad_(True)
+            metrics_by_update = []
+            for _ in range(SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK):
+                self.agent_update_calls += 1
+                metrics = self.agent.update(replay_buffer, env_step)
+                metric_report = {
+                    name: float(value.detach().mean().cpu())
+                    for name, value in metrics.items()
+                }
+                if not metric_report or not all(
+                    np.isfinite(value) for value in metric_report.values()
+                ):
+                    raise RuntimeError(
+                        "Native closed-loop update returned non-finite metrics at "
+                        f"env step {env_step}."
+                    )
+                if tuple(
+                    name
+                    for name in AUX_REWARD_KEYS
+                    if f"aux_rew/{name}" in metric_report
+                ) != AUX_REWARD_KEYS:
+                    raise RuntimeError(
+                        "Native closed-loop update did not read all auxiliary rewards."
+                    )
+                if not all(
+                    module_state_is_finite(module)
+                    for module in (
+                        model,
+                        model._obs_normalizer,
+                        model._aux_reward_normalizer,
+                    )
+                ):
+                    raise RuntimeError(
+                        "Native closed-loop update produced non-finite model state."
+                    )
+                metrics_by_update.append(metric_report)
+            summary = {}
+            for name in metrics_by_update[0]:
+                values = [metrics[name] for metrics in metrics_by_update]
+                summary[name] = {
+                    "first": values[0],
+                    "mean": float(np.mean(values)),
+                    "min": min(values),
+                    "max": max(values),
+                    "last": values[-1],
+                }
+            model.eval()
+            return {
+                "env_step": env_step,
+                "native_updates": SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK,
+                "metric_summary": summary,
+            }
+
+        try:
+            collect_range(1, SKATE_CLOSED_LOOP_WARMUP, actor_hashes["A0"])
+            collect_range(
+                SKATE_CLOSED_LOOP_WARMUP + 1,
+                SKATE_CLOSED_LOOP_FIRST_UPDATE,
+                actor_hashes["A0"],
+            )
+            update_blocks.append(update_block(SKATE_CLOSED_LOOP_FIRST_UPDATE))
+            actor_hashes["A1"] = hash_params(model._actor)
+            if actor_hashes["A1"] == actor_hashes["A0"]:
+                raise RuntimeError("Actor did not change after closed-loop update block 1.")
+            collect_range(
+                SKATE_CLOSED_LOOP_FIRST_UPDATE + 1,
+                SKATE_CLOSED_LOOP_TRANSITIONS,
+                actor_hashes["A1"],
+            )
+            update_blocks.append(update_block(SKATE_CLOSED_LOOP_TRANSITIONS))
+            actor_hashes["A2"] = hash_params(model._actor)
+        finally:
+            self.train_env.close()
+
+        if actor_hashes["A2"] == actor_hashes["A1"]:
+            raise RuntimeError("Actor did not change after closed-loop update block 2.")
+        if len(transitions) != SKATE_CLOSED_LOOP_TRANSITIONS or len(replay_buffer["train"]) != SKATE_CLOSED_LOOP_TRANSITIONS:
+            raise RuntimeError("Native closed-loop baseline did not collect 2000 transitions.")
+        if self.agent_update_calls != 2 * SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK:
+            raise RuntimeError("Native closed-loop baseline did not run 100 updates.")
+        if self.fb_update_calls != 0:
+            raise RuntimeError("Native closed-loop baseline used a direct B/F update.")
+        if any(
+            transition.action_bfm.shape != (29,)
+            or transition.action_husky.shape != (23,)
+            for transition in transitions
+        ):
+            raise RuntimeError("Native closed-loop action contract changed.")
+        full_replay = replay_buffer["train"].get_full_buffer()
+        terminated = full_replay["next"]["terminated"]
+        truncated = full_replay["next"]["truncated"]
+        aux_rewards = full_replay.get("aux_rewards")
+        if (
+            tuple(full_replay["action"].shape) != (2000, 29)
+            or tuple(full_replay["z"].shape) != (2000, 256)
+            or tuple(terminated.shape) != (2000, 1)
+            or tuple(truncated.shape) != (2000, 1)
+            or terminated.dtype is not torch.bool
+            or truncated.dtype is not torch.bool
+            or bool((terminated & truncated).any())
+            or not isinstance(aux_rewards, dict)
+            or tuple(aux_rewards) != AUX_REWARD_KEYS
+        ):
+            raise RuntimeError("Native closed-loop replay contract is invalid.")
+        for name in AUX_REWARD_KEYS:
+            values = aux_rewards[name]
+            if tuple(values.shape) != (2000, 1) or not bool(
+                torch.isfinite(values).all()
+            ):
+                raise RuntimeError(f"Invalid closed-loop auxiliary reward: {name}.")
+
+        optimizer_after = {
+            name: optimizer_step_report(optimizer)
+            for name, optimizer in optimizers.items()
+        }
+        if any(
+            report["step_values"] != [100.0] or not report["finite"]
+            for report in optimizer_after.values()
+        ):
+            raise RuntimeError("Native closed-loop optimizer state is invalid.")
+        if not module_state_is_finite(model):
+            raise RuntimeError("Native closed-loop model state is non-finite.")
+
+        components_after = hash_components(self.agent)
+        module_mutation = {
+            name: {
+                "before": components_before[name],
+                "after": components_after[name],
+                "changed": components_before[name] != components_after[name],
+            }
+            for name in components_before
+        }
+        if not all(report["changed"] for report in module_mutation.values()):
+            raise RuntimeError("Native closed-loop update did not mutate all modules.")
+        summary = {
+            "milestone": "M2.5a Native Closed-Loop Baseline Bring-Up",
+            "checkpoint": {
+                **self.agent.pretrained_load_report,
+                "model_sha256": hash_file(
+                    Path(self.agent.pretrained_load_report["model_file"])
+                ),
+            },
+            "training": {
+                "env_transitions": SKATE_CLOSED_LOOP_TRANSITIONS,
+                "warmup_transitions": SKATE_CLOSED_LOOP_WARMUP,
+                "first_update_transition": SKATE_CLOSED_LOOP_FIRST_UPDATE,
+                "update_every_transitions": SKATE_CLOSED_LOOP_UPDATE_EVERY,
+                "updates_per_block": SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK,
+                "total_native_updates": self.agent_update_calls,
+                "warmup_source": "pretrained_actor_stochastic",
+                "domain_randomization": False,
+            },
+            "replay": {
+                "final_size": len(replay_buffer["train"]),
+                "train_is_train_skate": replay_buffer["train"] is replay_buffer["train_skate"],
+                "terminated_count": int(terminated.sum()),
+                "truncated_count": int(truncated.sum()),
+                "normal_count": int((~(terminated | truncated)).sum()),
+                "reset_crossing_transitions": 0,
+            },
+            "policy_versions": {
+                **actor_hashes,
+                "A0_not_equal_A1": actor_hashes["A0"] != actor_hashes["A1"],
+                "A1_not_equal_A2": actor_hashes["A1"] != actor_hashes["A2"],
+            },
+            "transition_provenance": transition_ranges,
+            "expert": {
+                "base_sequences_per_update": self.preflight_report["expert_base_sequences"],
+                "skate_sequences_per_update": self.preflight_report["expert_skate_sequences"],
+                "sequence_length": self.preflight_report["expert_sequence_length"],
+            },
+            "update_blocks": update_blocks,
+            "optimizer": {
+                name: {"before": optimizer_before[name], "after": optimizer_after[name]}
+                for name in optimizers
+            },
+            "module_mutation": module_mutation,
+            "normalizers": {
+                "obs_finite": module_state_is_finite(model._obs_normalizer),
+                "aux_reward_finite": module_state_is_finite(model._aux_reward_normalizer),
+            },
+            "z_buffer": {
+                "size": len(self.agent.z_buffer),
+                "capacity": self.agent.z_buffer.capacity,
+                "finite": bool(torch.isfinite(self.agent.z_buffer._storage).all()),
+            },
+            "native_closed_loop": "PASS",
+            "performance_evaluated": False,
+            "checkpoint_saved": False,
+            "next_milestone": "M2.5b — Original BFM-Zero Skate Baseline Training",
+        }
+        with (self.work_dir / "summary.json").open("w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        self.last_replay_buffer = replay_buffer
+        self.last_skate_transitions = transitions
+        self.preflight_report = summary
+        print(
+            "M2.5a native closed-loop bring-up complete: "
+            f"{len(transitions)} transitions, {self.agent_update_calls} updates"
+        )
+        return replay_buffer
+
     def _full_skate_update(self, replay_buffer: dict) -> dict:
         if self.cfg.collect_only or self.cfg.skate_update_mode != "full":
             raise RuntimeError("Native full update requires full Skate mode.")
@@ -2485,7 +2796,12 @@ def build_train_config() -> TrainConfig:
         default=skate_mode and skate_update_mode == "none",
     )
     adaptation_updates = int(os.environ.get("SKATE_ADAPTATION_UPDATES", "0"))
-    default_skate_steps = "1024" if skate_update_mode in {"fb_only", "full"} else "64"
+    if skate_update_mode == "full" and adaptation_updates == 0:
+        default_skate_steps = str(SKATE_CLOSED_LOOP_TRANSITIONS)
+    elif skate_update_mode in {"fb_only", "full"}:
+        default_skate_steps = "1024"
+    else:
+        default_skate_steps = "64"
     skate_max_steps = int(
         os.environ.get("SKATE_MAX_STEPS", default_skate_steps)
     )

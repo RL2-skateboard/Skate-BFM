@@ -16,7 +16,7 @@ mounting, riding, steering, recovery, and safe departure.
 
 ![Skate-BFM development substages](docs/assets/development_substage.svg)
 
-**Status as of 2026-08-11:** the official BFM0-HUSKY foundation and matched
+**Status as of 2026-08-12:** the official BFM0-HUSKY foundation and matched
 frozen-BFM0 capability audit are complete. Base and Skate expert sources,
 M2.1 Skate online replay, and M2.2a official BFM0 initialization plus
 expert/replay merge are complete. M2.2b-1 enabled and validated the first
@@ -51,8 +51,13 @@ steps, online and target parameter changes, and finite normalizers. M2.4d-2
 then completed 10 consecutive native updates on one frozen 1024-transition
 replay. All metrics, parameters, optimizer states, and normalizers remained
 finite. M2.4d-3 then completed 100 native updates on one frozen replay without
-numerical or value-scale runaway. M2.4 training preparation is complete; M2.5
-will restart from the official BFM0 checkpoint.
+numerical or value-scale runaway. M2.4 training preparation is complete.
+M2.5a then completed a native closed-loop bring-up from a fresh official BFM0
+checkpoint: 2,000 nominal-HUSKY transitions grew one replay online, the
+pretrained stochastic Actor collected warmup data, 100 unchanged native updates
+ran in two blocks, and data from the updated Actor entered the second block.
+This is a training-loop health result only, not a skating-performance or
+convergence claim. M2.5b is the next original BFM-Zero Skate baseline run.
 Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
@@ -172,6 +177,29 @@ python train/scripts/train_skate_bfm.py
 
 This diagnostic fixed-data smoke accepts only 1, 10, or 100 native updates.
 It is not a checkpoint continuation or a control-performance evaluation.
+
+Run the M2.5a native closed-loop bring-up:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=0 \
+SKATE_MAX_STEPS=2000 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.5a-closed-loop-bringup \
+python train/scripts/train_skate_bfm.py
+```
+
+For `full` mode only, `SKATE_ADAPTATION_UPDATES=0` selects the M2.5a
+closed-loop schedule: 1,024 pretrained-Actor stochastic warmup transitions,
+476 further A0 transitions, 50 native updates at transition 1,500, 500 A1
+transitions, then 50 native updates at transition 2,000. The existing `1`,
+`10`, and `100` values retain their fixed-replay diagnostic smoke behavior.
+The M2.5a output is an ignored machine report, no checkpoint is saved, and no
+performance evaluation is run.
 
 Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
 

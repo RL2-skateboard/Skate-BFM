@@ -765,3 +765,87 @@ state.
 M2.4 Training Preparation: `COMPLETE`.
 
 Next milestone: `M2.5 — Original BFM-Zero Skate Baseline`.
+
+## M2.5a Native Closed-Loop Baseline Bring-Up
+
+This is a closed-loop correctness and numerical-health bring-up, not a
+skateboarding performance, convergence, success-rate, or checkpoint result.
+
+- Date: `2026-08-12`
+- Initialization: fresh official BFM0 bundle, strict 537-key load; model
+  SHA256 `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Dynamics: nominal HUSKY only; domain randomization `false`.
+- Expert mixture per native update: 64 complete Base sequences plus 64
+  complete Skate sequences, length `8`.
+- Warmup: `1,024` online rows collected with the pretrained Actor's native
+  stochastic distribution. This deliberately differs from Original BFM-Zero
+  Base training's random-action seed phase because M2.5a starts from BFM0.
+- Online schedule: A0 collected transitions `1-1,500`; 50 native updates at
+  transition `1,500`; A1 collected `1,501-2,000`; 50 native updates at
+  transition `2,000`.
+- Rollout latents: native `model.sample_z()` with the configured update period;
+  reset samples a new latent. No new exploration method was introduced.
+- Checkpoint saved: `NO`.
+
+### Replay and Policy Provenance
+
+| Quantity | Result |
+| :--- | ---: |
+| Environment transitions | `2000 / 2000` |
+| Final replay size | `2000` |
+| Normal transitions | `1967` |
+| Confirmed terminal falls | `32` |
+| Horizon truncations | `1` |
+| Reset-crossing transitions | `0` |
+| `train is train_skate` | `YES` |
+| Native `agent.update()` calls | `100 / 100` |
+| Direct `update_fb()` calls | `0` |
+
+| Actor version | SHA256 |
+| :--- | :--- |
+| A0, before first block | `33640d01b24f2a93f69a55b2a1ec0ae88a6d30502792e862b4cea9a6206a4fe7` |
+| A1, after first 50 updates | `82d034297ea42fbfec6bd7ed439d0af9c93d810c888261052b78884287903ba4` |
+| A2, after second 50 updates | `2223e69d9817eb7397fec7b26f5660c00ab4a135fa835cea9935679bdec0127b` |
+
+`A0 != A1` and `A1 != A2`: `PASS`. The 500 rows from `1501-2000` were
+collected by A1, so updated-policy data entered the replay before update block
+two. A0 ranges `1-1024` and `1025-1500` had `15/1` and `6/0`
+terminal/truncated rows; the A1 range had `11/0` terminal/truncated rows.
+These counts are provenance diagnostics only and are not compared as policy
+quality.
+
+### Native Metric Summaries
+
+Values are `first / mean / last` across each 50-update native block. They are
+health observations only; no monotonic improvement criterion was applied.
+
+| Metric | Block 1 at 1500 | Block 2 at 2000 |
+| :--- | ---: | ---: |
+| `fb_loss` | `986467 / 565549 / 348182` | `378528 / 274514 / 224516` |
+| `disc_loss` | `0.43820 / 0.05030 / 0.02102` | `0.04723 / 0.02092 / 0.01438` |
+| `critic_loss` | `1129.67 / 1286.95 / 1203.36` | `1748.72 / 820.21 / 137.18` |
+| `aux_critic_loss` | `166.75 / 115.98 / 96.50` | `179.01 / 94.56 / 58.30` |
+| `actor_loss` | `48756.79 / 30083.38 / 24652.84` | `26709.65 / 27669.04 / 27435.82` |
+| `Q_fb` | `1801.36` mean | `1790.35` mean |
+| `Q_discriminator` | `-318.41` mean | `-298.77` mean |
+| `Q_aux` | `-79.21` mean | `-72.97` mean |
+
+### Numerical and Contract Audit
+
+| Check | Result |
+| :--- | :--- |
+| All native metric values finite | `PASS` |
+| F, B, discriminator, QD, Qaux, Actor, and targets changed | `PASS` |
+| All parameters and normalizers finite | `PASS` |
+| Six Adam optimizers | `PASS`, each at step `100` |
+| z-buffer | `PASS`, finite `8192 / 8192` |
+| Eight auxiliary replay keys | `PASS`, finite |
+| Native fall / horizon contract | `PASS` |
+| Closed-loop data provenance | `PASS` |
+
+The ignored machine-readable report is
+`results/m2.5a-closed-loop-bringup/summary.json`.
+
+M2.5a: `PASS`.
+
+Next milestone: `M2.5b — Original BFM-Zero Skate Baseline Training`.
