@@ -52,6 +52,27 @@ train/dataset/skate-expert-pose/motion_library/skate_expert.pkl
 official agent and MotionLib interfaces. `husky_sim/` is the project-owned
 HUSKY runtime boundary.
 
+## Convert Collected HUSKY Data
+
+The retained collection post-processing entrypoint converts a completed
+`rollout_NNN/dynamic_motion` directory into BFM-Zero MotionLib data. It keeps
+the full rollout, phase-specific subtask rollouts, and failure-only rollouts
+separate:
+
+```bash
+python train/scripts/data_collection/convert_husky_to_bfm.py \
+  --input-root /path/to/rollout_001/dynamic_motion \
+  --bfm-repo $PWD/train/scripts/isaac_env \
+  --bfm-reference $PWD/train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl \
+  --robot-xml $PWD/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
+  --output /path/to/rollout_001/bfm_motionlib/skate_expert.pkl \
+  --validate-motionlib
+```
+
+The six absent HUSKY wrist joints are explicitly fixed to zero. The converter
+rejects malformed arrays, incomplete sequences, mismatched metadata, and
+unvalidated BFM schemas.
+
 ## Train
 
 Use a new work directory for each run:
@@ -86,6 +107,7 @@ CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
 ```text
 train/scripts/train_skate_bfm.py  M2.5b training entrypoint
 train/scripts/eval_target.py      frozen fixed evaluator
+train/scripts/data_collection/    HUSKY expert-motion conversion
 train/scripts/isaac_env/          vendored BFM-Zero runtime
 train/dataset/                    Base LAFAN and Skate MotionLib data
 husky_sim/src/skate_husky/        HUSKY MuJoCo runtime and physical contracts

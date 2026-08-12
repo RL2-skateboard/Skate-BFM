@@ -6,6 +6,7 @@ baseline. Training logic is deliberately limited to two project-owned scripts:
 ```text
 scripts/train_skate_bfm.py  strict official BFM0 -> HUSKY closed-loop training
 scripts/eval_target.py      frozen target-conditioned fixed evaluation
+scripts/data_collection/convert_husky_to_bfm.py  collected HUSKY -> MotionLib conversion
 scripts/isaac_env/          vendored BFM-Zero runtime
 ```
 
@@ -23,8 +24,9 @@ dataset/skate-expert-pose/motion_library/skate_expert.pkl
 ```
 
 The LAFAN source provides Base motions. The Skate MotionLib file provides the
-single current Skate expert source. No data conversion or rollout collection
-script is retained in this branch.
+single current Skate expert source. Collected HUSKY phase segments can be
+converted through `scripts/data_collection/convert_husky_to_bfm.py`; raw
+rollout collection remains outside the retained final training path.
 
 ## Formal Run
 
