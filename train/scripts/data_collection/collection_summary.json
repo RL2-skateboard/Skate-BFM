@@ -1,0 +1,69 @@
+{
+  "completed_rollouts": 2,
+  "expert_duration_minutes": 0.03333333333333333,
+  "expert_duration_seconds": 2.0,
+  "expert_frames": 100,
+  "phase_statistics": {
+    "push": {
+      "exported_frames": 100,
+      "exported_segments": 2,
+      "raw_frames": 100,
+      "raw_runs": 2
+    }
+  },
+  "raw_duration_minutes": 0.03333333333333333,
+  "raw_duration_seconds": 2.0,
+  "raw_frames": 100,
+  "records": [
+    {
+      "command_h": 0.0,
+      "command_v": 1.0,
+      "episode_id": "round096_rollout001_v100_h_zero000",
+      "expert_duration_seconds": 1.0,
+      "expert_frames": 50,
+      "phase_statistics": {
+        "push": {
+          "exported_frames": 50,
+          "exported_segments": 1,
+          "raw_frames": 50,
+          "raw_runs": 1
+        }
+      },
+      "physics_seed": 2575621849,
+      "raw_duration_seconds": 1.0,
+      "raw_frames": 50,
+      "rollout_id": "001",
+      "round_id": "096",
+      "summary_path": "/home/hm/workspace/skate-bfm/train/scripts/data_collection/round_096/rollout_001/raw_rollout/round096_rollout001_v100_h_zero000_segments.json",
+      "terminal_reason": "max_policy_frames"
+    },
+    {
+      "command_h": 0.0,
+      "command_v": 1.0,
+      "episode_id": "round097_rollout001_v100_h_zero000",
+      "expert_duration_seconds": 1.0,
+      "expert_frames": 50,
+      "phase_statistics": {
+        "push": {
+          "exported_frames": 50,
+          "exported_segments": 1,
+          "raw_frames": 50,
+          "raw_runs": 1
+        }
+      },
+      "physics_seed": 3266716899,
+      "raw_duration_seconds": 1.0,
+      "raw_frames": 50,
+      "rollout_id": "001",
+      "round_id": "097",
+      "summary_path": "/home/hm/workspace/skate-bfm/train/scripts/data_collection/round_097/rollout_001/raw_rollout/round097_rollout001_v100_h_zero000_segments.json",
+      "terminal_reason": "max_policy_frames"
+    }
+  ],
+  "target_achieved": true,
+  "target_raw_frames": 100,
+  "target_raw_minutes": 0.0333333333333,
+  "terminal_reasons": {
+    "max_policy_frames": 2
+  }
+}
