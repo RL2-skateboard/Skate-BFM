@@ -208,53 +208,6 @@ class Segment:
     notes: str = ""
 
 
-class KeySegmentRecorder:
-    """Minimal event recorder suitable for calling from a keyboard callback."""
-
-    def __init__(self) -> None:
-        self.events: list[dict[str, Any]] = []
-
-    def on_key_event(
-        self,
-        key: str,
-        frame_idx: int,
-        sim_time: float,
-        event_type: str,
-        command: str | None = None,
-    ) -> None:
-        event_type = normalize_event_type(event_type)
-        if event_type not in {"key_down", "key_up"}:
-            raise ValueError(f"unsupported event_type: {event_type}")
-        self.events.append(
-            {
-                "frame_idx": int(frame_idx),
-                "sim_time": float(sim_time),
-                "key": normalize_key(key),
-                "event_type": event_type,
-                "command": command or "",
-            }
-        )
-
-    def finalize(self, output_path: str) -> None:
-        path = Path(output_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        events = sorted(self.events, key=lambda item: item["frame_idx"])
-        if path.suffix.lower() == ".jsonl":
-            with path.open("w", encoding="utf-8") as handle:
-                for event in events:
-                    handle.write(json.dumps(event, sort_keys=True) + "\n")
-            return
-        if path.suffix.lower() != ".csv":
-            raise ValueError("KeySegmentRecorder output must be .csv or .jsonl")
-        with path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=("frame_idx", "sim_time", "key", "event_type", "command"),
-            )
-            writer.writeheader()
-            writer.writerows(events)
-
-
 class OfficialPhaseClock:
     """The fixed HUSKY phase schedule used by the official environment."""
 
@@ -2710,6 +2663,27 @@ def command_history_from_rollout(rollout: Rollout) -> tuple[np.ndarray, np.ndarr
     return values, np.full(rollout.num_frames, "", dtype=object)
 
 
+def phase_history_from_rollout(rollout: Rollout) -> tuple[np.ndarray, np.ndarray] | None:
+    """Reuse the official phase labels recorded by a previous live collection."""
+
+    name, value = field_by_name(rollout.payload, ("phase_id",))
+    if value is None:
+        return None
+    phase_ids = np.asarray(value).reshape(-1)
+    if len(phase_ids) != rollout.num_frames:
+        raise ValueError(f"{name} is not frame-aligned")
+    if not np.issubdtype(phase_ids.dtype, np.integer):
+        raise ValueError(f"{name} must contain integer HUSKY phase IDs")
+    unknown = sorted(set(phase_ids.tolist()) - set(PHASE_ID_TO_LABEL))
+    if unknown:
+        raise ValueError(f"{name} contains unknown HUSKY phase IDs: {unknown}")
+    commands = np.asarray(
+        [PHASE_ID_TO_LABEL[int(phase_id)] for phase_id in phase_ids],
+        dtype=object,
+    )
+    return commands, np.full(rollout.num_frames, "", dtype=object)
+
+
 def runs(commands: np.ndarray, keys: np.ndarray) -> list[Span]:
     if not len(commands):
         return []
@@ -3354,8 +3328,13 @@ def main() -> int:
                 command_source = f"rollout:{embedded_event_field}"
             else:
                 events = []
-                commands, keys = command_history_from_rollout(rollout)
-                command_source = "rollout_command_history"
+                recorded_phase = phase_history_from_rollout(rollout)
+                if recorded_phase is not None:
+                    commands, keys = recorded_phase
+                    command_source = "rollout:phase_id"
+                else:
+                    commands, keys = command_history_from_rollout(rollout)
+                    command_source = "rollout_command_history"
             write_key_events(episode_dir / "key_events.csv", events)
 
         spans = merge_spans(runs(commands, keys), round(args.merge_gap * fps))
