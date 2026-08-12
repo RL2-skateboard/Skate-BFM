@@ -47,10 +47,6 @@ motionlib = [
     "wandb>=0.19,<1",
 ]
 
-[project.scripts]
-skate-bfm-smoke = "skate_bfm.cli:main"
-skate-bfm-h1 = "skate_bfm.exp.h1_bfm_coverage:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 

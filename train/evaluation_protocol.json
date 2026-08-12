@@ -1,44 +1,18 @@
 {
   "evaluator_version": "skate-bfm-fixed-eval-v1",
   "protocol_seed": 20260810,
-  "method_source_grounding": {
-    "BFB_RFB": {
-      "repository": "skylooop/BeliefConditionedFB",
-      "revision": "30e7487ca033c3619ec744ed55f916ece005c425",
-      "files": [
-        "agents/dynamics_fb.py",
-        "agents/dynamics_rfb.py",
-        "utils/networks.py"
-      ]
-    },
-    "FB_MEBE": {
-      "repository": "MATH-286-Pro/FB-MEBE",
-      "revision": "344385dcbabd541240c27c3ee41fdc4de9c548ae",
-      "files": [
-        "scripts/reinforcement_learning/fb_mod/agent_meta/fb/agent.py",
-        "scripts/reinforcement_learning/fb_mod/density_estimator/agent_normalizing_flow.py",
-        "scripts/reinforcement_learning/fb_mod/pretrain.py"
-      ]
-    }
-  },
-  "fb_diagnostic_seed": 220810,
   "rollout_horizon": 128,
   "control_dt_s": 0.02,
-  "latent_refresh_steps": 100,
-  "fb_diagnostic_batch_size": 64,
-  "actor_frozen": true,
-  "current_latent_source": "official_bfm0_sample_z",
-  "future_bf_latent_source": "B(aligned_expert_or_target_state)",
   "reset_condition": {
     "source": "HUSKY MuJoCo keyframe 0",
     "robot_and_board_state": "official test-scene keyframe",
     "joint_offset": "fixed per-rollout official HUSKY reset randomization"
   },
-  "command_alignment": {
-    "current": "unavailable",
-    "reason": "The current frozen-BFM0 sampled latent has no defined one-to-one mapping to HUSKY command_v or command_h.",
-    "speed_error": "not_applicable",
-    "heading_error": "not_applicable"
+  "dynamics": {
+    "source": "husky_sim official play-time randomization",
+    "lifecycle": "sampled_once_per_rollout",
+    "training": "nominal HUSKY dynamics only",
+    "evaluation": "deterministic official randomization from each dynamics_seed"
   },
   "rollouts": [
     {
@@ -46,7 +20,6 @@
       "dynamics_split": "seen",
       "rollout_seed": 12001,
       "dynamics_seed": 22001,
-      "latent_seed": 32001,
       "command_v": 0.75,
       "command_h": -0.35
     },
@@ -55,7 +28,6 @@
       "dynamics_split": "seen",
       "rollout_seed": 12002,
       "dynamics_seed": 22002,
-      "latent_seed": 32002,
       "command_v": 1.25,
       "command_h": 0.35
     },
@@ -64,7 +36,6 @@
       "dynamics_split": "unseen",
       "rollout_seed": 13001,
       "dynamics_seed": 23001,
-      "latent_seed": 33001,
       "command_v": 0.75,
       "command_h": 0.35
     },
@@ -73,183 +44,8 @@
       "dynamics_split": "unseen",
       "rollout_seed": 13002,
       "dynamics_seed": 23002,
-      "latent_seed": 33002,
       "command_v": 1.25,
       "command_h": -0.35
     }
-  ],
-  "dynamics": {
-    "source": "husky_sim/upstream/src/mjlab_husky/tasks/skater/skater_env_cfg.py",
-    "lifecycle": "sampled_once_per_rollout",
-    "split_rule": "The listed seen seeds define reusable training/evaluation realizations. The listed unseen seeds and their realized values are evaluation-only and must never enter training replay.",
-    "supported_parameters": {
-      "robot_torso_com_offset_m": [
-        [-0.025, 0.025],
-        [-0.025, 0.025],
-        [-0.03, 0.03]
-      ],
-      "skateboard_com_offset_m": [
-        [-0.02, 0.02],
-        [-0.02, 0.02],
-        [-0.01, 0.01]
-      ],
-      "robot_sliding_friction_scale": [0.3, 1.6],
-      "deck_sliding_friction_scale": [0.8, 2.0],
-      "foot_sliding_friction": [0.3, 1.8],
-      "wheel_rolling_friction_scale": [0.8, 1.6],
-      "joint_position_offset_rad": [-0.01, 0.01]
-    },
-    "external_push": "disabled_in_official_play_mode",
-    "observation_corruption": "disabled_in_official_play_mode"
-  },
-  "context_protocol": {
-    "current_bfm0_context": "not_applicable",
-    "context_trajectory_is_training_data": false,
-    "fields": [
-      "context_states",
-      "context_actions",
-      "context_next_states"
-    ],
-    "lengths": {
-      "short": 16,
-      "medium": 64,
-      "long": 256
-    },
-    "future_outputs": {
-      "h": "unavailable",
-      "kappa": "not_applicable",
-      "sampled_z_source": "not_applicable"
-    }
-  },
-  "future_dynamics_diagnostics": {
-    "same_dynamics_h_similarity": "unavailable",
-    "different_dynamics_h_separation": "unavailable",
-    "rfb_context_h": "unavailable",
-    "rfb_kappa": "not_applicable",
-    "rfb_sampled_z": "unavailable",
-    "rfb_cosine_z_normalized_h": "unavailable",
-    "rfb_latent_angular_distance": "unavailable",
-    "rfb_sampled_latent_source": "not_applicable"
-  },
-  "sample_efficiency": {
-    "record_fields": [
-      "environment_steps",
-      "downstream_score",
-      "achieved_behavior_entropy"
-    ],
-    "derived_metrics": [
-      "score_vs_environment_steps",
-      "entropy_vs_environment_steps",
-      "auc",
-      "steps_to_threshold",
-      "final_score_at_fixed_budget"
-    ]
-  },
-  "optional_skill_diagnostic": {
-    "phase_clustering": "not_run",
-    "role": "optional behavior/skill diagnostic, not a dynamics metric"
-  },
-  "physical_behavior_projection": {
-    "name": "husky_skate_phi_v1",
-    "dimensions": [
-      {
-        "field": "root_linear_velocity_x",
-        "source": "root_linear_velocity[0]",
-        "unit": "m/s",
-        "range": [-3.0, 3.0]
-      },
-      {
-        "field": "root_linear_velocity_y",
-        "source": "root_linear_velocity[1]",
-        "unit": "m/s",
-        "range": [-3.0, 3.0]
-      },
-      {
-        "field": "root_angular_velocity_z",
-        "source": "root_angular_velocity[2]",
-        "unit": "rad/s",
-        "range": [-5.0, 5.0]
-      },
-      {
-        "field": "board_linear_velocity_x",
-        "source": "board_linear_velocity[0]",
-        "unit": "m/s",
-        "range": [-3.0, 3.0]
-      },
-      {
-        "field": "board_linear_velocity_y",
-        "source": "board_linear_velocity[1]",
-        "unit": "m/s",
-        "range": [-3.0, 3.0]
-      },
-      {
-        "field": "board_angular_velocity_z",
-        "source": "board_angular_velocity[2]",
-        "unit": "rad/s",
-        "range": [-5.0, 5.0]
-      }
-    ],
-    "entropy": {
-      "bins_per_dimension": 10,
-      "log_base": "e",
-      "out_of_range": "clip_and_report_fraction"
-    },
-    "occupancy_2d": {
-      "dimensions": [
-        "board_linear_velocity_x",
-        "board_linear_velocity_y"
-      ],
-      "bins_per_dimension": 20
-    }
-  },
-  "future_mebe_fields": {
-    "density_q_phi": "not_applicable",
-    "inverse_density_weight": "not_applicable",
-    "beta": "not_applicable",
-    "sampled_replay_state_id": "not_applicable",
-    "sampled_full_state": "not_applicable",
-    "z_E": "not_applicable",
-    "sampling_source": "not_applicable"
-  },
-  "base_retention": {
-    "evaluator": "HumanoidVerseIsaacTrackingEvaluation",
-    "implementation": "train/scripts/isaac_env/humanoidverse/agents/evaluations/humanoidverse_isaac.py",
-    "motion_file": "train/dataset/BFM-Zero/evaluation/lafan_29dof.pkl",
-    "seed": 20260810,
-    "num_envs": 1024,
-    "n_episodes_per_motion": 1,
-    "include_results_from_all_envs": false,
-    "retention_ratio": "Base_after / Base_before"
-  },
-  "isolation": {
-    "eval_buffer_key": "eval_skate_transition",
-    "train_buffer_keys": [
-      "train",
-      "train_skate"
-    ],
-    "eval_transitions_enter_training": false,
-    "unseen_dynamics_enter_training": false,
-    "context_trajectories_enter_training": false
-  },
-  "supported_method_labels": [
-    "BFM0",
-    "Original FB + Skate",
-    "+BFB",
-    "+RFB",
-    "+MEBE",
-    "+BFB+RFB",
-    "+BFB+MEBE",
-    "Full method"
-  ],
-  "evaluation_levels": [
-    "FB diagnostic",
-    "Skate downstream",
-    "Dynamics generalization",
-    "Exploration",
-    "Base capability retention"
-  ],
-  "method_variable_fields": {
-    "checkpoint": "supplied_at_runtime",
-    "method": "supplied_by_experiment_record"
-  }
+  ]
 }

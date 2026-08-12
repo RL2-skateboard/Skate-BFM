@@ -23,9 +23,10 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 sys.path.insert(0, str(REPOSITORY_ROOT / "husky_sim" / "src"))
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
-from data_collection.rollout_split import randomize_husky_play_physics
 from skate_bfm.integration import HuskyBfmOnlineEnv
+from skate_husky import randomize_husky_play_physics
 from train_skate_bfm import (
+    OFFICIAL_BFM0_SHA256,
     checkpoint_model_path,
     encode_target,
     hash_buffers,
@@ -43,7 +44,7 @@ DEFAULT_TARGET_BANK = (
     / "train/dataset/skate-expert-pose/target_bank/target_bank.json"
 )
 DEFAULT_PROTOCOL = REPOSITORY_ROOT / "train/evaluation_protocol.json"
-DEFAULT_OUTPUT = REPOSITORY_ROOT / "results/m2.3b-0-target-conditioned"
+DEFAULT_OUTPUT = REPOSITORY_ROOT / "results/m2.5b-target-conditioned"
 DEFAULT_RANDOM_SEEDS = (2026081101, 2026081102, 2026081103, 2026081104)
 
 METRIC_NAMES = (
@@ -625,6 +626,8 @@ def main() -> int:
     missing = {name: str(path) for name, path in paths.items() if not path.exists()}
     if missing:
         raise FileNotFoundError(f"Required frozen checkpoints missing: {missing}")
+    if hash_file(checkpoint_model_path(paths["official_bfm0"])) != OFFICIAL_BFM0_SHA256:
+        raise RuntimeError("Official BFM0 checkpoint SHA256 mismatch.")
 
     target = target_bank["targets"][0]
     target_start = target["frame_start"]

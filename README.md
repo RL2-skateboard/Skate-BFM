@@ -1,501 +1,96 @@
 # Skate-BFM
 
-**Predictive Behavior Foundation Models for Humanoid Interaction with
-Underactuated Moving Supports**
+Skate-BFM adapts the official BFM-Zero motion prior to one HUSKY MuJoCo
+skateboard environment. The current repository contains the final M2.5b
+baseline: strict BFM0 initialization, Base plus Skate expert sampling, native
+FB-CPR-Aux updates, and fixed target-conditioned evaluation.
 
-Skate-BFM is a research framework for combining BFM-Zero humanoid behavior
-priors with the HUSKY skateboard simulator. The project studies closed-loop
-humanoid interaction with a freely rolling, underactuated support, including
-mounting, riding, steering, recovery, and safe departure.
+![Project progress](docs/assets/project_progress.svg)
 
-## Engineering Progress
+![Training progress](docs/assets/development_substage.svg)
 
-![Skate-BFM engineering progress](docs/assets/project_progress.svg)
+## Current Baseline
 
-### Current Development Substage
+- Online environment: one nominal HUSKY MuJoCo environment.
+- Action contract: 29D BFM action stored in replay; 23D name-mapped HUSKY
+  action executed in simulation.
+- Expert batch: 1024 rows = 64 Base sequences + 64 Skate sequences, each of
+  length 8.
+- Initialization: fresh official BFM0 checkpoint, verified against SHA256
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Training: 20,000 online transitions; native `FBcprAuxAgent.update()` begins
+  at step 1,500 and runs every 500 transitions for 50 updates per block.
+- Checkpoints: saved and reloaded at 10,000 and 20,000 transitions.
+- Physics: training uses nominal HUSKY parameters. Fixed evaluation uses the
+  official HUSKY play-time randomization, deterministically seeded per rollout.
 
-![Skate-BFM development substages](docs/assets/development_substage.svg)
+The completed baseline produced 20,000 replay rows and 1,900 native updates.
+Checkpoint reload passed. Its fixed evaluation is `INCONCLUSIVE`: all 60
+episodes reached the confirmed native-fall terminal condition before the
+128-step horizon, so displacement is not claimed as task success.
 
-**Status as of 2026-08-12:** the official BFM0-HUSKY foundation and matched
-frozen-BFM0 capability audit are complete. Base and Skate expert sources,
-M2.1 Skate online replay, and M2.2a official BFM0 initialization plus
-expert/replay merge are complete. M2.2b-1 enabled and validated the first
-controlled F/B-only Skate adaptation boundary. M2.2b-2 completed evaluator
-fidelity and clean-process reproducibility auditing. M2.2b-3 completed the
-auditable Base+Skate 50/50 expert-mixture boundary experiment at independent
-1/10/100 update milestones. Its representation metrics are mixed at 1/10 and
-favorable at 100, so it is not yet a downstream task-success claim. M2.3a-0
-audited the target bank and command alignment, and M2.3b-0 completed the
-evaluation-only frozen-Actor target-conditioned preflight: the forward-push
-target has a consistent forward-response advantage over matched random
-latents, but lateral and heading behavior remain mixed. Full FB-CPR-Aux
-training has not started. M2.4-0 completed the behavior-preserving project
-code cleanup. M2.4a then completed the full-training dependency audit:
-representation, discriminator, main critic, Actor network, Qaux network, and
-all target-network shapes are compatible with a 1024-transition Skate batch,
-but the formal replay does not contain the configured auxiliary rewards.
-Full FB-CPR-Aux training is therefore blocked by the Skate auxiliary reward
-contract. M2.4b-1 then audited the eight original auxiliary reward semantics
-across recorded push, transition, left-steer, right-steer, and return phases.
-The audit found that world-frame slippage systematically penalizes feet moving
-with the skateboard, while surface-relative slippage removes that steer-phase
-conflict. M2.4b-2 implemented the eight-key raw auxiliary reward contract in
-the HUSKY MuJoCo runtime and formal 1024-transition replay. BFM-Zero remains
-the source of reward formulas; HUSKY's active MuJoCo model is the source of
-its 23 physical joint and torque constraints. M2.4c completed the shared
-native fall contract: only a confirmed physical fall terminates an online
-episode, while a fixed horizon truncates it. Full FB-CPR-Aux update
-dependencies were exercised by M2.4d-1's one native full-update smoke from the
-official checkpoint. The complete graph produced finite metrics, six optimizer
-steps, online and target parameter changes, and finite normalizers. M2.4d-2
-then completed 10 consecutive native updates on one frozen 1024-transition
-replay. All metrics, parameters, optimizer states, and normalizers remained
-finite. M2.4d-3 then completed 100 native updates on one frozen replay without
-numerical or value-scale runaway. M2.4 training preparation is complete.
-M2.5a then completed a native closed-loop bring-up from a fresh official BFM0
-checkpoint: 2,000 nominal-HUSKY transitions grew one replay online, the
-pretrained stochastic Actor collected warmup data, 100 unchanged native updates
-ran in two blocks, and data from the updated Actor entered the second block.
-This is a training-loop health result only, not a skating-performance or
-convergence claim. M2.5b then completed the first 20,000-transition original
-BFM-Zero Skate baseline from the same fresh official checkpoint. It preserved
-the native update, 50/50 Base+Skate expert mixture, nominal dynamics, and
-Skate auxiliary/termination contracts, while saving and reloading checkpoints
-at 10k and 20k. The fixed offline evaluation is `INCONCLUSIVE`: every one of
-its 60 rollout episodes reached the confirmed-fall terminal state before the
-128-step horizon, so board displacement is not interpreted as task success.
-M2.5c will decide whether to extend this baseline or introduce a separately
-audited domain-randomization treatment.
-Interaction-JEPA, predictive closed-loop planning, and complete
-skateboarding-task evaluation remain later project modules.
+## Setup
 
-This section is the project-level progress snapshot. Update the date, current
-stage, image, and branch-specific records together whenever a milestone changes.
-Training details belong in [`train/train_log.md`](train/train_log.md) and
-[`train/train_res.md`](train/train_res.md); formal H1 records remain on `main`.
-
-The current M2.2b-3 treatment can be reproduced with the vendored training
-entrypoint after the official checkpoint and Skate artifact are available:
+Create the project environment and install the project plus its MotionLib
+dependencies:
 
 ```bash
-for updates in 1 10 100; do
-  SKATE_ONLINE_ENV=skate \
-  SKATE_UPDATE_MODE=fb_only \
-  SKATE_ADAPTATION_UPDATES=$updates \
-  SKATE_MAX_STEPS=1024 \
-  SKATE_EXPERT_RATIO=0.5 \
-  SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
-  SKATE_WORK_DIR=$PWD/results/m2.2b-3/base_skate_50_50/update_$updates \
-  CUDA_VISIBLE_DEVICES=0 \
-  python train/scripts/train_skate_bfm.py
-done
+conda create -n skatebfm python=3.12 -y
+conda activate skatebfm
+pip install -e '.[dev,motionlib]'
 ```
 
-Evaluate one produced checkpoint with the fixed protocol:
+The following local artifacts must exist before training:
 
-```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_bfm.py \
-  --checkpoint results/m2.2b-3/base_skate_50_50/update_100/checkpoint \
-  --output-dir results/m2.2b-3/base_skate_50_50/eval_100
+```text
+model/bfm-zero-official/
+train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl
+train/dataset/skate-expert-pose/motion_library/skate_expert.pkl
 ```
 
-The historical M2.3b-0 frozen-Actor target-conditioned preflight remains
-recorded under ignored `results/m2.3b-0-target-conditioned/`. The current
-project evaluator compares the official, M2.5b 10k, and M2.5b 20k checkpoints
-using the complete command below; it remains inference-only and does not write
-evaluation transitions to training replay.
+`train/scripts/isaac_env/` is the vendored BFM-Zero runtime used for the
+official agent and MotionLib interfaces. `husky_sim/` is the project-owned
+HUSKY runtime boundary.
 
-Run the M2.4c read-only termination-contract audit:
+## Train
 
-```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_training.py \
-  --output-dir results/m2.4c-termination-contract
-```
-
-This builds the formal 1024-transition collect-only Skate replay, validates the
-eight raw auxiliary reward fields, native `terminated`/`truncated` fields, and
-the `gamma * ~terminated` discount contract, then performs forward-only checks
-for the discriminator, F/B, QD, Qaux, Actor, and targets. It also runs
-deterministic normal, transient, fall, low-contact, and board-separation
-checks. It does not call a reward normalizer, training update, optimizer step,
-or backward. The local JSON report is written under ignored `results/`; the
-retained conclusion is recorded in [`train/train_res.md`](train/train_res.md).
-
-Run the M2.4d-1 native full-update smoke:
+Use a new work directory for each run:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-SKATE_ONLINE_ENV=skate \
-SKATE_UPDATE_MODE=full \
-SKATE_COLLECT_ONLY=0 \
-SKATE_ADAPTATION_UPDATES=1 \
-SKATE_MAX_STEPS=1024 \
-SKATE_EXPERT_RATIO=0.5 \
-SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
-SKATE_WORK_DIR=$PWD/results/m2.4d-1-native-full-update \
-python train/scripts/train_skate_bfm.py
-```
-
-This is exactly one diagnostic-only vendored `FBcprAuxAgent.update()` from the
-official BFM0 checkpoint. It creates no reusable checkpoint and writes the
-machine-readable audit to the ignored smoke work directory.
-
-Run the M2.4d-2 short multi-update stability smoke:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 \
-SKATE_ONLINE_ENV=skate \
-SKATE_UPDATE_MODE=full \
-SKATE_COLLECT_ONLY=0 \
-SKATE_ADAPTATION_UPDATES=10 \
-SKATE_MAX_STEPS=1024 \
-SKATE_EXPERT_RATIO=0.5 \
-SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
-SKATE_WORK_DIR=$PWD/results/m2.4d-2-short-stability \
-python train/scripts/train_skate_bfm.py
-```
-
-This collects the 1024-transition replay once, freezes it, and calls the
-vendored native update exactly 10 times. The output is diagnostic-only and
-does not save a checkpoint.
-
-Run the M2.4d-3 100-update stability smoke:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 \
-SKATE_ONLINE_ENV=skate \
-SKATE_UPDATE_MODE=full \
-SKATE_COLLECT_ONLY=0 \
-SKATE_ADAPTATION_UPDATES=100 \
-SKATE_MAX_STEPS=1024 \
-SKATE_EXPERT_RATIO=0.5 \
-SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
-SKATE_WORK_DIR=$PWD/results/m2.4d-3-100-update-stability \
-python train/scripts/train_skate_bfm.py
-```
-
-This diagnostic fixed-data smoke accepts only 1, 10, or 100 native updates.
-It is not a checkpoint continuation or a control-performance evaluation.
-
-Run the M2.5a native closed-loop bring-up:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 \
-SKATE_ONLINE_ENV=skate \
-SKATE_UPDATE_MODE=full \
-SKATE_COLLECT_ONLY=0 \
-SKATE_ADAPTATION_UPDATES=0 \
-SKATE_MAX_STEPS=2000 \
-SKATE_EXPERT_RATIO=0.5 \
-SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
-SKATE_WORK_DIR=$PWD/results/m2.5a-closed-loop-bringup \
-python train/scripts/train_skate_bfm.py
-```
-
-For `full` mode only, `SKATE_ADAPTATION_UPDATES=0` selects the M2.5a
-closed-loop schedule: 1,024 pretrained-Actor stochastic warmup transitions,
-476 further A0 transitions, 50 native updates at transition 1,500, 500 A1
-transitions, then 50 native updates at transition 2,000. The existing `1`,
-`10`, and `100` values retain their fixed-replay diagnostic smoke behavior.
-The M2.5a output is an ignored machine report, no checkpoint is saved, and no
-performance evaluation is run.
-
-Run the completed M2.5b 20k baseline from a fresh work directory:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 \
-SKATE_ONLINE_ENV=skate \
-SKATE_UPDATE_MODE=full \
-SKATE_COLLECT_ONLY=0 \
-SKATE_ADAPTATION_UPDATES=0 \
-SKATE_MAX_STEPS=20000 \
-SKATE_EXPERT_RATIO=0.5 \
 SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
 SKATE_WORK_DIR=$PWD/results/m2.5b-original-bfm-baseline \
 python train/scripts/train_skate_bfm.py
 ```
 
-This uses the M2.5a schedule unchanged: warmup `1024`, first update at `1500`,
-then a 50-update native block every `500` transitions. At 20k it produces 38
-blocks and 1900 native updates, and writes/reloads local checkpoints at 10k
-and 20k. Evaluation runs afterward and never enters training replay:
+The entrypoint accepts only the M2.5b 20k schedule and 50/50 expert mixture.
+It fails closed when the checkpoint, data, replay schema, optimizer state, or
+checkpoint reload contract is invalid.
+
+## Evaluate
+
+After a successful training run, evaluate the official BFM0, 10k checkpoint,
+and 20k checkpoint without updating any training state:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
-  --output-dir $PWD/results/m2.5b-original-bfm-baseline/fixed_eval \
-  --training-summary $PWD/results/m2.5b-original-bfm-baseline/summary.json \
-  --official-checkpoint $PWD/model/bfm-zero-official \
-  --checkpoint-10k $PWD/results/m2.5b-original-bfm-baseline/checkpoint_10000 \
-  --checkpoint-20k $PWD/results/m2.5b-original-bfm-baseline/checkpoint_20000
+  --official-checkpoint model/bfm-zero-official \
+  --checkpoint-10k results/m2.5b-original-bfm-baseline/checkpoint_10000 \
+  --checkpoint-20k results/m2.5b-original-bfm-baseline/checkpoint_20000 \
+  --training-summary results/m2.5b-original-bfm-baseline/summary.json \
+  --output-dir results/m2.5b-original-bfm-baseline/fixed_eval
 ```
 
-Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/audit_rewards.py \
-  --rollout /absolute/path/to/left_phase_rich_raw_rollout.npz \
-  --rollout /absolute/path/to/right_phase_rich_raw_rollout.npz
-```
-
-The audit first verifies deterministic MuJoCo fidelity independently for each
-recorded phase, then writes a frame-level reward trace, phase statistics,
-contact pairs, and four diagnostic figures under ignored `results/`. It does
-not modify the formal replay or write auxiliary rewards for training.
-
-Audit the current expert target bank without training or rollout:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/build_target_bank.py \
-  --raw-rollout /absolute/path/to/raw_rollout.npz
-```
-
-The audit writes
-`train/dataset/skate-expert-pose/target_bank/target_bank.json`. It uses
-8-frame windows, raw HUSKY physical state for labels, and the existing
-`encode_expert()` latent equations only for inference diagnostics.
-
-This `train` branch is reserved for model training, dataset preparation,
-checkpoint management, and learned motion-library development. The `main`
-branch remains the reference branch for the BFM0-HUSKY integration and formal
-H1 evaluation. This branch does not retain the formal experiment documents
-from `main`; training progress is recorded in
-[`train/train_log.md`](train/train_log.md), and training results are recorded
-in [`train/train_res.md`](train/train_res.md).
-
-## Setup
-
-Clone the repository with the pinned HUSKY submodule:
-
-```bash
-git clone --recurse-submodules https://github.com/RL2-skateboard/Skate-BFM.git
-cd Skate-BFM
-```
-
-If the repository has already been cloned, initialize the submodule manually:
-
-```bash
-git submodule update --init --recursive
-```
-
-Create the supported Conda environment:
-
-```bash
-bash scripts/setup_env.sh
-conda activate skatebfm
-```
-
-The setup script installs the root package and the lightweight HUSKY runtime.
-The configured environment uses Python 3.12, PyTorch, CUDA, and MuJoCo.
-
-Verify the installation:
-
-```bash
-python -c "import torch, mujoco; print(torch.__version__, torch.cuda.is_available(), mujoco.__version__)"
-```
-
-## Official BFM-Zero Runtime And Model
-
-The BFM-Zero Isaac/HumanoidVerse runtime is vendored under the tracked training
-scripts, while the large checkpoint remains under the ignored `model/`
-directory:
+## Layout
 
 ```text
-train/scripts/isaac_env/    # LeCAR-Lab/BFM-Zero runtime at revision 318cf44
-model/bfm-zero-official/    # config.json, init_kwargs.json, model.safetensors
+train/scripts/train_skate_bfm.py  M2.5b training entrypoint
+train/scripts/eval_target.py      frozen fixed evaluator
+train/scripts/isaac_env/          vendored BFM-Zero runtime
+train/dataset/                    Base LAFAN and Skate MotionLib data
+husky_sim/src/skate_husky/        HUSKY MuJoCo runtime and physical contracts
+src/skate_bfm/integration/        BFM action/observation/replay adapters
 ```
 
-The formal checkpoint is the `LeCAR-Lab/BFM-Zero` Hugging Face bundle at
-revision `62b4206d68e026de5e5dc7efb1529bccfb95164c`. Its
-`model.safetensors` SHA-256 is
-`33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
-Model files are intentionally excluded from Git because the checkpoint is
-3.38 GB.
-
-## Tests
-
-Run all development checks:
-
-```bash
-ruff check src tests husky_sim/src
-pytest -v
-```
-
-Test the BFM0 model interface:
-
-```bash
-pytest tests/test_bfm0.py -v
-```
-
-Test the BFM0-to-HUSKY action and observation adapters:
-
-```bash
-pytest tests/test_integration.py tests/test_observations.py -v
-```
-
-Run the end-to-end headless MuJoCo smoke test:
-
-```bash
-skate-bfm-smoke --steps 20
-```
-
-Open the integrated BFM0-HUSKY MuJoCo viewer:
-
-```bash
-skate-bfm-smoke --viewer --steps 0
-```
-
-Close the MuJoCo window to stop the continuous run. For a short visual check,
-replace `--steps 0` with a finite value such as `--steps 300`.
-Use the mouse to rotate, pan, and zoom the MuJoCo camera.
-
-The smoke test verifies that the BFM0 interface, 29DoF-to-23DoF adapter, HUSKY
-scene, and MuJoCo stepping loop work together. It is a software validation
-command, not a skateboarding experiment or task-performance result.
-
-The viewer keeps `--action-gain 0.0` by default because the repository does not
-load the official BFM-Zero checkpoint through this lightweight diagnostic
-command. A nonzero value applies the compact untrained interface output and is
-intended only for adapter diagnostics:
-
-```bash
-skate-bfm-smoke --viewer --steps 300 --action-gain 0.05
-```
-
-## H1 Formal Experiments
-
-Run the global search without an expert latent prior:
-
-```bash
-BFM_ZERO_ROOT="$PWD/train/scripts/isaac_env" \
-skate-bfm-h1 \
-  --config configs/h1_bfm_coverage.yaml \
-  --checkpoint model/bfm-zero-official \
-  --run-type formal \
-  --experiment-name h1_bfm0_motion_without_prior \
-  --prior-mode without_prior \
-  --device cuda \
-  --save-video
-```
-
-Run the time-aligned search with an expert latent prior:
-
-```bash
-BFM_ZERO_ROOT="$PWD/train/scripts/isaac_env" \
-skate-bfm-h1 \
-  --config configs/h1_bfm_coverage.yaml \
-  --checkpoint model/bfm-zero-official \
-  --run-type formal \
-  --experiment-name h1_bfm0_motion_with_prior \
-  --prior-mode with_prior \
-  --device cuda \
-  --save-video
-```
-
-Formal H1 records and videos are maintained on the `main` branch. Training
-checkpoints and motion-library outputs for this branch belong under the
-ignored [`model/motion_library/`](model/motion_library/) directory.
-
-H1 reconstructs the official 64-dimensional state and 463-dimensional
-privileged state from confirmed expert fields. Static poses use 29DoF IK and
-zero target velocity; dynamic windows use root and 29DoF trajectories with
-50 Hz finite-difference velocities. The frozen official backward map produces
-`z_t` from each next-frame expert observation, matching the official tracking
-evaluator. In `with_prior`, dynamic CEM perturbs the complete latent trajectory
-with temporally correlated noise and constrains every step to a 40-degree
-spherical neighborhood. In `without_prior`, each target scores 256 random
-constant-latent directions before broad CEM refinement from that target's
-global best. A positive retrieval is evidence that a matching short-horizon
-meta-action exists in the tested frozen model; an unsuccessful finite search
-does not prove that no matching latent exists. Each dynamic rollout starts
-from its own expert window's first qpos and qvel. Because the motion files do
-not contain synchronized skateboard state, the complete root trajectory is
-rigidly aligned to the static push reference: the right support foot is placed
-on the deck, while the left push foot keeps its expert-relative distance and
-height so it remains on the ground or in its swing phase.
-
-## Current Framework
-
-- A compact forward-backward BFM0 model interface with 256-dimensional behavior
-  latents and 29-dimensional G1 actions.
-- A name-based adapter from BFM0 G1-29DoF actions to HUSKY G1-23DoF actions.
-- HUSKY source, assets, reference data, and MJLab training code pinned under
-  `husky_sim/upstream/`.
-- A project-owned lightweight HUSKY MuJoCo runtime under
-  `husky_sim/src/skate_husky/`.
-- A strict adapter for the official pretrained BFM-Zero checkpoint.
-- Expert-pose and expert-motion reconstruction for official backward-map goal
-  latents and time-aligned latent trajectories.
-- The matched without-prior and with-prior H1 searches, metrics, plots, and
-  videos.
-- Unit tests and an end-to-end headless smoke command.
-
-The six BFM0 wrist joints absent from the HUSKY G1-23DoF model are explicitly
-dropped by the action adapter. Official BFM-Zero checkpoints remain local,
-ignored artifacts under `model/`.
-
-## Repository Layout
-
-```text
-Skate-BFM/
-├── configs/                 # Baseline experiment configuration
-├── husky_sim/
-│   ├── src/skate_husky/     # Lightweight project runtime
-│   └── upstream/            # Pinned official HUSKY submodule
-├── model/
-│   └── motion_library/       # Ignored trained motion-library outputs
-├── scripts/                 # Environment setup
-├── src/skate_bfm/
-│   ├── bfm0/                # BFM0 model interface
-│   ├── exp/                  # Formal experiments
-│   └── integration/         # Action and observation adapters
-├── tests/                   # Development tests
-└── train/
-    ├── dataset/             # Local training and preprocessing data
-    ├── train_log.md         # Dated training-development log
-    └── train_res.md         # Training parameters and results
-```
-
-## Research Direction
-
-BFM-Zero provides a general humanoid motion prior, but its behavior latent does
-not guarantee that a motion is executable on a freely rolling skateboard.
-Skate-BFM uses BFM0 as a short-horizon behavior sampler and plans to condition
-prediction on the coupled robot-board-contact state.
-
-```mermaid
-flowchart LR
-    M[Motion window] --> S[BFM behavior sampler]
-    S --> Z[Candidate behavior latents]
-    H[Robot + board + contact history] --> C[Factorized context encoder]
-    H --> D[Dynamics encoder]
-    Z --> R[Novelty-gated latent residual experts]
-    C --> R
-    D --> R
-    R --> J[Interaction-JEPA predictor]
-    G[Continuous task goal] --> S
-    G --> J
-    J --> Q[Model-based candidate score]
-    J -.-> P[Physical auxiliary heads]
-    Q --> E[Execute short prefix]
-    E --> O[Observe and replan]
-    O --> H
-```
-
-## Training Records
-
-- [`train/train_log.md`](train/train_log.md): brief dated training log.
-- [`train/train_res.md`](train/train_res.md): training parameters and results.
-
-## Upstream Projects
-
-- [LeCAR-Lab/BFM-Zero](https://github.com/LeCAR-Lab/BFM-Zero), revision
-  `318cf44a3262e5bdec5944f82f1a5f509b95d09b`.
-- [TeleHuman/humanoid_skateboarding](https://github.com/TeleHuman/humanoid_skateboarding),
-  revision `d93833e80deff7f927c0b80ef9c435d8b5c488fe`.
-- [AnonChongqing/Skate-bfm](https://github.com/AnonChongqing/Skate-bfm),
-  consulted as the earlier integration experiment.
-
-BFM-Zero and HUSKY are released under CC BY-NC 4.0. Their use and attribution
-requirements apply to the corresponding code and assets. This repository is
-for non-commercial research and is distributed under
-[`CC BY-NC 4.0`](LICENSE).
+Detailed current records are in [train/train_log.md](train/train_log.md) and
+[train/train_res.md](train/train_res.md).

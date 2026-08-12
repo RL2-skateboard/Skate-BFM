@@ -8,6 +8,8 @@ from skate_husky.lite_env import (
     HuskyLiteEnv,
     LiveFallDetector,
     fall_confirmation_steps,
+    randomize_husky_play_physics,
+    resolve_physics_seed,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "HuskyLiteEnv",
     "LiveFallDetector",
     "fall_confirmation_steps",
+    "randomize_husky_play_physics",
+    "resolve_physics_seed",
 ]

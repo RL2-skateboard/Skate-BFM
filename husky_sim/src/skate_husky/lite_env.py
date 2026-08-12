@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import time
@@ -27,6 +28,13 @@ WORLD_UP = np.asarray((0.0, 0.0, 1.0), dtype=np.float64)
 DEFAULT_FALL_ORIENTATION_LIMIT_DEG = 70.0
 DEFAULT_FALL_ROOT_HEIGHT_MIN = 0.45
 DEFAULT_FALL_CONFIRM_TIME = 0.2
+HUSKY_ROBOT_COM_RANGES = ((-0.025, 0.025), (-0.025, 0.025), (-0.03, 0.03))
+HUSKY_SKATEBOARD_COM_RANGES = ((-0.02, 0.02), (-0.02, 0.02), (-0.01, 0.01))
+HUSKY_ROBOT_FRICTION_SCALE_RANGE = (0.3, 1.6)
+HUSKY_DECK_FRICTION_SCALE_RANGE = (0.8, 2.0)
+HUSKY_FOOT_FRICTION_RANGE = (0.3, 1.8)
+HUSKY_WHEEL_FRICTION_SCALE_RANGE = (0.8, 1.6)
+HUSKY_JOINT_POSITION_OFFSET_RANGE = (-0.01, 0.01)
 
 
 def contact_tangential_speed(
@@ -53,6 +61,94 @@ def fall_confirmation_steps(confirm_time: float, control_dt: float) -> int:
     if confirm_time <= 0.0 or control_dt <= 0.0:
         raise ValueError("Fall confirmation time and control_dt must be positive.")
     return max(1, round(confirm_time / control_dt))
+
+
+def resolve_physics_seed(rollout_id: str, requested_seed: int | None) -> int:
+    if requested_seed is not None:
+        return requested_seed
+    digest = hashlib.sha256(f"husky-play-dr-v1:{rollout_id}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
+def randomize_husky_play_physics(
+    model: mujoco.MjModel,
+    rollout_id: str,
+    requested_seed: int | None,
+) -> tuple[dict[str, object], dict[str, float]]:
+    """Apply HUSKY's official play-time randomization once per rollout."""
+
+    seed = resolve_physics_seed(rollout_id, requested_seed)
+    rng = np.random.default_rng(seed)
+
+    def uniform(bounds: tuple[float, float]) -> float:
+        return float(rng.uniform(*bounds))
+
+    robot_torso = model.body("robot/torso_link").id
+    skateboard_deck = model.body("skateboard/skateboard_deck").id
+    robot_com_offset = np.asarray(
+        [uniform(bounds) for bounds in HUSKY_ROBOT_COM_RANGES], dtype=np.float64
+    )
+    skateboard_com_offset = np.asarray(
+        [uniform(bounds) for bounds in HUSKY_SKATEBOARD_COM_RANGES],
+        dtype=np.float64,
+    )
+    model.body_ipos[robot_torso] += robot_com_offset
+    model.body_ipos[skateboard_deck] += skateboard_com_offset
+
+    robot_friction_scales: dict[str, float] = {}
+    deck_friction_scales: dict[str, float] = {}
+    foot_friction: dict[str, float] = {}
+    wheel_friction_scales: dict[str, float] = {}
+    foot_pattern = re.compile(r"robot/(left|right)_foot[1-7]_collision$")
+    for geom_id in range(model.ngeom):
+        name = model.geom(geom_id).name or ""
+        if name.startswith("robot/"):
+            scale = uniform(HUSKY_ROBOT_FRICTION_SCALE_RANGE)
+            model.geom_friction[geom_id, 0] *= scale
+            robot_friction_scales[name] = scale
+        if name == "skateboard/skateboard_deck_collision":
+            scale = uniform(HUSKY_DECK_FRICTION_SCALE_RANGE)
+            model.geom_friction[geom_id, 0] *= scale
+            deck_friction_scales[name] = scale
+        if foot_pattern.fullmatch(name):
+            value = uniform(HUSKY_FOOT_FRICTION_RANGE)
+            model.geom_friction[geom_id, 0] = value
+            foot_friction[name] = value
+        if name.startswith("skateboard/") and name.endswith("_wheel_collision"):
+            scale = uniform(HUSKY_WHEEL_FRICTION_SCALE_RANGE)
+            model.geom_friction[geom_id, 2] *= scale
+            wheel_friction_scales[name] = scale
+
+    joint_offsets = {
+        name: uniform(HUSKY_JOINT_POSITION_OFFSET_RANGE)
+        for joint_id in range(model.njnt)
+        if (name := model.joint(joint_id).name or "").startswith("robot/")
+        and model.jnt_type[joint_id] != mujoco.mjtJoint.mjJNT_FREE
+    }
+    return {
+        "enabled": True,
+        "mode": "official_husky_play_startup_and_reset",
+        "lifecycle": "sampled_once_per_rollout",
+        "seed": seed,
+        "ranges": {
+            "robot_torso_com_offset_m": HUSKY_ROBOT_COM_RANGES,
+            "skateboard_com_offset_m": HUSKY_SKATEBOARD_COM_RANGES,
+            "robot_sliding_friction_scale": HUSKY_ROBOT_FRICTION_SCALE_RANGE,
+            "deck_sliding_friction_scale": HUSKY_DECK_FRICTION_SCALE_RANGE,
+            "foot_sliding_friction": HUSKY_FOOT_FRICTION_RANGE,
+            "wheel_rolling_friction_scale": HUSKY_WHEEL_FRICTION_SCALE_RANGE,
+            "joint_position_offset_rad": HUSKY_JOINT_POSITION_OFFSET_RANGE,
+        },
+        "robot_torso_com_offset_m": robot_com_offset.tolist(),
+        "skateboard_com_offset_m": skateboard_com_offset.tolist(),
+        "robot_sliding_friction_scale": robot_friction_scales,
+        "deck_sliding_friction_scale": deck_friction_scales,
+        "foot_sliding_friction": foot_friction,
+        "wheel_rolling_friction_scale": wheel_friction_scales,
+        "joint_position_offset_rad": joint_offsets,
+        "external_push": False,
+        "observation_corruption": False,
+    }, joint_offsets
 
 
 class LiveFallDetector:
