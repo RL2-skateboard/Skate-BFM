@@ -306,11 +306,19 @@ def test_native_full_update_mode_is_single_step_only(monkeypatch) -> None:
     assert not cfg.collect_only
     assert cfg.adaptation_updates == 1
 
+    monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "10")
+    cfg = module.build_train_config()
+    assert cfg.adaptation_updates == 10
+
     monkeypatch.setenv("SKATE_COLLECT_ONLY", "1")
     with pytest.raises(ValueError, match="collect_only=False"):
         module.build_train_config()
 
     monkeypatch.setenv("SKATE_COLLECT_ONLY", "0")
     monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "2")
-    with pytest.raises(ValueError, match="adaptation_updates=1"):
+    with pytest.raises(ValueError, match="adaptation_updates=1 or 10"):
+        module.build_train_config()
+
+    monkeypatch.setenv("SKATE_ADAPTATION_UPDATES", "100")
+    with pytest.raises(ValueError, match="adaptation_updates=1 or 10"):
         module.build_train_config()

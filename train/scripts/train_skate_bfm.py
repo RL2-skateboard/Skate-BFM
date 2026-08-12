@@ -211,10 +211,10 @@ class TrainConfig(BaseConfig):
                 )
             if (
                 self.skate_update_mode == "full"
-                and self.adaptation_updates != 1
+                and self.adaptation_updates not in {1, 10}
             ):
                 raise ValueError(
-                    "Native full-update smoke requires adaptation_updates=1."
+                    "Native full-update smoke requires adaptation_updates=1 or 10."
                 )
             if self.skate_update_mode == "full" and self.skate_max_steps != 1024:
                 raise ValueError(
@@ -1903,8 +1903,10 @@ class Workspace:
     def _full_skate_update(self, replay_buffer: dict) -> dict:
         if self.cfg.collect_only or self.cfg.skate_update_mode != "full":
             raise RuntimeError("Native full update requires full Skate mode.")
-        if self.cfg.adaptation_updates != 1:
-            raise RuntimeError("Native full-update smoke requires exactly one update.")
+        if self.cfg.adaptation_updates not in {1, 10}:
+            raise RuntimeError(
+                "Native full-update smoke requires exactly one or ten updates."
+            )
         if self.agent.checkpoint_source != "official_bfm0_pretrained":
             raise RuntimeError("Native full-update smoke requires official BFM0.")
         if (self.work_dir / "summary.json").exists():
@@ -2000,26 +2002,67 @@ class Workspace:
         if any(report["state_entries"] != 0 for report in optimizer_before.values()):
             raise RuntimeError("Native full-update smoke requires fresh optimizers.")
 
-        self.agent_update_calls += 1
-        metrics = self.agent.update(replay_buffer, self.cfg.skate_max_steps)
-        if self.agent_update_calls != 1 or self.fb_update_calls != 0:
-            raise RuntimeError("Native full update must call agent.update exactly once.")
-        metric_report = {
-            name: float(value.detach().mean().cpu())
-            for name, value in metrics.items()
-        }
-        if not metric_report or not all(
-            np.isfinite(value) for value in metric_report.values()
-        ):
-            raise RuntimeError("Native full update returned non-finite metrics.")
-        native_aux_means = {
-            name: metric_report[f"aux_rew/{name}"]
-            for name in AUX_REWARD_KEYS
-            if f"aux_rew/{name}" in metric_report
-        }
-        if tuple(native_aux_means) != AUX_REWARD_KEYS:
-            raise RuntimeError("Native full update did not read all auxiliary rewards.")
+        metrics_by_update = []
+        normalizer_status_by_update = []
+        z_buffer_sizes = []
+        for update_index in range(self.cfg.adaptation_updates):
+            self.agent_update_calls += 1
+            metrics = self.agent.update(replay_buffer, self.cfg.skate_max_steps)
+            metric_report = {
+                name: float(value.detach().mean().cpu())
+                for name, value in metrics.items()
+            }
+            if not metric_report or not all(
+                np.isfinite(value) for value in metric_report.values()
+            ):
+                raise RuntimeError(
+                    "Native full update returned non-finite metrics at update "
+                    f"{update_index + 1}."
+                )
+            if tuple(
+                name
+                for name in AUX_REWARD_KEYS
+                if f"aux_rew/{name}" in metric_report
+            ) != AUX_REWARD_KEYS:
+                raise RuntimeError(
+                    "Native full update did not read all auxiliary rewards at "
+                    f"update {update_index + 1}."
+                )
+            if not all(
+                module_state_is_finite(module)
+                for module in (
+                    *trainable_modules.values(),
+                    model._target_forward_map,
+                    model._target_backward_map,
+                    model._target_critic,
+                    model._target_aux_critic,
+                    model._obs_normalizer,
+                    model._aux_reward_normalizer,
+                )
+            ):
+                raise RuntimeError(
+                    "Native full update produced non-finite state at update "
+                    f"{update_index + 1}."
+                )
+            metrics_by_update.append(metric_report)
+            normalizer_status_by_update.append(
+                {
+                    "obs": {
+                        "finite": module_state_is_finite(model._obs_normalizer),
+                    },
+                    "aux_reward": {
+                        "finite": module_state_is_finite(
+                            model._aux_reward_normalizer
+                        ),
+                    },
+                }
+            )
+            z_buffer_sizes.append(len(self.agent.z_buffer))
 
+        if self.agent_update_calls != self.cfg.adaptation_updates or self.fb_update_calls != 0:
+            raise RuntimeError(
+                "Native full update must use only the requested agent.update calls."
+            )
         components_after = hash_components(self.agent)
         component_mutation = {
             name: {
@@ -2072,11 +2115,14 @@ class Workspace:
         }
         if any(
             report["state_entries"] == 0
-            or report["step_values"] != [1.0]
+            or report["step_values"] != [float(self.cfg.adaptation_updates)]
             or not report["finite"]
             for report in optimizer_after.values()
         ):
-            raise RuntimeError("Native full update did not step every optimizer once.")
+            raise RuntimeError(
+                "Native full update did not step every optimizer the requested "
+                "number of times."
+            )
         z_buffer_after = {
             "size": len(self.agent.z_buffer),
             "hash": hash_tensor(self.agent.z_buffer._storage),
@@ -2084,8 +2130,21 @@ class Workspace:
         if z_buffer_after["size"] <= z_buffer_before["size"]:
             raise RuntimeError("Native mixed-z path did not populate z_buffer.")
 
+        metric_summary = {}
+        for name in metrics_by_update[0]:
+            values = [metrics[name] for metrics in metrics_by_update]
+            metric_summary[name] = {
+                "first": values[0],
+                "min": min(values),
+                "max": max(values),
+                "last": values[-1],
+            }
         summary = {
-            "milestone": "M2.4d-1 Native Full-Update Smoke",
+            "milestone": (
+                "M2.4d-1 Native Full-Update Smoke"
+                if self.cfg.adaptation_updates == 1
+                else "M2.4d-2 Short Multi-Update Stability Smoke"
+            ),
             "checkpoint": {
                 **self.agent.pretrained_load_report,
                 "model_sha256": hash_file(
@@ -2111,16 +2170,13 @@ class Workspace:
             "native_update": {
                 "agent_update_calls": self.agent_update_calls,
                 "direct_update_fb_calls": self.fb_update_calls,
-                "metrics": metric_report,
+                "update_count": self.cfg.adaptation_updates,
+                "metrics_by_update": metrics_by_update,
+                "metric_summary": metric_summary,
             },
             "aux_rewards": {
                 "keys": list(AUX_REWARD_KEYS),
                 "scaling": dict(self.agent.cfg.aux_rewards_scaling),
-                "native_sampled_raw_means": native_aux_means,
-                "native_sampled_weighted_raw_mean": sum(
-                    self.agent.cfg.aux_rewards_scaling[name] * value
-                    for name, value in native_aux_means.items()
-                ),
             },
             "module_mutation": component_mutation,
             "optimizer": {
@@ -2131,34 +2187,40 @@ class Workspace:
                 for name in optimizers
             },
             "normalizer": {
-                name: {
-                    "before": normalizers_before[name],
-                    "after": normalizers_after[name],
-                    "changed": normalizers_before[name] != normalizers_after[name],
-                    "finite": module_state_is_finite(
-                        model._obs_normalizer
-                        if name == "obs"
-                        else model._aux_reward_normalizer
-                    ),
-                }
-                for name in normalizers_before
+                "before": normalizers_before,
+                "after": normalizers_after,
+                "changed": {
+                    name: normalizers_before[name] != normalizers_after[name]
+                    for name in normalizers_before
+                },
+                "finite": normalizer_status_by_update,
             },
             "z_buffer": {
                 "before": z_buffer_before,
                 "after": z_buffer_after,
                 "changed": z_buffer_before["hash"] != z_buffer_after["hash"],
+                "sizes_by_update": z_buffer_sizes,
+                "capacity": self.agent.z_buffer.capacity,
             },
             "training_performed": True,
             "smoke_checkpoint_saved": False,
-            "next_milestone": "M2.4d-2 — Short Multi-Update Stability Smoke",
+            "all_metrics_finite": True,
+            "all_parameters_finite": True,
+            "numerical_stability": "PASS",
+            "next_milestone": (
+                "M2.4d-2 — Short Multi-Update Stability Smoke"
+                if self.cfg.adaptation_updates == 1
+                else "M2.4d-3 — 100-Update Stability Smoke"
+            ),
         }
         with (self.work_dir / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True)
             handle.write("\n")
         self.preflight_report = summary
         print(
-            "M2.4d-1 native full-update smoke complete: "
-            f"{len(replay_buffer['train'])} transitions, agent.update calls 1"
+            "Native full-update smoke complete: "
+            f"{len(replay_buffer['train'])} transitions, "
+            f"agent.update calls {self.agent_update_calls}"
         )
         return replay_buffer
 

@@ -1334,3 +1334,21 @@ the formal Skate runtime action contract.
 - The smoke work directory contains diagnostics only; no checkpoint was saved
   or retained as a training baseline.
 - Next milestone: `M2.4d-2 — Short Multi-Update Stability Smoke`.
+
+## M2.4d-2 Short Multi-Update Stability Smoke
+
+- Date: `2026-08-12`
+- Added the fail-closed `full` boundary for exactly 10 updates, while keeping
+  1 and 10 as the only supported smoke counts.
+- Collected one fixed 1024-transition HUSKY replay, then reused it for exactly
+  10 native `FBcprAuxAgent.update()` calls. Expert sampling was repeated each
+  update with 64 Base and 64 Skate complete sequences.
+- Replay: 14 terminal, 1 truncated, 1009 normal; no reset-crossing
+  transitions.
+- All 10 metric dictionaries were finite. All six optimizer states reached
+  Adam step 10; all online and target modules changed and remained finite.
+- Observation and auxiliary-reward normalizers remained finite at every update.
+  The z-buffer sizes were `1024, 2048, 3072, 4096, 5120, 6144, 7168, 8192,
+  8192, 8192` with capacity `8192`.
+- No checkpoint or performance evaluation was produced.
+- Next milestone: `M2.4d-3 — 100-Update Stability Smoke`.

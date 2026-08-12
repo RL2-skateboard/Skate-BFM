@@ -657,3 +657,57 @@ is `results/m2.4d-1-native-full-update/summary.json`.
 | Full native update | `PASS` |
 
 Next milestone: `M2.4d-2 — Short Multi-Update Stability Smoke`.
+
+## M2.4d-2 Short Multi-Update Stability Smoke
+
+This is a fixed-replay numerical stability smoke, not a performance or
+convergence experiment.
+
+- Date: `2026-08-12`
+- Checkpoint: official BFM0; SHA256
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Expert mixture per update: 64 Base and 64 Skate complete sequences,
+  sequence length `8`, batch size `1024`.
+- Replay collected once: `1024` transitions, `14` terminated, `1` truncated,
+  `1009` normal; `train is train_skate`: `YES`.
+- Native update calls: `10`; no direct project `update_fb`, actor, critic,
+  optimizer, or soft-update calls.
+
+### Metric Table
+
+| Update | `fb_loss` | `disc_loss` | `critic_loss` | `aux_critic_loss` | `actor_loss` | `Q_fb` | `Q_discriminator` | `Q_aux` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1283845 | 0.4494 | 1796.0 | 248.9 | 50068 | 2837.2 | -332.2 | -101.3 |
+| 2 | 1307751 | 0.2481 | 1481.9 | 169.7 | 50001 | 2842.5 | -331.4 | -100.5 |
+| 3 | 1221122 | 0.1429 | 1908.0 | 223.7 | 48599 | 2743.6 | -334.2 | -100.1 |
+| 4 | 1179586 | 0.0933 | 2607.9 | 279.1 | 44554 | 2536.0 | -332.1 | -98.1 |
+| 5 | 1145578 | 0.0753 | 1486.6 | 154.7 | 45453 | 2615.0 | -329.3 | -94.6 |
+| 6 | 1104790 | 0.0731 | 1778.6 | 182.1 | 41595 | 2389.9 | -330.0 | -92.8 |
+| 7 | 1104880 | 0.0817 | 1124.2 | 120.6 | 37569 | 2159.7 | -329.9 | -90.2 |
+| 8 | 1030170 | 0.0744 | 2190.1 | 201.8 | 37766 | 2193.5 | -328.0 | -87.8 |
+| 9 | 1051220 | 0.0865 | 1500.6 | 143.0 | 33949 | 1973.6 | -328.8 | -85.6 |
+| 10 | 1053397 | 0.0580 | 1977.3 | 171.0 | 34344 | 2004.4 | -327.3 | -85.7 |
+
+No monotonicity requirement is imposed. The observed values show no
+non-finite or runaway behavior over this short fixed-data window.
+
+### Stability Audit
+
+| Check | Result |
+| :--- | :--- |
+| 10/10 native updates complete | `PASS` |
+| All scalar metrics finite | `PASS` |
+| F / B / D / QD / Qaux / Actor changed | `PASS` |
+| Target F / B / QD / Qaux changed | `PASS` |
+| Six optimizer steps | `10` each |
+| Observation normalizer finite | `PASS` at every update |
+| Auxiliary reward normalizer finite | `PASS` at every update |
+| z-buffer | `1024 -> 8192`, capacity `8192` |
+| Model parameters finite | `PASS` |
+| Numerical stability | `PASS` |
+
+The ignored machine-readable result is
+`results/m2.4d-2-short-stability/summary.json`. No checkpoint was saved and no
+skating performance was evaluated.
+
+Next milestone: `M2.4d-3 — 100-Update Stability Smoke`.

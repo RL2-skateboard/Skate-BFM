@@ -48,7 +48,9 @@ episode, while a fixed horizon truncates it. Full FB-CPR-Aux update
 dependencies were exercised by M2.4d-1's one native full-update smoke from the
 official checkpoint. The complete graph produced finite metrics, six optimizer
 steps, online and target parameter changes, and finite normalizers. M2.4d-2
-will run a short multi-update stability smoke.
+then completed 10 consecutive native updates on one frozen 1024-transition
+replay. All metrics, parameters, optimizer states, and normalizers remained
+finite; M2.4d-3 is the next 100-update stability smoke.
 Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
@@ -131,6 +133,25 @@ python train/scripts/train_skate_bfm.py
 This is exactly one diagnostic-only vendored `FBcprAuxAgent.update()` from the
 official BFM0 checkpoint. It creates no reusable checkpoint and writes the
 machine-readable audit to the ignored smoke work directory.
+
+Run the M2.4d-2 short multi-update stability smoke:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=10 \
+SKATE_MAX_STEPS=1024 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.4d-2-short-stability \
+python train/scripts/train_skate_bfm.py
+```
+
+This collects the 1024-transition replay once, freezes it, and calls the
+vendored native update exactly 10 times. The output is diagnostic-only and
+does not save a checkpoint.
 
 Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
 
