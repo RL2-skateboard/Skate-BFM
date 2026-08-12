@@ -9,6 +9,7 @@ import json
 import math
 import random
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,7 @@ METRIC_NAMES = (
     "board_heading_delta_abs_deg",
     "root_height_min_m",
     "root_tilt_max_deg",
+    "episode_duration_s",
 )
 
 
@@ -68,12 +70,106 @@ def parse_args() -> argparse.Namespace:
         default=REPOSITORY_ROOT
         / "train/dataset/skate-expert-pose/motion_library/skate_expert.pkl",
     )
+    parser.add_argument(
+        "--official-checkpoint",
+        type=Path,
+        default=REPOSITORY_ROOT / "model/bfm-zero-official",
+    )
+    parser.add_argument(
+        "--checkpoint-10k",
+        type=Path,
+        required=True,
+        help="M2.5b checkpoint saved after 10,000 transitions.",
+    )
+    parser.add_argument(
+        "--checkpoint-20k",
+        type=Path,
+        required=True,
+        help="M2.5b checkpoint saved after 20,000 transitions.",
+    )
+    parser.add_argument(
+        "--training-summary",
+        type=Path,
+        help="Optional M2.5b training summary to update after inference-only evaluation.",
+    )
     return parser.parse_args()
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def update_training_summary(
+    path: Path,
+    *,
+    evaluation_path: Path,
+    evaluation: dict[str, Any],
+) -> None:
+    """Attach inference-only fixed-evaluation provenance to one M2.5b summary."""
+
+    summary = json.loads(path.read_text())
+    if summary.get("milestone") != "M2.5b Original BFM-Zero Skate Baseline Training":
+        raise RuntimeError("Training summary is not an M2.5b baseline result.")
+    checkpoint_reports = evaluation["checkpoint_reports"]
+    if set(checkpoint_reports) != {
+        "official_bfm0",
+        "m2.5b_10k",
+        "m2.5b_20k",
+    }:
+        raise RuntimeError("Fixed evaluation checkpoint set is incomplete.")
+    all_terminated = all(
+        rollout["episode"]["terminated"]
+        for rollout in evaluation["rollouts"]
+    )
+    if any(
+        report["mutation"]["parameters_changed"]
+        or report["mutation"]["buffers_changed"]
+        or report["mutation"]["optimizer_steps"] != 0
+        or report["mutation"]["backward_calls"] != 0
+        or report["mutation"]["agent_update_calls"] != 0
+        for report in checkpoint_reports.values()
+    ):
+        raise RuntimeError("Evaluation mutated a checkpoint state.")
+    summary["evaluation"] = {
+        "result_file": str(evaluation_path),
+        "result_sha256": hash_file(evaluation_path),
+        "protocol_version": evaluation["evaluation"]["protocol_version"],
+        "rollout_count": len(evaluation["rollouts"]),
+        "training_replay_mutated": False,
+        "checkpoint_reports": {
+            name: {
+                "model_sha256": report["checkpoint_model_sha256"],
+                "target_z_fingerprint": report["target_z_fingerprint"],
+                "target_z_norm": report["target_z_norm"],
+                "parameters_changed": report["mutation"]["parameters_changed"],
+                "buffers_changed": report["mutation"]["buffers_changed"],
+                "optimizer_steps": report["mutation"]["optimizer_steps"],
+                "backward_calls": report["mutation"]["backward_calls"],
+                "agent_update_calls": report["mutation"]["agent_update_calls"],
+            }
+            for name, report in checkpoint_reports.items()
+        },
+        "all_rollouts_terminated_before_horizon": all_terminated,
+        "fixed_protocol_performance_trend": (
+            "INCONCLUSIVE"
+            if all_terminated
+            else "REQUIRES_DOCUMENTED_INTERPRETATION"
+        ),
+        "interpretation": (
+            "All fixed evaluation rollouts reached the native fall terminal "
+            "state before the 128-step horizon; board displacement alone is "
+            "not a success metric."
+            if all_terminated
+            else "Read the fixed protocol metrics together; no task-success "
+            "claim is generated automatically."
+        ),
+    }
+    summary["performance_evaluated"] = True
+    summary["performance_trend"] = summary["evaluation"][
+        "fixed_protocol_performance_trend"
+    ]
+    write_json(path, summary)
 
 
 def load_and_validate_target_bank(path: Path) -> tuple[dict[str, Any], str]:
@@ -120,16 +216,16 @@ def load_protocol(path: Path) -> dict[str, Any]:
     return protocol
 
 
-def checkpoint_paths() -> dict[str, Path]:
+def checkpoint_paths(
+    *,
+    official_checkpoint: Path,
+    checkpoint_10k: Path,
+    checkpoint_20k: Path,
+) -> dict[str, Path]:
     return {
-        "official_bfm0": REPOSITORY_ROOT / "model/bfm-zero-official",
-        "base_only_update100": (
-            REPOSITORY_ROOT / "results/m2.2b-1/update_100/checkpoint"
-        ),
-        "base_skate_update100": (
-            REPOSITORY_ROOT
-            / "results/m2.2b-3/base_skate_50_50/update_100/checkpoint"
-        ),
+        "official_bfm0": official_checkpoint,
+        "m2.5b_10k": checkpoint_10k,
+        "m2.5b_20k": checkpoint_20k,
     }
 
 
@@ -169,6 +265,7 @@ def board_yaw(quaternion: np.ndarray) -> float:
 def physical_metrics(
     records: list[dict[str, Any]],
     initial_raw: dict[str, Any],
+    control_dt: float,
 ) -> dict[str, float]:
     initial_board_position = np.asarray(initial_raw["board_position"], dtype=float)
     initial_board_yaw = board_yaw(initial_raw["board_quaternion"])
@@ -217,6 +314,7 @@ def physical_metrics(
         ),
         "root_height_min_m": float(root_heights.min()),
         "root_tilt_max_deg": float(root_tilt.max()),
+        "episode_duration_s": float(len(records) * control_dt),
     }
 
 
@@ -279,6 +377,8 @@ def run_rollout(
         raise RuntimeError("Frozen Actor model is not in eval mode.")
     records = []
     first_action_fingerprint = None
+    terminated = False
+    truncated = False
     try:
         for step in range(horizon):
             model_observation = {
@@ -300,6 +400,10 @@ def run_rollout(
             )
             records.append(dict(transition.raw_metadata))
             observation = transition.next_observation
+            terminated = transition.terminated
+            truncated = transition.truncated
+            if terminated:
+                break
     finally:
         env.close()
 
@@ -318,8 +422,16 @@ def run_rollout(
         },
         "first_action_fingerprint": first_action_fingerprint,
         "transition_fingerprint": hash_data(records),
+        "episode": {
+            "transition_count": len(records),
+            "terminated": terminated,
+            "truncated": truncated,
+            "time_to_fall_s": (
+                len(records) * control_dt if terminated else None
+            ),
+        },
         "command_injected_into_actor": False,
-        "metrics": physical_metrics(records, initial_raw),
+        "metrics": physical_metrics(records, initial_raw, control_dt),
         "mutation": {
             "parameters_changed": False,
             "buffers_changed": False,
@@ -357,14 +469,14 @@ def eval_checkpoint(
     target_z = encode_target(agent, target_observations)
     target_z_tensor = torch.from_numpy(target_z).to(agent.device)
     target_fingerprint = hash_data(target_z)
-    expected_fingerprint = target["latents"][checkpoint_name]["latent"][
-        "fingerprint"
-    ]
-    if target_fingerprint != expected_fingerprint:
-        raise RuntimeError(
-            f"Runtime target latent mismatch for {checkpoint_name}: "
-            f"expected={expected_fingerprint}, actual={target_fingerprint}."
-        )
+    expected_record = target.get("latents", {}).get(checkpoint_name)
+    if expected_record is not None:
+        expected_fingerprint = expected_record["latent"]["fingerprint"]
+        if target_fingerprint != expected_fingerprint:
+            raise RuntimeError(
+                f"Runtime target latent mismatch for {checkpoint_name}: "
+                f"expected={expected_fingerprint}, actual={target_fingerprint}."
+            )
 
     before = {
         "parameters": hash_params(agent._model),
@@ -505,7 +617,11 @@ def main() -> int:
     if source["expert_motion_sha256"] != hash_file(expert_motion):
         raise RuntimeError("Expert MotionLib SHA256 does not match target bank.")
 
-    paths = checkpoint_paths()
+    paths = checkpoint_paths(
+        official_checkpoint=args.official_checkpoint.expanduser().resolve(),
+        checkpoint_10k=args.checkpoint_10k.expanduser().resolve(),
+        checkpoint_20k=args.checkpoint_20k.expanduser().resolve(),
+    )
     missing = {name: str(path) for name, path in paths.items() if not path.exists()}
     if missing:
         raise FileNotFoundError(f"Required frozen checkpoints missing: {missing}")
@@ -551,7 +667,7 @@ def main() -> int:
     output = {
         "schema": "skate-bfm-target-conditioned-eval-v1",
         "evaluation": {
-            "date": "2026-08-11",
+            "date": date.today().isoformat(),
             "evaluation_only": True,
             "training_performed": False,
             "optimizer_steps": 0,
@@ -582,7 +698,14 @@ def main() -> int:
         "rollouts": all_rollouts,
     }
     output_dir = args.output_dir.expanduser().resolve()
-    write_json(output_dir / "target_conditioned_metrics.json", output)
+    evaluation_path = output_dir / "target_conditioned_metrics.json"
+    write_json(evaluation_path, output)
+    if args.training_summary is not None:
+        update_training_summary(
+            args.training_summary.expanduser().resolve(),
+            evaluation_path=evaluation_path,
+            evaluation=output,
+        )
     print(
         f"Target-conditioned evaluation complete: {len(all_rollouts)} rollouts, "
         "training=0, optimizer_steps=0, normalizer_mutation=False"

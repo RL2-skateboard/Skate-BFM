@@ -849,3 +849,113 @@ The ignored machine-readable report is
 M2.5a: `PASS`.
 
 Next milestone: `M2.5b — Original BFM-Zero Skate Baseline Training`.
+
+## M2.5b Original BFM-Zero Skate Baseline Training
+
+### Training Contract
+
+- Date: `2026-08-12`
+- Fresh source: official BFM0; model SHA256
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Dynamics: nominal HUSKY only; no domain randomization.
+- Warmup: `1024` pretrained-Actor stochastic transitions. This is a
+  pretrained-adaptation schedule, unlike Original BFM-Zero Base training's
+  random initialization/random-action seed phase.
+- Native schedule: first block at `1500`; every `500` transitions thereafter;
+  `50` vendored `FBcprAuxAgent.update()` calls/block.
+- Expert sequence batch: `64` Base + `64` Skate, length `8`.
+- Native update, architecture, loss, optimizer, reward, termination, and
+  MotionLib definitions: unchanged.
+
+| Training result | Value |
+| :--- | ---: |
+| Environment transitions | `20000 / 20000` |
+| Native update blocks | `38 / 38` |
+| Native `agent.update()` calls | `1900 / 1900` |
+| Replay final size | `20000` |
+| Normal transitions | `19592` |
+| Confirmed terminal falls | `389` |
+| Horizon truncations | `19` |
+| `train is train_skate` | `YES` |
+| Reset-crossing transitions | `0` |
+| Six Adam optimizer steps | `1900` each |
+| Model, targets, optimizers, normalizers, z-buffer finite | `PASS` |
+
+### Training Metrics
+
+Each 10k/20k value is the final native-update metric within that transition
+block. Min/max span every block's first, mean, min, max, and last values.
+
+| Metric | Start | 10k | 20k | Min | Max |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `fb_loss` | 986467 | 23839 | 11141 | 9153 | 1054253 |
+| `disc_loss` | 0.4382 | 0.3296 | 0.2129 | 0.0140 | 0.4847 |
+| `critic_loss` | 1129.67 | 37.51 | 45.73 | 26.08 | 2429.43 |
+| `aux_critic_loss` | 166.75 | 8.68 | 36.62 | 6.81 | 270.87 |
+| `actor_loss` | 48756.79 | 21856.67 | 6030.91 | 4907.70 | 49310.52 |
+
+| Three-Q Metric | Start | 10k | 20k | Min | Max |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `Q_fb` | 2791.81 | 1738.50 | 761.50 | 632.73 | 2878.14 |
+| `Q_discriminator` | -329.74 | -241.15 | -140.40 | -329.74 | -135.88 |
+| `Q_aux` | -98.66 | -75.61 | -91.59 | -104.55 | -71.29 |
+
+All recorded metrics remained finite. The observed Q scales did not create a
+NaN/Inf, optimizer, normalizer, or z-buffer failure. This is a health
+observation, not a reason to alter the original coefficients.
+
+### Episode Diagnostics
+
+| Range | Completed episodes | Terminated | Truncated | Mean length |
+| :--- | ---: | ---: | ---: | ---: |
+| `0-5k` | 105 | 101 | 4 | 47.33 |
+| `5k-10k` | 103 | 98 | 5 | 48.31 |
+| `10k-15k` | 84 | 79 | 5 | 59.70 |
+| `15k-20k` | 116 | 111 | 5 | 43.33 |
+
+These are replay-distribution diagnostics, not policy-improvement claims.
+
+### Checkpoints
+
+| Checkpoint | Model SHA256 | Native optimizer step | Reload |
+| :--- | :--- | ---: | :--- |
+| `checkpoint_10000` | `588528e969f24fa9b040ea299cd770fc70f0530c4fa29731def1c138630cf1f8` | 900 | `PASS` |
+| `checkpoint_20000` | `1c3efcacb291d13b3afebc0896c46968ef71902ecd403618c9a46adb40d9c714` | 1900 | `PASS` |
+
+The complete local checkpoints contain model, optimizer, normalizer state, and
+`train_status.json`; they remain ignored under
+`results/m2.5b-original-bfm-baseline/`.
+
+### Fixed Offline Evaluation
+
+Protocol: `skate-bfm-fixed-eval-v1`, same target bank, seeds, dynamics
+conditions, 128-step maximum horizon, and deterministic `mean=True` evaluator
+as M2.3. Evaluation transition data never entered training replay. Each
+checkpoint independently used its own observation normalizer and B map:
+
+| Checkpoint | Target latent SHA256 | Seen target forward displacement (m) | Unseen target forward displacement (m) | Seen/unseen target duration (s) |
+| :--- | :--- | ---: | ---: | ---: |
+| Official BFM0 | `097548cb634b08a1e688ea0565c692c0c084b381fbd1ef819a9e144678ec2d75` | 0.587 | 0.175 | 1.10 / 1.30 |
+| M2.5b 10k | `cf1f025f1631e3e98736ff9a04dc5fa4b036370dfe44dc554d0aa78b5a7909a3` | 1.529 | 1.504 | 1.58 / 1.54 |
+| M2.5b 20k | `be1862af961dbabfa179356710ddfa1a01e559d72a0b9c26db2aafdc6e7a86d6` | 0.077 | 0.071 | 1.40 / 1.41 |
+
+All `60 / 60` evaluation episodes ended in a confirmed fall before the
+128-step horizon (mean terminal time `1.246 s`, minimum `0.86 s`, maximum
+`2.26 s`). The evaluator made `0` optimizer steps, backward calls, native
+updates, or parameter/normalizer mutations for every checkpoint.
+
+Cross-checkpoint differences may jointly reflect B, F, Actor, normalizer, and
+critic-driven policy adaptation. They must not be attributed to the Actor
+alone. Since all episodes terminate and board displacement can occur during a
+fall, fixed-protocol performance is `INCONCLUSIVE`; there is no skating-skill,
+steering, or task-success claim.
+
+### Result
+
+- Training status: `PASS`.
+- Fixed evaluation performance trend: `INCONCLUSIVE`.
+- Q-scale warning: `NO` numerical-scale failure observed.
+- Machine reports:
+  `results/m2.5b-original-bfm-baseline/summary.json` and
+  `results/m2.5b-original-bfm-baseline/fixed_eval/target_conditioned_metrics.json`.
+- Next milestone: `M2.5c — Baseline Extension / Domain-Randomization Decision`.

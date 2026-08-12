@@ -57,7 +57,15 @@ checkpoint: 2,000 nominal-HUSKY transitions grew one replay online, the
 pretrained stochastic Actor collected warmup data, 100 unchanged native updates
 ran in two blocks, and data from the updated Actor entered the second block.
 This is a training-loop health result only, not a skating-performance or
-convergence claim. M2.5b is the next original BFM-Zero Skate baseline run.
+convergence claim. M2.5b then completed the first 20,000-transition original
+BFM-Zero Skate baseline from the same fresh official checkpoint. It preserved
+the native update, 50/50 Base+Skate expert mixture, nominal dynamics, and
+Skate auxiliary/termination contracts, while saving and reloading checkpoints
+at 10k and 20k. The fixed offline evaluation is `INCONCLUSIVE`: every one of
+its 60 rollout episodes reached the confirmed-fall terminal state before the
+128-step horizon, so board displacement is not interpreted as task success.
+M2.5c will decide whether to extend this baseline or introduce a separately
+audited domain-randomization treatment.
 Interaction-JEPA, predictive closed-loop planning, and complete
 skateboarding-task evaluation remain later project modules.
 
@@ -91,20 +99,11 @@ CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluate_skate_bfm.py \
   --output-dir results/m2.2b-3/base_skate_50_50/eval_100
 ```
 
-Run the M2.3b-0 frozen-Actor target-conditioned preflight:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
-  --output-dir results/m2.3b-0-target-conditioned
-```
-
-This is evaluation-only: it uses `skate_target_00`, four fixed random latent
-controls, the four fixed seen/unseen dynamics conditions, and 128-step
-canonical-reset rollouts for each of the three frozen checkpoints. It performs
-no training, optimizer step, backward call, replay update, or command
-injection. The generated JSON result is kept under the ignored `results/`
-directory; the summarized tables and boundary checks are recorded in
-[`train/train_res.md`](train/train_res.md).
+The historical M2.3b-0 frozen-Actor target-conditioned preflight remains
+recorded under ignored `results/m2.3b-0-target-conditioned/`. The current
+project evaluator compares the official, M2.5b 10k, and M2.5b 20k checkpoints
+using the complete command below; it remains inference-only and does not write
+evaluation transitions to training replay.
 
 Run the M2.4c read-only termination-contract audit:
 
@@ -200,6 +199,35 @@ transitions, then 50 native updates at transition 2,000. The existing `1`,
 `10`, and `100` values retain their fixed-replay diagnostic smoke behavior.
 The M2.5a output is an ignored machine report, no checkpoint is saved, and no
 performance evaluation is run.
+
+Run the completed M2.5b 20k baseline from a fresh work directory:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=0 \
+SKATE_MAX_STEPS=20000 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.5b-original-bfm-baseline \
+python train/scripts/train_skate_bfm.py
+```
+
+This uses the M2.5a schedule unchanged: warmup `1024`, first update at `1500`,
+then a 50-update native block every `500` transitions. At 20k it produces 38
+blocks and 1900 native updates, and writes/reloads local checkpoints at 10k
+and 20k. Evaluation runs afterward and never enters training replay:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
+  --output-dir $PWD/results/m2.5b-original-bfm-baseline/fixed_eval \
+  --training-summary $PWD/results/m2.5b-original-bfm-baseline/summary.json \
+  --official-checkpoint $PWD/model/bfm-zero-official \
+  --checkpoint-10k $PWD/results/m2.5b-original-bfm-baseline/checkpoint_10000 \
+  --checkpoint-20k $PWD/results/m2.5b-original-bfm-baseline/checkpoint_20000
+```
 
 Run the M2.4b-1 phase-wise reward audit on phase-rich raw HUSKY rollouts:
 

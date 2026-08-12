@@ -1437,3 +1437,86 @@ the formal Skate runtime action contract.
   `NO`.
 - Training performed: `YES`; 2,000 transitions and 100 native updates.
 - Performance conclusion: `NO`.
+
+## M2.5b Original BFM-Zero Skate Baseline Training
+
+- Date: `2026-08-12`
+- Ran the first real 20,000-transition Skate baseline from a fresh official
+  BFM0 load. The source model SHA256 was
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Reused the M2.5a closed-loop implementation with the only schedule extension:
+  38 blocks from transition 1,500 through 20,000, every 500 transitions, at
+  50 untouched native `FBcprAuxAgent.update()` calls per block.
+- Kept pretrained stochastic Actor warmup for 1,024 rows; no random-action
+  seed phase, added exploration, domain randomization, reward change, model
+  change, optimizer change, expert change, or termination change.
+- Reached 20,000 replay rows with 19,592 normal, 389 confirmed terminal-fall,
+  and 19 horizon-truncated transitions. `train is train_skate` remained true;
+  reset-crossing transitions remained zero.
+- Saved and reloaded native checkpoints at 10k and 20k. Both reloads matched
+  model/normalizer state and all six optimizer states. The saved model SHA256
+  values are recorded in `train_res.md`.
+- Ran the existing fixed target-conditioned evaluator after training only.
+  Evaluation generated 60 local rollout records and made zero optimizer,
+  backward, agent-update, or replay writes. Each checkpoint used its own
+  observation normalizer and B map to re-encode the same target window.
+- All 60 fixed evaluation episodes reached the confirmed-fall terminal state
+  before 128 steps. The result is therefore recorded as `INCONCLUSIVE`; board
+  displacement is not interpreted as skate-task success.
+- Next milestone: `M2.5c — Baseline Extension / Domain-Randomization Decision`.
+
+### Code Change Summary
+
+1. `train/scripts/train_skate_bfm.py`
+
+   - Changed: minimally parameterized the verified closed-loop route for 2k
+     bring-up or 20k baseline budgets, with fixed update schedule derivation,
+     10k/20k native checkpoint save/reload verification, and block/episode
+     summaries.
+   - Why: execute the first long closed-loop baseline without duplicating the
+     M2.5a loop or vendored training implementation.
+   - Original logic: only the fixed 2,000-transition M2.5a bring-up schedule.
+   - New logic: zero-update `full` mode accepts only 2k or 20k; positive
+     1/10/100 counts retain the fixed-replay smoke path.
+   - Algorithm behavior changed: `YES`, training duration/checkpoint schedule
+     only.
+   - Affected module: project-owned Skate training entry.
+
+2. `train/scripts/eval_target.py`
+
+   - Changed: accepts official/10k/20k checkpoint paths, recomputes each
+     checkpoint's target latent, and ends a fixed evaluation rollout after its
+     terminal fall transition.
+   - Why: native M2.4c termination means an evaluator must not step across a
+     completed episode; long-baseline checkpoints require independent latent
+     inference.
+   - Original logic: used three historical checkpoint names and assumed every
+     rollout survived the full 128 steps.
+   - New logic: preserves the fixed protocol and inference-only checks while
+     recording actual terminal episode duration.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: read-only fixed evaluation.
+
+3. `tests/test_integration.py`
+
+   - Changed: verifies 20k schedule, 38 update blocks, 1900 native updates,
+     checkpoint steps, 2k compatibility, and unsupported-budget failure.
+   - Why: retain the M2.5a/M2.4 routes while preventing schedule drift.
+   - Original logic: tested M2.5a configuration/routing only.
+   - New logic: adds lightweight schedule contract coverage without training.
+   - Algorithm behavior changed: `NO`.
+   - Affected module: regression validation.
+
+### Overall Code Change Summary
+
+- Model architecture, loss, optimizer configuration, native update algorithm,
+  expert sampling, Expert MotionLib, online latent sampling, exploration,
+  replay schema, observation/action format, auxiliary reward semantics/scaling,
+  termination, and vendored BFM-Zero: `NO` change.
+- Training loop: `YES`; the verified M2.5a loop runs to 20k.
+- Replay distribution: `YES`; updated-Actor data grows to 20k rows.
+- Domain randomization: `NO`; nominal HUSKY only.
+- Checkpoint behavior: `YES`; complete native checkpoints at 10k and 20k.
+- Evaluation protocol: `NO`; existing fixed evaluator, now terminal-safe.
+- Training performed: `YES`; 20,000 transitions and 1,900 native updates.
+- Performance evaluated: `YES`; fixed offline evaluation only.

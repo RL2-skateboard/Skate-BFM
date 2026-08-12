@@ -84,6 +84,8 @@ SKATE_CLOSED_LOOP_WARMUP = 1024
 SKATE_CLOSED_LOOP_UPDATE_EVERY = 500
 SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK = 50
 SKATE_CLOSED_LOOP_FIRST_UPDATE = 1500
+SKATE_BASELINE_TRANSITIONS = 20_000
+SKATE_BASELINE_CHECKPOINT_STEPS = (10_000, 20_000)
 
 _ENC_CONFIG_TO_EXPERT_DATA_OBS_MAPPER = {
     HumanoidVerseIsaacConfig: None,
@@ -100,6 +102,36 @@ def _environment_flag(name: str, default: bool = False) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean value, got {value!r}.")
+
+
+def closed_loop_update_steps(total_transitions: int) -> tuple[int, ...]:
+    """Return the fixed native-update schedule for a supported Skate run."""
+
+    if total_transitions not in {
+        SKATE_CLOSED_LOOP_TRANSITIONS,
+        SKATE_BASELINE_TRANSITIONS,
+    }:
+        raise ValueError(
+            "Native closed-loop training supports skate_max_steps="
+            f"{SKATE_CLOSED_LOOP_TRANSITIONS} or {SKATE_BASELINE_TRANSITIONS}."
+        )
+    return tuple(
+        range(
+            SKATE_CLOSED_LOOP_FIRST_UPDATE,
+            total_transitions + 1,
+            SKATE_CLOSED_LOOP_UPDATE_EVERY,
+        )
+    )
+
+
+def closed_loop_checkpoint_steps(total_transitions: int) -> tuple[int, ...]:
+    """Return required baseline checkpoint transitions for one closed-loop run."""
+
+    return (
+        SKATE_BASELINE_CHECKPOINT_STEPS
+        if total_transitions == SKATE_BASELINE_TRANSITIONS
+        else ()
+    )
 
 
 
@@ -233,11 +265,16 @@ class TrainConfig(BaseConfig):
             if (
                 self.skate_update_mode == "full"
                 and self.adaptation_updates == 0
-                and self.skate_max_steps != SKATE_CLOSED_LOOP_TRANSITIONS
+                and self.skate_max_steps
+                not in {
+                    SKATE_CLOSED_LOOP_TRANSITIONS,
+                    SKATE_BASELINE_TRANSITIONS,
+                }
             ):
                 raise ValueError(
                     "Native closed-loop baseline requires skate_max_steps="
-                    f"{SKATE_CLOSED_LOOP_TRANSITIONS}."
+                    f"{SKATE_CLOSED_LOOP_TRANSITIONS} or "
+                    f"{SKATE_BASELINE_TRANSITIONS}."
                 )
             if self.skate_update_mode == "fb_only" and self.adaptation_protocol is None:
                 raise ValueError(
@@ -1937,6 +1974,9 @@ class Workspace:
         if replay_buffer["train"] is not replay_buffer["train_skate"]:
             raise RuntimeError("train must remain an alias of train_skate.")
 
+        total_transitions = self.cfg.skate_max_steps
+        update_steps = closed_loop_update_steps(total_transitions)
+        checkpoint_steps = closed_loop_checkpoint_steps(total_transitions)
         model = self.agent._model
         model.eval()
         observation = self.train_env.reset()
@@ -1946,6 +1986,8 @@ class Workspace:
         update_blocks = []
         components_before = hash_components(self.agent)
         actor_hashes = {"A0": components_before["Actor"]}
+        actor_hashes_by_update = {}
+        checkpoint_reports = {}
         optimizers = {
             "forward": self.agent.forward_optimizer,
             "backward": self.agent.backward_optimizer,
@@ -2061,33 +2103,113 @@ class Workspace:
                 "metric_summary": summary,
             }
 
+        def save_and_validate_checkpoint(env_step: int) -> None:
+            checkpoint_dir = (
+                self.work_dir / f"{CHECKPOINT_DIR_NAME}_{env_step:05d}"
+            )
+            self.save(env_step, replay_buffer, checkpoint_dir=checkpoint_dir)
+            required_files = (
+                checkpoint_dir / "config.json",
+                checkpoint_dir / "init_kwargs.json",
+                checkpoint_dir / "optimizers.pth",
+                checkpoint_dir / "model" / "model.safetensors",
+                checkpoint_dir / "model" / "config.json",
+                checkpoint_dir / "model" / "init_kwargs.json",
+                checkpoint_dir / "train_status.json",
+            )
+            if not all(path.is_file() for path in required_files):
+                raise RuntimeError(
+                    f"Checkpoint at transition {env_step} is incomplete."
+                )
+            reloaded = self.cfg.agent.object_class.load(
+                str(checkpoint_dir),
+                device="cpu",
+            )
+            try:
+                if hash_params(reloaded._model) != hash_params(self.agent._model):
+                    raise RuntimeError(
+                        f"Checkpoint model fingerprint mismatch at transition "
+                        f"{env_step}."
+                    )
+                if hash_buffers(reloaded._model) != hash_buffers(self.agent._model):
+                    raise RuntimeError(
+                        f"Checkpoint buffer fingerprint mismatch at transition "
+                        f"{env_step}."
+                    )
+                expected_step = float(self.agent_update_calls)
+                reload_optimizers = {
+                    name: optimizer_step_report(optimizer)
+                    for name, optimizer in {
+                        "forward": reloaded.forward_optimizer,
+                        "backward": reloaded.backward_optimizer,
+                        "discriminator": reloaded.discriminator_optimizer,
+                        "critic": reloaded.critic_optimizer,
+                        "aux_critic": reloaded.aux_critic_optimizer,
+                        "actor": reloaded.actor_optimizer,
+                    }.items()
+                }
+                if any(
+                    report["step_values"] != [expected_step]
+                    or not report["finite"]
+                    for report in reload_optimizers.values()
+                ):
+                    raise RuntimeError(
+                        f"Checkpoint optimizer reload failed at transition {env_step}."
+                    )
+                if not module_state_is_finite(reloaded._model):
+                    raise RuntimeError(
+                        f"Checkpoint model reload is non-finite at transition {env_step}."
+                    )
+            finally:
+                del reloaded
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            checkpoint_reports[str(env_step)] = {
+                "path": str(checkpoint_dir),
+                "model_sha256": hash_file(
+                    checkpoint_dir / "model" / "model.safetensors"
+                ),
+                "reload": "PASS",
+                "optimizer_step": int(self.agent_update_calls),
+            }
+
         try:
             collect_range(1, SKATE_CLOSED_LOOP_WARMUP, actor_hashes["A0"])
-            collect_range(
-                SKATE_CLOSED_LOOP_WARMUP + 1,
-                SKATE_CLOSED_LOOP_FIRST_UPDATE,
-                actor_hashes["A0"],
-            )
-            update_blocks.append(update_block(SKATE_CLOSED_LOOP_FIRST_UPDATE))
-            actor_hashes["A1"] = hash_params(model._actor)
-            if actor_hashes["A1"] == actor_hashes["A0"]:
-                raise RuntimeError("Actor did not change after closed-loop update block 1.")
-            collect_range(
-                SKATE_CLOSED_LOOP_FIRST_UPDATE + 1,
-                SKATE_CLOSED_LOOP_TRANSITIONS,
-                actor_hashes["A1"],
-            )
-            update_blocks.append(update_block(SKATE_CLOSED_LOOP_TRANSITIONS))
-            actor_hashes["A2"] = hash_params(model._actor)
+            current_start = SKATE_CLOSED_LOOP_WARMUP + 1
+            current_actor_hash = actor_hashes["A0"]
+            for block_index, env_step in enumerate(update_steps, start=1):
+                collect_range(current_start, env_step, current_actor_hash)
+                update_blocks.append(update_block(env_step))
+                current_actor_hash = hash_params(model._actor)
+                actor_label = f"A{block_index}"
+                actor_hashes[actor_label] = current_actor_hash
+                actor_hashes_by_update[str(env_step)] = current_actor_hash
+                previous_hash = actor_hashes[f"A{block_index - 1}"]
+                if current_actor_hash == previous_hash:
+                    raise RuntimeError(
+                        "Actor did not change after native update block "
+                        f"{block_index}."
+                    )
+                if env_step in checkpoint_steps:
+                    save_and_validate_checkpoint(env_step)
+                current_start = env_step + 1
         finally:
             self.train_env.close()
 
-        if actor_hashes["A2"] == actor_hashes["A1"]:
-            raise RuntimeError("Actor did not change after closed-loop update block 2.")
-        if len(transitions) != SKATE_CLOSED_LOOP_TRANSITIONS or len(replay_buffer["train"]) != SKATE_CLOSED_LOOP_TRANSITIONS:
-            raise RuntimeError("Native closed-loop baseline did not collect 2000 transitions.")
-        if self.agent_update_calls != 2 * SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK:
-            raise RuntimeError("Native closed-loop baseline did not run 100 updates.")
+        expected_updates = len(update_steps) * SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK
+        if (
+            len(transitions) != total_transitions
+            or len(replay_buffer["train"]) != total_transitions
+        ):
+            raise RuntimeError(
+                "Native closed-loop baseline did not collect the configured "
+                f"{total_transitions} transitions."
+            )
+        if self.agent_update_calls != expected_updates:
+            raise RuntimeError(
+                "Native closed-loop baseline did not run the configured "
+                f"{expected_updates} updates."
+            )
         if self.fb_update_calls != 0:
             raise RuntimeError("Native closed-loop baseline used a direct B/F update.")
         if any(
@@ -2101,10 +2223,10 @@ class Workspace:
         truncated = full_replay["next"]["truncated"]
         aux_rewards = full_replay.get("aux_rewards")
         if (
-            tuple(full_replay["action"].shape) != (2000, 29)
-            or tuple(full_replay["z"].shape) != (2000, 256)
-            or tuple(terminated.shape) != (2000, 1)
-            or tuple(truncated.shape) != (2000, 1)
+            tuple(full_replay["action"].shape) != (total_transitions, 29)
+            or tuple(full_replay["z"].shape) != (total_transitions, 256)
+            or tuple(terminated.shape) != (total_transitions, 1)
+            or tuple(truncated.shape) != (total_transitions, 1)
             or terminated.dtype is not torch.bool
             or truncated.dtype is not torch.bool
             or bool((terminated & truncated).any())
@@ -2114,7 +2236,7 @@ class Workspace:
             raise RuntimeError("Native closed-loop replay contract is invalid.")
         for name in AUX_REWARD_KEYS:
             values = aux_rewards[name]
-            if tuple(values.shape) != (2000, 1) or not bool(
+            if tuple(values.shape) != (total_transitions, 1) or not bool(
                 torch.isfinite(values).all()
             ):
                 raise RuntimeError(f"Invalid closed-loop auxiliary reward: {name}.")
@@ -2124,7 +2246,7 @@ class Workspace:
             for name, optimizer in optimizers.items()
         }
         if any(
-            report["step_values"] != [100.0] or not report["finite"]
+            report["step_values"] != [float(expected_updates)] or not report["finite"]
             for report in optimizer_after.values()
         ):
             raise RuntimeError("Native closed-loop optimizer state is invalid.")
@@ -2142,8 +2264,108 @@ class Workspace:
         }
         if not all(report["changed"] for report in module_mutation.values()):
             raise RuntimeError("Native closed-loop update did not mutate all modules.")
+        episode_records = []
+        episode_start = 1
+        episode_length = 0
+        for index, transition in enumerate(transitions, start=1):
+            episode_length += 1
+            if transition.terminated or transition.truncated:
+                episode_records.append(
+                    {
+                        "start": episode_start,
+                        "end": index,
+                        "length": episode_length,
+                        "terminated": transition.terminated,
+                        "truncated": transition.truncated,
+                    }
+                )
+                episode_start = index + 1
+                episode_length = 0
+
+        def summarize_episode_range(start: int, end: int) -> dict[str, tp.Any]:
+            completed = [
+                item
+                for item in episode_records
+                if start <= item["end"] <= end
+            ]
+            range_transitions = transitions[start - 1 : end]
+            terminated_count = sum(
+                transition.terminated for transition in range_transitions
+            )
+            truncated_count = sum(
+                transition.truncated for transition in range_transitions
+            )
+            lengths = [item["length"] for item in completed]
+            return {
+                "start": start,
+                "end": end,
+                "episodes": len(completed),
+                "terminated": terminated_count,
+                "truncated": truncated_count,
+                "normal": len(range_transitions)
+                - terminated_count
+                - truncated_count,
+                "mean_length": float(np.mean(lengths)) if lengths else None,
+                "median_length": float(np.median(lengths)) if lengths else None,
+                "min_length": min(lengths) if lengths else None,
+                "max_length": max(lengths) if lengths else None,
+            }
+
+        episode_statistics = [
+            summarize_episode_range(start, min(start + 499, total_transitions))
+            for start in range(1, total_transitions + 1, 500)
+        ]
+        episode_statistics_5k = [
+            summarize_episode_range(start, min(start + 4_999, total_transitions))
+            for start in range(1, total_transitions + 1, 5_000)
+        ]
+        metric_names = (
+            "fb_loss",
+            "disc_loss",
+            "critic_loss",
+            "aux_critic_loss",
+            "actor_loss",
+            "Q_fb",
+            "Q_discriminator",
+            "Q_aux",
+        )
+        metric_trends = {}
+        for name in metric_names:
+            block_values = [
+                block["metric_summary"][name]
+                for block in update_blocks
+            ]
+            all_values = [
+                value
+                for block in block_values
+                for value in (
+                    block["first"],
+                    block["mean"],
+                    block["min"],
+                    block["max"],
+                    block["last"],
+                )
+            ]
+            metric_trends[name] = {
+                "start": block_values[0]["first"],
+                "at_10k": next(
+                    (
+                        block["metric_summary"][name]["last"]
+                        for block in update_blocks
+                        if block["env_step"] == 10_000
+                    ),
+                    None,
+                ),
+                "at_20k": block_values[-1]["last"],
+                "min": min(all_values),
+                "max": max(all_values),
+            }
         summary = {
-            "milestone": "M2.5a Native Closed-Loop Baseline Bring-Up",
+            "milestone": (
+                "M2.5b Original BFM-Zero Skate Baseline Training"
+                if total_transitions == SKATE_BASELINE_TRANSITIONS
+                else "M2.5a Native Closed-Loop Baseline Bring-Up"
+            ),
             "checkpoint": {
                 **self.agent.pretrained_load_report,
                 "model_sha256": hash_file(
@@ -2151,12 +2373,13 @@ class Workspace:
                 ),
             },
             "training": {
-                "env_transitions": SKATE_CLOSED_LOOP_TRANSITIONS,
+                "env_transitions": total_transitions,
                 "warmup_transitions": SKATE_CLOSED_LOOP_WARMUP,
                 "first_update_transition": SKATE_CLOSED_LOOP_FIRST_UPDATE,
                 "update_every_transitions": SKATE_CLOSED_LOOP_UPDATE_EVERY,
                 "updates_per_block": SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK,
                 "total_native_updates": self.agent_update_calls,
+                "total_update_blocks": len(update_steps),
                 "warmup_source": "pretrained_actor_stochastic",
                 "domain_randomization": False,
             },
@@ -2168,10 +2391,15 @@ class Workspace:
                 "normal_count": int((~(terminated | truncated)).sum()),
                 "reset_crossing_transitions": 0,
             },
+            "episode_statistics": {
+                "by_500_transitions": episode_statistics,
+                "by_5k_transitions": episode_statistics_5k,
+                "completed_episodes": len(episode_records),
+                "active_partial_episode_length": episode_length,
+            },
             "policy_versions": {
                 **actor_hashes,
-                "A0_not_equal_A1": actor_hashes["A0"] != actor_hashes["A1"],
-                "A1_not_equal_A2": actor_hashes["A1"] != actor_hashes["A2"],
+                "actor_hashes_by_update": actor_hashes_by_update,
             },
             "transition_provenance": transition_ranges,
             "expert": {
@@ -2180,6 +2408,8 @@ class Workspace:
                 "sequence_length": self.preflight_report["expert_sequence_length"],
             },
             "update_blocks": update_blocks,
+            "metric_trends": metric_trends,
+            "checkpoint_reports": checkpoint_reports,
             "optimizer": {
                 name: {"before": optimizer_before[name], "after": optimizer_after[name]}
                 for name in optimizers
@@ -2196,8 +2426,12 @@ class Workspace:
             },
             "native_closed_loop": "PASS",
             "performance_evaluated": False,
-            "checkpoint_saved": False,
-            "next_milestone": "M2.5b — Original BFM-Zero Skate Baseline Training",
+            "checkpoint_saved": bool(checkpoint_reports),
+            "next_milestone": (
+                "M2.5c — Baseline Extension / Domain-Randomization Decision"
+                if total_transitions == SKATE_BASELINE_TRANSITIONS
+                else "M2.5b — Original BFM-Zero Skate Baseline Training"
+            ),
         }
         with (self.work_dir / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True)
@@ -2206,7 +2440,7 @@ class Workspace:
         self.last_skate_transitions = transitions
         self.preflight_report = summary
         print(
-            "M2.5a native closed-loop bring-up complete: "
+            f"{summary['milestone']} complete: "
             f"{len(transitions)} transitions, {self.agent_update_calls} updates"
         )
         return replay_buffer
@@ -2760,12 +2994,19 @@ class Workspace:
 
         return evaluation_results
 
-    def save(self, time: int, replay_buffer: Dict[str, tp.Any]) -> None:
+    def save(
+        self,
+        time: int,
+        replay_buffer: Dict[str, tp.Any],
+        *,
+        checkpoint_dir: Path | None = None,
+    ) -> None:
         print(f"Checkpointing at time {time}")
-        self.agent.save(str(self.work_dir / CHECKPOINT_DIR_NAME))
+        checkpoint_dir = checkpoint_dir or self.work_dir / CHECKPOINT_DIR_NAME
+        self.agent.save(str(checkpoint_dir))
         if self.cfg.checkpoint_buffer:
-            replay_buffer["train"].save(self.work_dir / CHECKPOINT_DIR_NAME / "buffers" / "train")
-        with (self.work_dir / CHECKPOINT_DIR_NAME / "train_status.json").open("w+") as f:
+            replay_buffer["train"].save(checkpoint_dir / "buffers" / "train")
+        with (checkpoint_dir / "train_status.json").open("w+") as f:
             json.dump({"time": time}, f, indent=4)
 
 

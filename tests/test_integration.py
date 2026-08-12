@@ -341,6 +341,34 @@ def test_native_full_update_mode_is_single_step_only(monkeypatch) -> None:
         module.build_train_config()
 
 
+def test_closed_loop_schedule_and_checkpoint_contract() -> None:
+    module = _train_skate_bfm_module()
+
+    assert module.closed_loop_update_steps(
+        module.SKATE_CLOSED_LOOP_TRANSITIONS
+    ) == (1500, 2000)
+    schedule = module.closed_loop_update_steps(module.SKATE_BASELINE_TRANSITIONS)
+    assert schedule[0] == module.SKATE_CLOSED_LOOP_FIRST_UPDATE
+    assert schedule[-1] == module.SKATE_BASELINE_TRANSITIONS
+    assert len(schedule) == 38
+    assert all(
+        right - left == module.SKATE_CLOSED_LOOP_UPDATE_EVERY
+        for left, right in zip(schedule, schedule[1:])
+    )
+    assert (
+        len(schedule) * module.SKATE_CLOSED_LOOP_UPDATES_PER_BLOCK
+        == 1900
+    )
+    assert module.closed_loop_checkpoint_steps(
+        module.SKATE_CLOSED_LOOP_TRANSITIONS
+    ) == ()
+    assert module.closed_loop_checkpoint_steps(
+        module.SKATE_BASELINE_TRANSITIONS
+    ) == (10_000, 20_000)
+    with pytest.raises(ValueError, match="2000 or 20000"):
+        module.closed_loop_update_steps(10_000)
+
+
 @pytest.mark.parametrize(
     ("adaptation_updates", "expected_route"),
     ((0, "closed_loop"), (1, "smoke"), (10, "smoke"), (100, "smoke")),

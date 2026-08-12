@@ -68,7 +68,12 @@ and post-update Actor data in the growing replay. It uses a pretrained-Actor
 stochastic warmup rather than the original Base random-action seed phase. This
 is a training-interface/adaptation-schedule difference, not a BFM loss or
 algorithm change. It is not a performance evaluation or final checkpoint.
-M2.5b is next.
+M2.5b then completed the 20k nominal-dynamics baseline with checkpoints at
+10k/20k. The fixed evaluator runs each checkpoint with its own observation
+normalizer and B map to compute the target latent. All 60 fixed episodes
+terminated by the native fall contract before the 128-step horizon, therefore
+the checkpoint comparison is `INCONCLUSIVE`, not a task-success result. M2.5c
+will make the baseline-extension/domain-randomization decision.
 Interaction-JEPA and predictive closed-loop control are separate downstream
 modules, not part of the current Motion Library milestone.
 
@@ -105,20 +110,11 @@ This produces one auditable 8-frame target under
 `dataset/skate-expert-pose/target_bank/` and performs no training, rollout,
 Actor execution, or optimizer step.
 
-Run the frozen-Actor target-conditioned evaluation:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
-  --output-dir results/m2.3b-0-target-conditioned
-```
-
-The evaluator uses the runtime-recomputed `skate_target_00` latent, four
-checkpoint-matched fixed random latents, and all four fixed seen/unseen
-dynamics conditions. It runs 128-step canonical-reset MuJoCo rollouts and
-checks exact reset reproducibility plus parameter, component, and normalizer
-immutability. It is evaluation-only and makes no optimizer, backward,
-`agent.update`, or `update_fb` calls. Results are summarized in
-[`train_res.md`](train_res.md).
+The historical M2.3b-0 frozen-Actor target-conditioned artifacts remain under
+ignored `results/m2.3b-0-target-conditioned/`. The current evaluator command
+below compares official BFM0 with M2.5b 10k/20k checkpoints under the same
+fixed target/dynamics protocol. It remains inference-only and checks parameter
+and normalizer immutability without writing to training replay.
 
 Run the M2.4c read-only termination-contract audit:
 
@@ -197,6 +193,43 @@ resets the latent after every terminal or truncated episode, and calls only
 vendored `FBcprAuxAgent.update()`. The `1`, `10`, and `100` values remain the
 unchanged M2.4 fixed-replay smokes. The ignored M2.5a summary records the
 Actor hashes and transition ranges; it saves no training checkpoint.
+
+Run the M2.5b 20k original BFM-Zero Skate baseline:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_ONLINE_ENV=skate \
+SKATE_UPDATE_MODE=full \
+SKATE_COLLECT_ONLY=0 \
+SKATE_ADAPTATION_UPDATES=0 \
+SKATE_MAX_STEPS=20000 \
+SKATE_EXPERT_RATIO=0.5 \
+SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
+SKATE_WORK_DIR=$PWD/results/m2.5b-original-bfm-baseline \
+python train/scripts/train_skate_bfm.py
+```
+
+The same closed-loop implementation calculates 38 blocks and 1900 native
+updates, saves complete local agent checkpoints at `checkpoint_10000` and
+`checkpoint_20000`, and reloads each one before proceeding. It retains M2.5a's
+pretrained stochastic Actor warmup, `sample_z()` rollout latents, 50/50 expert
+sampling, all eight auxiliary fields, and nominal HUSKY dynamics.
+
+Run the fixed inference-only comparison after training:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
+  --output-dir $PWD/results/m2.5b-original-bfm-baseline/fixed_eval \
+  --training-summary $PWD/results/m2.5b-original-bfm-baseline/summary.json \
+  --official-checkpoint $PWD/model/bfm-zero-official \
+  --checkpoint-10k $PWD/results/m2.5b-original-bfm-baseline/checkpoint_10000 \
+  --checkpoint-20k $PWD/results/m2.5b-original-bfm-baseline/checkpoint_20000
+```
+
+For each checkpoint, the evaluator recomputes the target latent through that
+checkpoint's observation normalizer and B map. A terminal fall ends the
+evaluation episode without reset, so no step crosses an episode boundary and
+no evaluation transition reaches the training replay.
 
 Run the M2.4d-3 100-update stability smoke:
 

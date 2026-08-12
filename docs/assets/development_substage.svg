@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
   <title id="title">Skate-BFM development substage pipeline as of 2026-08-12</title>
-  <desc id="desc">M0 baseline, M1 expert motion, M2.1 online replay, M2.2 adaptation boundaries, M2.3 target-conditioned evaluation, M2.4 training preparation, and M2.5a native closed-loop bring-up are complete. M2.5b is the original BFM-Zero Skate baseline.</desc>
+  <desc id="desc">M0 baseline, M1 expert motion, M2.1 online replay, M2.2 adaptation boundaries, M2.3 target-conditioned evaluation, M2.4 training preparation, M2.5a closed-loop bring-up, and M2.5b 20k baseline training are complete. M2.5c is next.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -19,8 +19,8 @@
 
   <rect x="1010" y="32" width="438" height="84" rx="7" fill="#ecfdf5" stroke="#1f7a4d" stroke-width="2"/>
   <text x="1032" y="59" fill="#1f7a4d" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">LATEST COMPLETION - 2026-08-12</text>
-  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.5a Closed-loop bring-up</text>
-  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">2,000 online rows; 100 updates finite</text>
+  <text x="1032" y="86" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">M2.5b 20k baseline</text>
+  <text x="1032" y="105" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">38 blocks; checkpoints reload; eval inconclusive</text>
 
   <line x1="302" y1="224" x2="365" y2="224" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="690" y1="224" x2="753" y2="224" stroke="#d97706" stroke-width="5" marker-end="url(#arrow-active)"/>
@@ -50,9 +50,9 @@
     <text x="916" y="197" fill="#17212b" font-size="24" font-weight="700" text-anchor="middle">M2 Training Integration</text>
     <rect x="779" y="215" width="273" height="35" rx="5" fill="#ffedd5"/>
     <circle cx="797" cy="232" r="7" fill="#d97706"/>
-    <text x="814" y="237" fill="#9a4d05" font-size="14" font-weight="700">M2.5a closed-loop bring-up</text>
-    <text x="916" y="270" fill="#64748b" font-size="13" text-anchor="middle">Updated-Actor replay verified</text>
-    <text x="916" y="291" fill="#64748b" font-size="13" text-anchor="middle">Ready for M2.5b baseline</text>
+    <text x="814" y="237" fill="#9a4d05" font-size="14" font-weight="700">M2.5b original baseline</text>
+    <text x="916" y="270" fill="#64748b" font-size="13" text-anchor="middle">20k replay and checkpoints verified</text>
+    <text x="916" y="291" fill="#64748b" font-size="13" text-anchor="middle">Fixed evaluation is inconclusive</text>
 
     <rect x="1140" y="145" width="308" height="160" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
     <rect x="1160" y="164" width="76" height="26" rx="13" fill="#64748b"/>
@@ -85,10 +85,10 @@
     <line x1="908" y1="509" x2="948" y2="509" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
 
     <rect x="948" y="432" width="500" height="155" rx="7" fill="#fff7ed" stroke="#d97706" stroke-width="3"/>
-    <text x="974" y="471" fill="#1f7a4d" font-size="14" font-weight="700">M2.5a  COMPLETE</text>
-    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Native closed-loop bring-up</text>
-    <text x="974" y="532" fill="#475569" font-size="14">2,000 transitions and 100 updates</text>
-    <text x="974" y="555" fill="#475569" font-size="14">NEXT: M2.5b baseline training</text>
+    <text x="974" y="471" fill="#1f7a4d" font-size="14" font-weight="700">M2.5b  COMPLETE</text>
+    <text x="974" y="505" fill="#17212b" font-size="20" font-weight="700">Original BFM-Zero baseline</text>
+    <text x="974" y="532" fill="#475569" font-size="14">20k transitions, 1,900 updates</text>
+    <text x="974" y="555" fill="#475569" font-size="14">NEXT: M2.5c extension decision</text>
     <circle cx="1402" cy="505" r="19" fill="#d97706"/>
     <path d="M1392 505 L1412 505 M1402 495 L1402 515" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
 
@@ -99,6 +99,6 @@
     <text x="265" y="674" fill="#17212b" font-size="14" font-weight="700">ACTIVE</text>
     <circle cx="385" cy="668" r="10" fill="#94a3b8"/>
     <text x="405" y="674" fill="#17212b" font-size="14" font-weight="700">NEXT / LATER</text>
-    <text x="590" y="674" fill="#475569" font-size="14">M2.5a closed loop passes; M2.5b baseline training is NEXT.</text>
+    <text x="590" y="674" fill="#475569" font-size="14">M2.5b training passes; M2.5c extension decision is NEXT.</text>
   </g>
 </svg>
