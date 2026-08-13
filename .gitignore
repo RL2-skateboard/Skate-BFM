@@ -13,6 +13,7 @@ model/*
 model/motion_library/*
 !model/motion_library/README.md
 data/
+dataset/
 !train/scripts/isaac_env/humanoidverse/data/
 !train/scripts/isaac_env/humanoidverse/data/**
 outputs/

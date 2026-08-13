@@ -1558,3 +1558,33 @@ the formal Skate runtime action contract.
 - The full formal collection was not run in this cleanup stage.
 - Formal command for the next stage:
   `python train/scripts/data_collection/rollout_split.py --parallel-config`
+
+## M2.5c-P - Formal Phase Dataset Collection and Build
+
+- Date: `2026-08-13`.
+- Formal HUSKY raw collection completed at
+  `dataset/sim_collected/phase/raw/`.
+- The collector completed all `150` baseline rollouts and `8` replacement
+  rollouts with no worker-level failures. The final raw dataset contains
+  `452,885` frames at `50 Hz`, totaling `150.962` minutes.
+- Terminal reasons were `125` full-length rollouts and `33` confirmed falls.
+  Confirmed falls are valid episode boundaries, not collection failures.
+- Formal phase segmentation and HUSKY-to-BFM conversion produced `6,038`
+  phase motions with `452,291` accepted expert frames, totaling `148.751`
+  minutes.
+- Accepted phase motion counts: `1,522` push, `1,516` push2steer, `685`
+  steer_left, `109` steer_forward, `717` steer_right, and `1,489`
+  steer2push.
+- Raw rollout rejection count: `0`. Motion conversion rejection count: `0`.
+- Official `MotionLibRobot` validation, official expert-loader Seq8 sampling,
+  robot/board/action/phase/source-frame provenance, and post-hoc full-scene QC
+  all passed.
+- QC used seed `20260813` and rendered `10` uniformly sampled motions for each
+  of the six phases, for `60` samples total.
+- Final artifacts:
+  `dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl`,
+  `dataset/sim_collected/phase/motion_library/manifest.json`,
+  `dataset/sim_collected/phase/qc/qc_manifest.json`, and six phase QC videos.
+- Published dataset:
+  `https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset`.
+- Training was not launched. Continuous-dataset collection was not launched.

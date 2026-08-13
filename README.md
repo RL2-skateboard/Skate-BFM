@@ -59,6 +59,17 @@ The dataset processor scans every raw rollout, uses recorded phase IDs for
 strict contiguous segmentation, aggregates all accepted motions, validates the
 result with official BFM interfaces, and can generate post-hoc full-scene QC:
 
+The completed M2.5c-P raw collection, BFM-compatible phase MotionLib,
+manifests, and QC videos are hosted at
+[Yak9Ce3teeh/skate-sim-dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset).
+Restore them to the repository layout with:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --local-dir dataset/sim_collected/phase
+```
+
 ```bash
 python train/scripts/data_collection/convert_husky_to_bfm.py \
   --aggregate-phase \
