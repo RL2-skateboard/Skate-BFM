@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Convert recorded HUSKY segments to the official BFM-Zero motion schema."""
+"""Build the phase-structured BFM MotionLib from canonical HUSKY raw data."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
-import re
 import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -19,51 +18,122 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-BFM_FIXED_WRIST_JOINTS = {
-    "left_wrist_roll_joint",
-    "left_wrist_pitch_joint",
-    "left_wrist_yaw_joint",
-    "right_wrist_roll_joint",
-    "right_wrist_pitch_joint",
-    "right_wrist_yaw_joint",
+PHASES = ("push", "push2steer", "steer_left", "steer_forward", "steer_right", "steer2push")
+PHASE_IDS = {
+    "push": 0,
+    "push2steer": 1,
+    "steer_left": 2,
+    "steer_right": 3,
+    "steer_forward": 4,
+    "steer2push": 5,
+    "fall": 6,
 }
-REQUIRED_RECORD_ARRAYS = {
+BFM_REQUIRED = {
     "root_trans_offset": (3,),
     "pose_aa": (30, 3),
     "dof": (29,),
     "root_rot": (4,),
     "smpl_joints": (24, 3),
 }
+SKATE_REQUIRED = {
+    "action": None,
+    "board_root_pos": (3,),
+    "board_root_quat": (4,),
+    "board_root_lin_vel": (3,),
+    "board_root_ang_vel": (3,),
+    "board_dof_pos": None,
+    "board_dof_vel": None,
+    "phase_id": (),
+    "phase_value": (),
+    "board_heading_delta": (),
+}
+RAW_REQUIRED = (
+    "qpos",
+    "qvel",
+    "action",
+    "root_pos",
+    "root_quat",
+    "dof_pos",
+    "dof_vel",
+    "body_pos",
+    "body_quat",
+    "body_lin_vel",
+    "body_ang_vel",
+    "board_root_pos",
+    "board_root_quat",
+    "board_root_lin_vel",
+    "board_root_ang_vel",
+    "board_dof_pos",
+    "board_dof_vel",
+    "board_heading_delta",
+    "frame_idx",
+    "sim_time",
+    "phase_id",
+    "phase_value",
+    "command_v",
+    "command_h",
+    "fall",
+    "reset",
+)
+BFM_MIN_FRAMES = 9
+DISCARD_KEYS = (
+    "fall",
+    "too_short_for_bfm",
+    "reset",
+    "nan_inf",
+    "alignment",
+    "invalid_phase",
+    "other",
+)
+BFM_JOINT_ORDER = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-root", type=Path, required=True)
-    parser.add_argument("--bfm-repo", type=Path, required=True)
-    parser.add_argument("--bfm-reference", type=Path, required=True)
-    parser.add_argument("--robot-xml", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--base-motion-pkl", type=Path)
-    parser.add_argument("--combined-output", type=Path)
-    parser.add_argument("--seq-length", type=int, default=8)
-    parser.add_argument("--validate-motionlib", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
-
-    for option in ("input_root", "bfm_repo", "bfm_reference", "robot_xml"):
-        path = getattr(args, option)
-        if not path.exists():
-            parser.error(f"--{option.replace('_', '-')} does not exist: {path}")
-    if args.seq_length <= 0:
-        parser.error("--seq-length must be positive")
-    if (args.base_motion_pkl is None) != (args.combined_output is None):
-        parser.error("--base-motion-pkl and --combined-output must be used together")
-    if args.base_motion_pkl is not None and not args.base_motion_pkl.is_file():
-        parser.error(f"--base-motion-pkl does not exist: {args.base_motion_pkl}")
-    if args.manifest is None:
-        args.manifest = args.output.parent / "manifest.json"
-    return args
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--aggregate-phase", action="store_true")
+    p.add_argument("--dataset-root", type=Path, required=True)
+    p.add_argument("--bfm-repo", type=Path, required=True)
+    p.add_argument("--bfm-reference", type=Path, required=True)
+    p.add_argument("--robot-xml", type=Path, required=True)
+    p.add_argument("--husky-xml", type=Path)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--manifest", type=Path)
+    p.add_argument("--qc-root", type=Path)
+    p.add_argument("--qc-seed", type=int, default=20260813)
+    p.add_argument("--seq-length", type=int, default=8)
+    p.add_argument("--validate-motionlib", action="store_true")
+    p.add_argument("--overwrite", action="store_true")
+    return p
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -73,10 +143,6 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
-def unqualified_name(name: str) -> str:
-    return str(name).split("/")[-1]
-
-
 def finite(name: str, value: np.ndarray) -> None:
     if not np.issubdtype(value.dtype, np.number):
         raise TypeError(f"{name} must be numeric, got {value.dtype}")
@@ -84,164 +150,203 @@ def finite(name: str, value: np.ndarray) -> None:
         raise ValueError(f"{name} contains NaN or Inf")
 
 
-def load_reference(path: Path) -> tuple[list[str], dict[str, Any]]:
+def discard_category(error: Exception) -> str:
+    message = str(error).lower()
+    if "nan" in message or "inf" in message:
+        return "nan_inf"
+    if "phase" in message:
+        return "invalid_phase"
+    if any(word in message for word in ("align", "shape", "frame_idx", "sim_time")):
+        return "alignment"
+    return "other"
+
+
+def load_reference(path: Path) -> tuple[list[str], Mapping[str, Any]]:
     payload = joblib.load(path)
     if not isinstance(payload, dict) or not payload:
         raise TypeError("BFM reference must be a non-empty dict")
     record = next(iter(payload.values()))
-    if not isinstance(record, dict):
-        raise TypeError("BFM reference motion record must be a dict")
-    keys = list(record.keys())
-    required = set(REQUIRED_RECORD_ARRAYS) | {"fps"}
-    missing = sorted(required - set(keys))
+    if not isinstance(record, Mapping):
+        raise TypeError("BFM reference record must be a mapping")
+    missing = sorted((set(BFM_REQUIRED) | {"fps"}) - set(record))
     if missing:
-        raise ValueError(f"BFM reference record is missing keys: {missing}")
-    return keys, record
+        raise ValueError(f"BFM reference is missing keys: {missing}")
+    return list(record), record
 
 
-def bfm_joint_contract(robot_xml: Path) -> tuple[list[str], np.ndarray]:
-    model = mujoco.MjModel.from_xml_path(str(robot_xml.resolve()))
-    joint_ids = [
-        joint_id
-        for joint_id in range(model.njnt)
-        if model.jnt_type[joint_id] != mujoco.mjtJoint.mjJNT_FREE
-    ]
-    names = [model.joint(joint_id).name for joint_id in joint_ids]
-    axes = np.asarray([model.jnt_axis[joint_id] for joint_id in joint_ids])
-    if len(names) != 29 or axes.shape != (29, 3):
-        raise ValueError(
-            f"BFM robot must expose 29 named hinge joints, got {len(names)}"
-        )
-    if len(set(names)) != len(names):
-        raise ValueError("BFM robot joint names are not unique")
-    return names, axes.astype(np.float32)
+def bfm_joint_contract(path: Path) -> tuple[list[str], np.ndarray]:
+    model = mujoco.MjModel.from_xml_path(str(path.resolve()))
+    ids = [i for i in range(model.njnt) if model.jnt_type[i] != mujoco.mjtJoint.mjJNT_FREE]
+    names = [model.joint(i).name for i in ids]
+    axes = np.asarray([model.jnt_axis[i] for i in ids], dtype=np.float32)
+    if len(names) != 29 or axes.shape != (29, 3) or len(set(names)) != 29:
+        raise ValueError(f"BFM XML must contain 29 unique hinge joints, got {len(names)}")
+    return names, axes
 
 
-def segment_paths(input_root: Path) -> list[tuple[Path, Path]]:
-    result = []
-    for metadata_path in sorted(input_root.glob("*/*/metadata.json")):
-        state_path = metadata_path.with_name("state.npz")
-        if not state_path.is_file():
-            raise FileNotFoundError(f"missing state.npz beside {metadata_path}")
-        result.append((metadata_path, state_path))
-    if not result:
-        raise FileNotFoundError(
-            f"no segment metadata found below {input_root}; expected */*/metadata.json"
-        )
-    return result
+def raw_root_from_arg(path: Path) -> tuple[Path, Path]:
+    path = path.resolve()
+    if (path / "raw").is_dir():
+        return path / "raw", path
+    if path.name == "raw":
+        return path, path.parent
+    return path, path.parent
 
 
-def load_segment(
-    metadata_path: Path,
-    state_path: Path,
-) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    with np.load(state_path, allow_pickle=False) as archive:
-        state = {name: archive[name] for name in archive.files}
-    for required in ("root_pos", "root_quat", "dof_pos", "sim_time"):
-        if required not in state:
-            raise ValueError(f"{state_path} is missing {required}")
-
-    frame_count = int(metadata["num_frames"])
-    for name, value in state.items():
-        if value.ndim > 0 and value.shape[0] != frame_count:
-            raise ValueError(
-                f"{state_path}:{name} has {value.shape[0]} frames, expected {frame_count}"
-            )
-        if np.issubdtype(value.dtype, np.number):
-            finite(f"{state_path}:{name}", value)
-        elif not np.issubdtype(value.dtype, np.bool_):
-            raise TypeError(f"{state_path}:{name} has unsupported dtype {value.dtype}")
-    if state["root_pos"].shape != (frame_count, 3):
-        raise ValueError(f"invalid root_pos shape: {state['root_pos'].shape}")
-    if state["root_quat"].shape != (frame_count, 4):
-        raise ValueError(f"invalid root_quat shape: {state['root_quat'].shape}")
-    if state["dof_pos"].ndim != 2:
-        raise ValueError(f"invalid dof_pos shape: {state['dof_pos'].shape}")
-    return metadata, state
+def rollout_paths(raw_root: Path) -> list[Path]:
+    paths = sorted(
+        path for path in raw_root.glob("round_*/rollout_*") if (path / "raw_rollout").is_dir()
+    )
+    if not paths:
+        raise FileNotFoundError(f"no raw rollouts found below {raw_root}")
+    return paths
 
 
-def load_raw_rollout(
-    rollout_root: Path,
-) -> tuple[Path, dict[str, Any], dict[str, np.ndarray]]:
-    raw_root = rollout_root / "raw_rollout"
-    raw_files = sorted(raw_root.glob("*.npz"))
-    if len(raw_files) != 1:
-        raise ValueError(
-            f"{raw_root} must contain exactly one full rollout NPZ, found {len(raw_files)}"
-        )
-    raw_path = raw_files[0]
+def load_raw(path: Path) -> tuple[Path, dict[str, Any], dict[str, np.ndarray]]:
+    raw_dir = path / "raw_rollout"
+    files = sorted(raw_dir.glob("*.npz"))
+    if len(files) != 1:
+        raise ValueError(f"{raw_dir} must contain one rollout NPZ, found {len(files)}")
+    raw_path = files[0]
     metadata_path = raw_path.with_suffix(".json")
     if not metadata_path.is_file():
-        raise FileNotFoundError(f"missing full rollout metadata: {metadata_path}")
+        raise FileNotFoundError(f"missing raw metadata: {metadata_path}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     with np.load(raw_path, allow_pickle=False) as archive:
         state = {name: archive[name] for name in archive.files}
-    for required in ("root_pos", "root_quat", "dof_pos", "sim_time"):
-        if required not in state:
-            raise ValueError(f"{raw_path} is missing {required}")
-    frame_count = int(metadata["num_frames"])
-    for name, value in state.items():
-        if value.ndim > 0 and value.shape[0] != frame_count:
-            raise ValueError(
-                f"{raw_path}:{name} has {value.shape[0]} frames, expected {frame_count}"
-            )
-        if np.issubdtype(value.dtype, np.number):
-            finite(f"{raw_path}:{name}", value)
     return raw_path, metadata, state
 
 
-def atomic_joblib_dump(payload: Any, output: Path) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.tmp")
-    temporary.unlink(missing_ok=True)
-    try:
-        joblib.dump(payload, temporary)
-        temporary.replace(output)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
+def validate_raw(
+    raw_path: Path, metadata: Mapping[str, Any], state: Mapping[str, np.ndarray]
+) -> tuple[int, dict[str, Any]]:
+    frame_count = int(metadata.get("num_frames", 0))
+    if frame_count <= 0:
+        raise ValueError(f"{raw_path} has invalid num_frames")
+    required_metadata = (
+        "episode_id",
+        "round_id",
+        "rollout_id",
+        "dataset_split",
+        "fps",
+        "dt",
+        "joint_order",
+        "body_order",
+        "board_joint_order",
+        "qpos_quaternion_order",
+        "body_quaternion_order",
+        "board_quaternion_order",
+        "physics_randomization",
+        "policy_checkpoint",
+        "robot_xml",
+        "terminal_reason",
+        "fixed_bfm_joints",
+    )
+    missing = [name for name in required_metadata if name not in metadata]
+    if missing:
+        raise ValueError(f"{raw_path} missing metadata: {missing}")
+    if metadata["dataset_split"] not in {"train", "validation", "test"}:
+        raise ValueError(f"{raw_path} has invalid dataset_split")
+    if metadata["qpos_quaternion_order"] != "wxyz":
+        raise ValueError(f"{raw_path} root quaternion order must be wxyz")
+    if metadata["body_quaternion_order"] != "wxyz":
+        raise ValueError(f"{raw_path} body quaternion order must be wxyz")
+    if metadata["board_quaternion_order"] != "wxyz":
+        raise ValueError(f"{raw_path} board quaternion order must be wxyz")
+    randomization = metadata["physics_randomization"]
+    if not isinstance(randomization, Mapping) or "seed" not in randomization:
+        raise ValueError(f"{raw_path} has invalid physics_randomization")
+    missing = [name for name in RAW_REQUIRED if name not in state]
+    if missing:
+        raise ValueError(f"{raw_path} missing raw fields: {missing}")
+    for name, value in state.items():
+        if value.ndim == 0 or value.shape[0] != frame_count:
+            raise ValueError(f"{raw_path}:{name} is not aligned to {frame_count} frames")
+        if np.issubdtype(value.dtype, np.number):
+            finite(f"{raw_path}:{name}", value)
+    if not np.array_equal(state["frame_idx"], np.arange(frame_count)):
+        raise ValueError(f"{raw_path}:frame_idx is not contiguous")
+    if np.any(np.diff(state["sim_time"]) < 0):
+        raise ValueError(f"{raw_path}:sim_time is not monotonic")
+    expected = {
+        "root_pos": (frame_count, 3),
+        "root_quat": (frame_count, 4),
+        "dof_pos": (frame_count, 23),
+        "dof_vel": (frame_count, 23),
+        "action": (frame_count, 23),
+        "board_root_pos": (frame_count, 3),
+        "board_root_quat": (frame_count, 4),
+        "board_root_lin_vel": (frame_count, 3),
+        "board_root_ang_vel": (frame_count, 3),
+        "phase_id": (frame_count,),
+        "phase_value": (frame_count,),
+        "command_v": (frame_count,),
+        "command_h": (frame_count,),
+        "fall": (frame_count,),
+        "reset": (frame_count,),
+        "board_heading_delta": (frame_count,),
+    }
+    for name, shape in expected.items():
+        if state[name].shape != shape:
+            raise ValueError(f"{raw_path}:{name} has {state[name].shape}, expected {shape}")
+    phase_ids = np.asarray(state["phase_id"])
+    if not np.issubdtype(phase_ids.dtype, np.integer):
+        raise ValueError(f"{raw_path}:phase_id must be integer")
+    unknown = sorted(set(phase_ids.tolist()) - set(range(7)))
+    if unknown:
+        raise ValueError(f"{raw_path} contains unknown phase IDs: {unknown}")
+    phase_fall = phase_ids == PHASE_IDS["fall"]
+    if not np.array_equal(np.asarray(state["fall"], dtype=bool), phase_fall):
+        raise ValueError(f"{raw_path}:fall and phase_id are inconsistent")
+    if not np.all((0 <= state["command_v"]) & (state["command_v"] <= 1.5)):
+        raise ValueError(f"{raw_path}:command_v outside [0, 1.5]")
+    if not np.all(np.abs(state["command_h"]) <= math.pi / 4):
+        raise ValueError(f"{raw_path}:command_h outside [-pi/4, pi/4]")
+    if len(np.unique(state["command_v"])) != 1 or len(np.unique(state["command_h"])) != 1:
+        raise ValueError(f"{raw_path}: command is not fixed within rollout")
+    if not math.isclose(float(metadata["dt"]), 1.0 / float(metadata["fps"]), abs_tol=1e-5):
+        raise ValueError(f"{raw_path}: fps/dt mismatch")
+    return frame_count, {
+        "command_v": float(state["command_v"][0]),
+        "command_h": float(state["command_h"][0]),
+        "physics_seed": int(randomization["seed"]),
+    }
+
+
+def phase_runs(phase_ids: np.ndarray) -> list[tuple[int, int, int]]:
+    runs: list[tuple[int, int, int]] = []
+    start = 0
+    for end in range(1, len(phase_ids) + 1):
+        if end == len(phase_ids) or phase_ids[end] != phase_ids[start]:
+            runs.append((int(phase_ids[start]), start, end))
+            start = end
+    return runs
 
 
 def map_dof(
-    source_dof: np.ndarray,
+    source: np.ndarray,
     source_order: Sequence[str],
     target_order: Sequence[str],
-    declared_fixed: Sequence[str],
-) -> tuple[np.ndarray, dict[str, str], list[str]]:
-    names = [unqualified_name(name) for name in source_order]
-    if len(names) != source_dof.shape[1]:
-        raise ValueError(
-            f"joint_order has {len(names)} names but dof_pos has width {source_dof.shape[1]}"
-        )
-    if len(set(names)) != len(names):
-        raise ValueError("source joint_order contains duplicate names")
-    source_index = {name: index for index, name in enumerate(names)}
-    fixed = set(declared_fixed)
-    if fixed != BFM_FIXED_WRIST_JOINTS:
-        raise ValueError(
-            "fixed_bfm_joints must explicitly declare the six omitted wrist joints"
-        )
-
-    missing = [name for name in target_order if name not in source_index]
-    if set(missing) != fixed:
-        raise ValueError(
-            "source/target joint definitions are incompatible; "
-            f"unmapped target joints: {missing}"
-        )
-    unexpected = sorted(set(names) - set(target_order))
-    if unexpected:
-        raise ValueError(f"source contains joints absent from BFM: {unexpected}")
-
-    target = np.zeros((source_dof.shape[0], len(target_order)), dtype=np.float32)
+    fixed: Sequence[str],
+) -> tuple[np.ndarray, dict[str, str]]:
+    names = [str(name).split("/")[-1] for name in source_order]
+    if len(names) != source.shape[1] or len(set(names)) != len(names):
+        raise ValueError("raw joint_order does not match unique dof_pos columns")
+    fixed_set = set(fixed)
+    target_names = [str(name).split("/")[-1] for name in target_order]
+    missing = [name for name in target_names if name not in names]
+    if set(missing) != fixed_set:
+        raise ValueError(f"source/target joint mismatch; missing={missing}, fixed={fixed}")
+    indices = {name: index for index, name in enumerate(names)}
+    result = np.zeros((source.shape[0], len(target_names)), dtype=np.float32)
     mapping: dict[str, str] = {}
-    for target_index, target_name in enumerate(target_order):
-        if target_name in source_index:
-            target[:, target_index] = source_dof[:, source_index[target_name]]
-            mapping[target_name] = source_order[source_index[target_name]]
+    for index, name in enumerate(target_names):
+        if name in indices:
+            result[:, index] = source[:, indices[name]]
+            mapping[name] = str(source_order[indices[name]])
         else:
-            mapping[target_name] = "fixed_zero"
-    return target, mapping, missing
+            mapping[name] = "fixed_zero"
+    return result, mapping
 
 
 def convert_record(
@@ -251,107 +356,116 @@ def convert_record(
     reference_record: Mapping[str, Any],
     target_order: Sequence[str],
     target_axes: np.ndarray,
+    phase_name: str,
+    start: int,
+    end: int,
+    source_path: Path,
     seq_length: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    frame_count = int(metadata["num_frames"])
-    if frame_count < seq_length:
-        raise ValueError(
-            f"{metadata['segment_id']} has {frame_count} frames, below seq_length={seq_length}"
-        )
-    quaternion_order = metadata.get("quaternion_order")
-    if quaternion_order != "wxyz":
-        raise ValueError(
-            f"{metadata['segment_id']} quaternion_order must be wxyz, got {quaternion_order}"
-        )
-
-    dof, mapping, fixed = map_dof(
-        np.asarray(state["dof_pos"], dtype=np.float32),
+    frame_count = end - start
+    if frame_count < seq_length + 1:
+        raise ValueError(f"segment is shorter than BFM minimum {seq_length + 1}")
+    if not np.all(state["phase_id"][start:end] == PHASE_IDS[phase_name]):
+        raise ValueError("phase segment is not phase-pure")
+    dof, mapping = map_dof(
+        np.asarray(state["dof_pos"][start:end], dtype=np.float32),
         metadata["joint_order"],
         target_order,
-        metadata.get("fixed_bfm_joints", []),
+        metadata["fixed_bfm_joints"],
     )
-    root_wxyz = np.asarray(state["root_quat"], dtype=np.float64)
+    root_wxyz = np.asarray(state["root_quat"][start:end], dtype=np.float64)
     norms = np.linalg.norm(root_wxyz, axis=1)
     if np.any(norms <= 1e-8):
-        raise ValueError(f"{metadata['segment_id']} has invalid root quaternion")
-    root_wxyz = root_wxyz / norms[:, None]
-    root_xyzw = root_wxyz[:, [1, 2, 3, 0]]
+        raise ValueError("root quaternion has zero norm")
+    root_xyzw = (root_wxyz / norms[:, None])[:, [1, 2, 3, 0]]
     root_rotvec = Rotation.from_quat(root_xyzw).as_rotvec().astype(np.float32)
-
     pose_aa = np.zeros((frame_count, 30, 3), dtype=np.float32)
     pose_aa[:, 0] = root_rotvec
     pose_aa[:, 1:] = dof[..., None] * target_axes[None, ...]
-    fps_value = float(metadata["fps"])
-    rounded_fps = round(fps_value)
-    if not math.isclose(fps_value, rounded_fps, rel_tol=0.0, abs_tol=1e-3):
-        raise ValueError(
-            f"{metadata['segment_id']} fps must be integral for the BFM schema"
-        )
+    fps = float(metadata["fps"])
+    if not math.isclose(fps, round(fps), abs_tol=1e-3):
+        raise ValueError(f"fps must be integral, got {fps}")
     values: dict[str, Any] = {
-        "root_trans_offset": np.asarray(state["root_pos"], dtype=np.float32),
+        "root_trans_offset": np.asarray(state["root_pos"][start:end], dtype=np.float32),
         "pose_aa": pose_aa,
         "dof": dof,
         "root_rot": root_xyzw.astype(np.float32),
         "smpl_joints": np.zeros((frame_count, 24, 3), dtype=np.float32),
-        "fps": type(reference_record["fps"])(rounded_fps),
-        "motion_name": str(metadata["segment_id"]),
+        "fps": type(reference_record["fps"])(round(fps)),
+        "motion_name": f"{metadata['round_id']}_{metadata['rollout_id']}_{phase_name}_{start}",
     }
-    unsupported = sorted(set(reference_keys) - set(values))
-    if unsupported:
-        raise ValueError(f"unsupported BFM reference keys: {unsupported}")
-    record = {name: values[name] for name in reference_keys}
-    if set(record) != set(reference_keys):
-        raise AssertionError("converted record schema differs from BFM reference")
-
-    for name, tail_shape in REQUIRED_RECORD_ARRAYS.items():
+    missing = sorted(set(BFM_REQUIRED) - set(values))
+    if missing:
+        raise ValueError(f"converted record misses BFM fields: {missing}")
+    record = {key: values[key] for key in reference_keys if key in values}
+    for key, value in values.items():
+        if key not in record:
+            record[key] = value
+    for name, tail_shape in BFM_REQUIRED.items():
         value = np.asarray(record[name])
-        expected = (frame_count, *tail_shape)
-        if value.shape != expected:
-            raise ValueError(f"{name} has shape {value.shape}, expected {expected}")
-        if value.dtype != np.float32:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
+        if value.shape != (frame_count, *tail_shape) or value.dtype != np.float32:
+            raise ValueError(f"{name} has invalid shape/dtype: {value.shape}/{value.dtype}")
         finite(name, value)
-    if not math.isclose(
-        float(metadata["dt"]),
-        1.0 / float(metadata["fps"]),
-        rel_tol=0.0,
-        abs_tol=1e-5,
-    ):
-        raise ValueError(f"{metadata['segment_id']} has inconsistent fps/dt")
-
-    detail = {
+    record.update(
+        {
+            "action": np.asarray(state["action"][start:end], dtype=np.float32),
+            "board_root_pos": np.asarray(state["board_root_pos"][start:end], dtype=np.float32),
+            "board_root_quat": np.asarray(state["board_root_quat"][start:end], dtype=np.float32),
+            "board_root_lin_vel": np.asarray(
+                state["board_root_lin_vel"][start:end], dtype=np.float32
+            ),
+            "board_root_ang_vel": np.asarray(
+                state["board_root_ang_vel"][start:end], dtype=np.float32
+            ),
+            "board_dof_pos": np.asarray(state["board_dof_pos"][start:end], dtype=np.float32),
+            "board_dof_vel": np.asarray(state["board_dof_vel"][start:end], dtype=np.float32),
+            "board_heading_delta": np.asarray(
+                state["board_heading_delta"][start:end], dtype=np.float32
+            ),
+            "phase_id": np.asarray(state["phase_id"][start:end], dtype=np.int16),
+            "phase_value": np.asarray(state["phase_value"][start:end], dtype=np.float32),
+            "phase_label": phase_name,
+            "source_round": str(metadata["round_id"]).zfill(3),
+            "source_rollout": str(metadata["rollout_id"]).zfill(3),
+            "source_episode": str(metadata["episode_id"]),
+            "source_start_frame": int(start),
+            "source_end_frame": int(end),
+            "source_raw_npz": str(source_path.resolve()),
+            "command_v": float(state["command_v"][0]),
+            "command_h": float(state["command_h"][0]),
+            "physics_seed": int(metadata["physics_randomization"]["seed"]),
+        }
+    )
+    for name in SKATE_REQUIRED:
+        value = np.asarray(record[name])
+        if value.shape[0] != frame_count:
+            raise ValueError(f"paired field {name} is not aligned")
+        finite(name, value)
+    return record, {
         "joint_mapping": mapping,
-        "fixed_zero_joints": fixed,
-        "source_velocity": "simulator qvel/dof_vel retained in state.npz",
-        "bfm_velocity": "derived by official MotionLib from pose_aa and fps",
-        "quaternion_conversion": "MuJoCo wxyz -> BFM/SciPy xyzw",
+        "fixed_zero_joints": sorted(set(metadata["fixed_bfm_joints"])),
     }
-    return record, detail
 
 
 def validate_official_motionlib(
-    bfm_repo: Path,
-    motion_file: Path,
-    robot_xml: Path,
-    motion_count: int,
-    seq_length: int,
+    bfm_repo: Path, motion_file: Path, robot_xml: Path, motion_count: int, seq_length: int
 ) -> dict[str, Any]:
     sys.path.insert(0, str(bfm_repo.resolve()))
     import torch
     from easydict import EasyDict
+    from humanoidverse.agents.envs.humanoidverse_isaac import (
+        load_expert_trajectories_from_motion_lib,
+    )
     from humanoidverse.utils.motion_lib.motion_lib_base import FixHeightMode
     from humanoidverse.utils.motion_lib.motion_lib_robot import MotionLibRobot
 
-    motion_cfg = EasyDict(
+    cfg = EasyDict(
         {
             "motion_file": str(motion_file.resolve()),
             "step_dt": 1.0 / 50.0,
             "fix_height": FixHeightMode.no_fix,
             "asset": EasyDict(
-                {
-                    "assetRoot": str(robot_xml.resolve().parent),
-                    "assetFileName": robot_xml.name,
-                }
+                {"assetRoot": str(robot_xml.resolve().parent), "assetFileName": robot_xml.name}
             ),
             "extend_config": [
                 EasyDict(
@@ -366,369 +480,506 @@ def validate_official_motionlib(
             "humanoid_type": "g1_29dof",
         }
     )
-    motion_lib = MotionLibRobot(motion_cfg, num_envs=motion_count, device="cpu")
+    motion_lib = MotionLibRobot(cfg, num_envs=motion_count, device="cpu")
     motion_lib.load_motions_for_training()
     ids = torch.arange(motion_count, dtype=torch.long)
-    times = torch.zeros(motion_count, dtype=torch.float32)
-    states = motion_lib.get_motion_state(ids, times)
-    required = {
-        "rg_pos_t",
-        "rg_rot_t",
-        "body_vel_t",
-        "body_ang_vel_t",
-        "dof_pos",
-        "dof_vel",
-    }
-    missing = sorted(required - set(states))
-    if missing:
-        raise ValueError(f"official MotionLib state is missing fields: {missing}")
-    for name in required:
-        if not torch.isfinite(states[name]).all():
-            raise ValueError(f"official MotionLib returned non-finite {name}")
-
-    expert_result: dict[str, Any]
-    try:
-        from humanoidverse.agents.envs.humanoidverse_isaac import (
-            load_expert_trajectories_from_motion_lib,
-        )
-
-        env = SimpleNamespace(
-            _motion_lib=motion_lib,
-            dt=1.0 / 50.0,
-            device="cpu",
-            default_dof_pos=torch.zeros((1, 29), dtype=torch.float32),
-            gravity_vec=torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32),
-            config=SimpleNamespace(
-                obs=SimpleNamespace(
-                    obs_auxiliary={"history_actor": {}},
-                    obs_dims={},
-                    root_height_obs=True,
-                )
-            ),
-        )
-        agent_cfg = SimpleNamespace(
-            model=SimpleNamespace(seq_length=seq_length)
-        )
-        expert_buffer = load_expert_trajectories_from_motion_lib(
-            env,
-            agent_cfg,
-            device="cpu",
-        )
-        storage = expert_buffer.storage
-        frame_count = int(storage["truncated"].shape[0])
-        aligned = {
-            int(storage["observation"][name].shape[0])
-            for name in ("state", "last_action", "privileged_state")
-        }
-        aligned.update(
-            {
-                int(storage[name].shape[0])
-                for name in ("terminated", "truncated", "motion_id")
-            }
-        )
-        if aligned != {frame_count}:
-            raise ValueError(f"expert buffer fields are not frame-aligned: {aligned}")
-        sample_batch = expert_buffer.sample(
-            batch_size=seq_length * 2,
-            seq_length=seq_length,
-        )
-        sample_state = sample_batch["observation"]["state"]
-        sample_next_state = sample_batch["next"]["observation"]["state"]
-        if sample_state.shape != sample_next_state.shape:
-            raise ValueError(
-                "expert buffer current/next sample shapes do not match: "
-                f"{sample_state.shape} vs {sample_next_state.shape}"
+    states = motion_lib.get_motion_state(ids, torch.zeros(motion_count))
+    required = {"rg_pos_t", "rg_rot_t", "body_vel_t", "body_ang_vel_t", "dof_pos", "dof_vel"}
+    if not required <= set(states):
+        raise ValueError(f"MotionLib missing fields: {sorted(required - set(states))}")
+    if not all(torch.isfinite(states[name]).all() for name in required):
+        raise ValueError("MotionLib returned NaN/Inf")
+    env = SimpleNamespace(
+        _motion_lib=motion_lib,
+        dt=1.0 / 50.0,
+        device="cpu",
+        default_dof_pos=torch.zeros((1, 29)),
+        gravity_vec=torch.tensor([[0.0, 0.0, -1.0]]),
+        config=SimpleNamespace(
+            obs=SimpleNamespace(
+                obs_auxiliary={"history_actor": {}}, obs_dims={}, root_height_obs=True
             )
-        expert_result = {
-            "status": "passed",
-            "frames": frame_count,
-            "state_shape": list(storage["observation"]["state"].shape),
-            "privileged_state_shape": list(
-                storage["observation"]["privileged_state"].shape
-            ),
-            "sample_seq_length": seq_length,
-            "sample_state_shape": list(sample_state.shape),
-            "sample_next_state_shape": list(sample_next_state.shape),
-        }
-    except Exception as error:
-        raise RuntimeError(
-            "official load_expert_trajectories_from_motion_lib failed"
-        ) from error
-
+        ),
+    )
+    buffer = load_expert_trajectories_from_motion_lib(
+        env, SimpleNamespace(model=SimpleNamespace(seq_length=seq_length)), device="cpu"
+    )
+    sample = buffer.sample(batch_size=seq_length * 2, seq_length=seq_length)
+    if sample["observation"]["state"].shape != sample["next"]["observation"]["state"].shape:
+        raise ValueError("expert sequence current/next shapes differ")
     return {
-        "motionlib": "passed",
+        "status": "PASS",
         "motion_count": motion_lib.num_motions(),
         "total_duration": float(motion_lib.get_total_length()),
         "state_shapes": {name: list(states[name].shape) for name in sorted(required)},
-        "expert_loader": expert_result,
+        "expert_loader": "PASS",
+        "sequence_sampling": "PASS",
     }
+
+
+def raw_provenance_check(record: Mapping[str, Any]) -> dict[str, np.ndarray]:
+    source = Path(record["source_raw_npz"])
+    if not source.is_file():
+        raise FileNotFoundError(f"QC source missing: {source}")
+    with np.load(source, allow_pickle=False) as archive:
+        raw = {name: archive[name] for name in archive.files}
+    start, end = int(record["source_start_frame"]), int(record["source_end_frame"])
+    metadata = json.loads(source.with_suffix(".json").read_text(encoding="utf-8"))
+    comparisons = {
+        "root_trans_offset": ("root_pos", record["root_trans_offset"]),
+        "action": ("action", record["action"]),
+        "board_root_pos": ("board_root_pos", record["board_root_pos"]),
+        "board_root_quat": ("board_root_quat", record["board_root_quat"]),
+        "board_root_lin_vel": ("board_root_lin_vel", record["board_root_lin_vel"]),
+        "board_root_ang_vel": ("board_root_ang_vel", record["board_root_ang_vel"]),
+        "board_dof_pos": ("board_dof_pos", record["board_dof_pos"]),
+        "board_dof_vel": ("board_dof_vel", record["board_dof_vel"]),
+        "phase_id": ("phase_id", record["phase_id"]),
+        "phase_value": ("phase_value", record["phase_value"]),
+        "board_heading_delta": ("board_heading_delta", record["board_heading_delta"]),
+    }
+    for record_name, (raw_name, expected) in comparisons.items():
+        actual = np.asarray(expected)
+        raw_value = np.asarray(raw[raw_name][start:end])
+        if not np.allclose(actual, raw_value, rtol=1e-5, atol=1e-6):
+            raise ValueError(f"QC provenance mismatch for {record_name}")
+    source_names = [str(name).split("/")[-1] for name in metadata["joint_order"]]
+    source_indices = {name: index for index, name in enumerate(source_names)}
+    raw_dof = np.asarray(raw["dof_pos"][start:end])
+    expected_dof = np.zeros((end - start, len(BFM_JOINT_ORDER)), dtype=np.float32)
+    for index, name in enumerate(BFM_JOINT_ORDER):
+        if name in source_indices:
+            expected_dof[:, index] = raw_dof[:, source_indices[name]]
+    if not np.allclose(record["dof"], expected_dof, rtol=1e-5, atol=1e-6):
+        raise ValueError("QC provenance mismatch for name-mapped BFM dof")
+    raw_quat = np.asarray(raw["root_quat"][start:end], dtype=np.float64)
+    raw_quat /= np.linalg.norm(raw_quat, axis=1, keepdims=True)
+    expected_root_rot = raw_quat[:, [1, 2, 3, 0]]
+    if not np.allclose(record["root_rot"], expected_root_rot, rtol=1e-5, atol=1e-6):
+        raise ValueError("QC provenance mismatch for root_rot")
+    return raw
+
+
+def text_frame(width: int, height: int, lines: Sequence[str]) -> np.ndarray:
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (width, height), (18, 27, 38))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+    for index, line in enumerate(lines):
+        draw.text((36, 40 + index * 22), line, fill=(235, 240, 245), font=font)
+    return np.asarray(image)
+
+
+def overlay(frame: np.ndarray, lines: Sequence[str]) -> np.ndarray:
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.fromarray(np.asarray(frame, dtype=np.uint8))
+    draw = ImageDraw.Draw(image, "RGBA")
+    font = ImageFont.load_default()
+    height = 8 + 14 * len(lines)
+    draw.rectangle((0, 0, 560, height), fill=(0, 0, 0, 175))
+    for index, line in enumerate(lines):
+        draw.text((6, 4 + index * 14), line, fill="white", font=font)
+    return np.asarray(image)
+
+
+def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) -> dict[str, Any]:
+    import imageio.v2 as imageio
+
+    records = joblib.load(motion_file)
+    model = mujoco.MjModel.from_xml_path(str(husky_xml.resolve()))
+    data = mujoco.MjData(model)
+    renderer = mujoco.Renderer(model, height=720, width=1280)
+    camera = mujoco.MjvCamera()
+    camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+    camera.distance, camera.azimuth, camera.elevation = 4.0, 135.0, -18.0
+    qc_root.mkdir(parents=True, exist_ok=True)
+    video_root = qc_root / "videos"
+    video_root.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    result: dict[str, Any] = {
+        "dataset_stage": "M2.5c-P",
+        "dataset_type": "phase_structured",
+        "qc_type": "posthoc_random_dataset_audit",
+        "qc_seed": seed,
+        "source_pkl": str(motion_file.resolve()),
+        "source_manifest": str((motion_file.parent / "manifest.json").resolve()),
+        "total_dataset_motion_count": len(records),
+        "phases": [],
+    }
+    try:
+        for phase in PHASES:
+            candidates = sorted(
+                key for key, value in records.items() if value["phase_label"] == phase
+            )
+            indexes = (
+                rng.choice(len(candidates), min(10, len(candidates)), replace=False)
+                if candidates
+                else []
+            )
+            selected = [candidates[int(index)] for index in indexes]
+            path = video_root / f"{phase}_{len(selected)}samples.mp4"
+            writer = imageio.get_writer(path, fps=50, macro_block_size=1, codec="libx264")
+            samples = []
+            try:
+                if not selected:
+                    writer.append_data(
+                        text_frame(
+                            1280,
+                            720,
+                            [
+                                "M2.5c-P",
+                                f"Phase Label: {phase}",
+                                "No accepted motions available",
+                            ],
+                        )
+                    )
+                for sample_index, key in enumerate(selected, start=1):
+                    record = records[key]
+                    raw = raw_provenance_check(record)
+                    start, end = int(record["source_start_frame"]), int(record["source_end_frame"])
+                    duration = (end - start - 1) / float(record["fps"])
+                    title = [
+                        "Stage: M2.5c-P",
+                        f"Phase Label: {phase}",
+                        f"Phase ID: {PHASE_IDS[phase]}",
+                        f"Sample: {sample_index} / {len(selected)}",
+                        f"Motion Key: {key}",
+                        f"Source: r{record['source_round']}/rollout{record['source_rollout']}",
+                        f"Frames: {start} : {end}",
+                        f"Duration: {duration:.2f}s | FPS: {record['fps']}",
+                        f"Command: v={record['command_v']:.2f}, h={record['command_h']:.2f}",
+                        f"Physics Seed: {record['physics_seed']}",
+                    ]
+                    for _ in range(20):
+                        writer.append_data(text_frame(1280, 720, title))
+                    for local, raw_index in enumerate(range(start, end)):
+                        data.qpos[:] = raw["qpos"][raw_index]
+                        data.qvel[:] = raw["qvel"][raw_index]
+                        mujoco.mj_forward(model, data)
+                        camera.lookat[:] = (
+                            raw["root_pos"][raw_index] + raw["board_root_pos"][raw_index]
+                        ) / 2.0
+                        renderer.update_scene(data, camera=camera)
+                        writer.append_data(
+                            overlay(
+                                renderer.render(),
+                                [
+                                    f"M2.5c-P | {phase} | Sample {sample_index}/{len(selected)}",
+                                    (
+                                        f"v={record['command_v']:.2f} | "
+                                        f"h={record['command_h']:.2f} | "
+                                        f"physics={record['physics_seed']}"
+                                    ),
+                                    (
+                                        f"source=r{record['source_round']}/"
+                                        f"rollout{record['source_rollout']} | "
+                                        f"frame={raw_index}"
+                                    ),
+                                    (
+                                        f"t={local / record['fps']:.2f}/"
+                                        f"{duration:.2f}s | "
+                                        f"phase_value={record['phase_value'][local]:.3f}"
+                                    ),
+                                    (
+                                        f"board_heading_delta="
+                                        f"{record['board_heading_delta'][local]:+.3f} rad"
+                                    ),
+                                ],
+                            )
+                        )
+                    samples.append(
+                        {
+                            "sample_index": sample_index,
+                            "motion_key": key,
+                            "source_round": record["source_round"],
+                            "source_rollout": record["source_rollout"],
+                            "source_start_frame": start,
+                            "source_end_frame": end,
+                            "segment_frames": end - start,
+                            "duration_seconds": duration,
+                            "fps": int(record["fps"]),
+                            "command_v": record["command_v"],
+                            "command_h": record["command_h"],
+                            "physics_seed": record["physics_seed"],
+                            "phase_value_start": float(record["phase_value"][0]),
+                            "phase_value_end": float(record["phase_value"][-1]),
+                            "board_heading_delta_start": float(record["board_heading_delta"][0]),
+                            "board_heading_delta_end": float(record["board_heading_delta"][-1]),
+                        }
+                    )
+            finally:
+                writer.close()
+            result["phases"].append(
+                {
+                    "phase_label": phase,
+                    "phase_id": PHASE_IDS[phase],
+                    "available_motion_count": len(candidates),
+                    "requested_samples": 10,
+                    "rendered_samples": len(selected),
+                    "video_path": str(path.resolve()),
+                    "status": "PASS" if len(selected) >= 10 else "insufficient_phase_coverage",
+                    "samples": samples,
+                }
+            )
+    finally:
+        renderer.close()
+    result["total_rendered_samples"] = sum(item["rendered_samples"] for item in result["phases"])
+    result["qc_to_raw_validation"] = "PASS"
+    write_json(qc_root / "qc_manifest.json", result)
+    return result
+
+
+def plan_stats(raw_root: Path) -> dict[str, Any]:
+    plan_path, summary_path = (
+        raw_root / "collection_plan.json",
+        raw_root / "collection_summary.json",
+    )
+    plan = json.loads(plan_path.read_text()) if plan_path.is_file() else {}
+    summary = json.loads(summary_path.read_text()) if summary_path.is_file() else {}
+    failed = int(summary.get("failed_rollout_count", 0))
+    return {
+        "plan": plan,
+        "summary": summary,
+        "planned_rollouts": int(plan.get("baseline_rollouts", len(plan.get("jobs", [])))),
+        "completed_rollouts": int(summary.get("completed_rollouts", 0)),
+        "failed_rollouts": failed,
+        "replacement_rollouts": int(summary.get("replacement_rollouts", 0)),
+        "source_policy": plan.get("policy_checkpoint"),
+    }
+
+
+def aggregate(args: argparse.Namespace) -> int:
+    raw_root, dataset_root = raw_root_from_arg(args.dataset_root)
+    output = args.output.resolve()
+    manifest_path = (args.manifest or output.parent / "manifest.json").resolve()
+    reference_keys, reference_record = load_reference(args.bfm_reference)
+    target_order, target_axes = bfm_joint_contract(args.robot_xml)
+    records: dict[str, dict[str, Any]] = {}
+    phase_stats = {
+        phase: {"motion_count": 0, "frame_count": 0, "duration_seconds": 0.0, "lengths": []}
+        for phase in PHASES
+    }
+    command_stats: dict[str, dict[str, Any]] = {}
+    discard = Counter({key: 0 for key in DISCARD_KEYS})
+    rejected: list[dict[str, Any]] = []
+    raw_frames = raw_seconds = 0.0
+    accepted_rollouts: set[Path] = set()
+    physics_seeds: set[int] = set()
+
+    for rollout in rollout_paths(raw_root):
+        raw_path = rollout
+        try:
+            raw_path, metadata, state = load_raw(rollout)
+            frame_count, source = validate_raw(raw_path, metadata, state)
+        except Exception as error:
+            category = discard_category(error)
+            discard[category] += 1
+            rejected.append(
+                {
+                    "rollout": str(rollout),
+                    "reason": str(error),
+                    "category": category,
+                }
+            )
+            continue
+        raw_frames += frame_count
+        raw_seconds += frame_count / float(metadata["fps"])
+        physics_seeds.add(source["physics_seed"])
+        phase_ids = np.asarray(state["phase_id"], dtype=np.int16)
+        fall_start = next(
+            (
+                start
+                for phase_id, start, _ in phase_runs(phase_ids)
+                if phase_id == PHASE_IDS["fall"]
+            ),
+            None,
+        )
+        margin = round(float(metadata.get("failure_margin_s", 0.15)) * float(metadata["fps"]))
+        segment_index = 0
+        for phase_id, start, end in phase_runs(phase_ids):
+            if fall_start is not None and start >= fall_start:
+                if phase_id != PHASE_IDS["fall"]:
+                    discard["fall"] += end - start
+                continue
+            if phase_id == PHASE_IDS["fall"]:
+                discard["fall"] += end - start
+                continue
+            if phase_id not in range(6):
+                discard["invalid_phase"] += end - start
+                continue
+            name = next(label for label, value in PHASE_IDS.items() if value == phase_id)
+            if fall_start is not None and end == fall_start:
+                end = max(start, end - margin)
+            reset_indices = np.flatnonzero(state["reset"][start:end])
+            cuts: list[tuple[int, int]] = []
+            cursor = start
+            for reset_index in (start + reset_indices).tolist():
+                if cursor < reset_index:
+                    cuts.append((cursor, reset_index))
+                cursor = reset_index + 1
+                discard["reset"] += 1
+            if cursor < end:
+                cuts.append((cursor, end))
+            if not reset_indices.size:
+                cuts = [(start, end)]
+            for segment_start, segment_end in cuts:
+                occurrence = segment_index
+                segment_index += 1
+                if segment_end - segment_start < args.seq_length + 1:
+                    discard["too_short_for_bfm"] += 1
+                    continue
+                try:
+                    record, conversion = convert_record(
+                        metadata,
+                        state,
+                        reference_keys,
+                        reference_record,
+                        target_order,
+                        target_axes,
+                        name,
+                        segment_start,
+                        segment_end,
+                        raw_path,
+                        args.seq_length,
+                    )
+                except Exception as error:
+                    category = discard_category(error)
+                    discard[category] += 1
+                    rejected.append(
+                        {
+                            "rollout": str(rollout),
+                            "phase": name,
+                            "start_frame": segment_start,
+                            "end_frame": segment_end,
+                            "reason": str(error),
+                            "category": category,
+                        }
+                    )
+                    continue
+                key = (
+                    f"skate/{name}/"
+                    f"r{str(metadata['round_id']).zfill(3)}_"
+                    f"rollout{str(metadata['rollout_id']).zfill(3)}_"
+                    f"seg{occurrence:03d}"
+                )
+                if key in records:
+                    raise RuntimeError(f"duplicate motion key: {key}")
+                records[key] = record
+                accepted_rollouts.add(rollout)
+                stats = phase_stats[name]
+                length = segment_end - segment_start
+                stats["motion_count"] += 1
+                stats["frame_count"] += length
+                stats["duration_seconds"] += (length - 1) / float(metadata["fps"])
+                stats["lengths"].append(length)
+                command_key = f"{source['command_v']:.6g},{source['command_h']:.6g}"
+                command = command_stats.setdefault(
+                    command_key,
+                    {
+                        "command_v": source["command_v"],
+                        "command_h": source["command_h"],
+                        "rollout_ids": set(),
+                        "accepted_motion_count": 0,
+                        "accepted_expert_seconds": 0.0,
+                    },
+                )
+                command["rollout_ids"].add(str(metadata["episode_id"]))
+                command["accepted_motion_count"] += 1
+                command["accepted_expert_seconds"] += (length - 1) / float(metadata["fps"])
+
+    if not records:
+        raise RuntimeError("no accepted phase motions were produced")
+    if output.exists() and not args.overwrite:
+        raise FileExistsError(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    joblib.dump(records, temporary)
+    temporary.replace(output)
+    stats_out = {}
+    for phase in PHASES:
+        stats = phase_stats[phase]
+        lengths = stats.pop("lengths")
+        stats_out[phase] = {
+            **stats,
+            "min_segment_frames": min(lengths) if lengths else 0,
+            "median_segment_frames": float(np.median(lengths)) if lengths else 0,
+            "max_segment_frames": max(lengths) if lengths else 0,
+        }
+    for command in command_stats.values():
+        command["rollout_count"] = len(command.pop("rollout_ids"))
+    plan = plan_stats(raw_root)
+    manifest = {
+        "dataset_stage": "M2.5c-P",
+        "dataset_type": "phase_structured",
+        "source_policy": plan["source_policy"],
+        "fps": 50,
+        "planned_rollouts": plan["planned_rollouts"],
+        "completed_rollouts": plan["completed_rollouts"],
+        "accepted_rollouts": len(accepted_rollouts),
+        "failed_rollouts": plan["failed_rollouts"],
+        "rejected_rollouts": len(rejected),
+        "replacement_rollouts": plan["replacement_rollouts"],
+        "raw_frames": int(raw_frames),
+        "raw_seconds": raw_seconds,
+        "raw_minutes": raw_seconds / 60,
+        "expert_frames": sum(item["frame_count"] for item in stats_out.values()),
+        "expert_seconds": sum(item["duration_seconds"] for item in stats_out.values()),
+        "expert_minutes": sum(item["duration_seconds"] for item in stats_out.values()) / 60,
+        "total_motion_count": len(records),
+        "unique_physics_seed_count": len(physics_seeds),
+        "phase_statistics": stats_out,
+        "command_statistics": sorted(
+            command_stats.values(), key=lambda item: (item["command_v"], item["command_h"])
+        ),
+        "discard_statistics": dict(discard),
+        "rejection_details": rejected,
+        "motion_library": str(output),
+        "structural_validation": "PENDING",
+        "bfm_min_motion_frames": args.seq_length + 1,
+    }
+    write_json(manifest_path, manifest)
+    if args.validate_motionlib:
+        manifest["official_motionlib_validation"] = validate_official_motionlib(
+            args.bfm_repo, output, args.robot_xml, len(records), args.seq_length
+        )
+        manifest["structural_validation"] = "PASS"
+        write_json(manifest_path, manifest)
+        print("Structural Validation: PASS")
+    if args.qc_root:
+        qc = generate_qc(
+            output,
+            args.qc_root.resolve(),
+            (args.husky_xml or args.robot_xml).resolve(),
+            args.qc_seed,
+        )
+        manifest["qc"] = {
+            "status": "PASS",
+            "seed": args.qc_seed,
+            "manifest": str(args.qc_root.resolve() / "qc_manifest.json"),
+            "rendered_samples": qc["total_rendered_samples"],
+        }
+        write_json(manifest_path, manifest)
+        print(f"Visual QC Generation: PASS ({qc['total_rendered_samples']} samples)")
+    print(
+        f"Aggregated {len(records)} phase motions from {int(raw_frames)} raw frames into {output}"
+    )
+    return 0
 
 
 def main() -> int:
-    args = parse_args()
-    input_root = args.input_root.resolve()
-    rollout_root = input_root.parent
-    rollout_name = rollout_root.name
-    if input_root.name != "dynamic_motion" or not re.fullmatch(
-        r"rollout_\d+", rollout_name
-    ):
-        raise ValueError(
-            "--input-root must be <rollout_NNN>/dynamic_motion so the full "
-            "and subtask rollouts remain grouped"
-        )
-    full_output = args.output.parent / "full_rollout" / f"{rollout_name}.pkl"
-    subtask_output_root = args.output.parent / "subtask_rollouts"
-    failure_output_root = args.output.parent / "failure_rollouts"
-    for path in (args.output, args.manifest, args.combined_output, full_output):
-        if path is not None and path.exists() and not args.overwrite:
-            raise FileExistsError(f"{path} exists; pass --overwrite to replace it")
-    if (
-        subtask_output_root.exists()
-        and any(subtask_output_root.rglob("*.pkl"))
-        and not args.overwrite
-    ):
-        raise FileExistsError(
-            f"{subtask_output_root} contains rollout files; pass --overwrite to replace them"
-        )
-    if (
-        failure_output_root.exists()
-        and any(failure_output_root.rglob("*.pkl"))
-        and not args.overwrite
-    ):
-        raise FileExistsError(
-            f"{failure_output_root} contains rollout files; pass --overwrite to replace them"
-        )
-
-    reference_keys, reference_record = load_reference(args.bfm_reference)
-    target_order, target_axes = bfm_joint_contract(args.robot_xml)
-    expert_records: dict[str, dict[str, Any]] = {}
-    failure_records: dict[str, dict[str, Any]] = {}
-    manifest_records = []
-    subtask_outputs: dict[Path, dict[str, dict[str, Any]]] = {}
-    failure_outputs: dict[Path, dict[str, dict[str, Any]]] = {}
-    subtask_counts: Counter[str] = Counter()
-    expert_duration = 0.0
-    failure_duration = 0.0
-
-    raw_path, raw_metadata, raw_state = load_raw_rollout(rollout_root)
-    dataset_split = str(raw_metadata.get("dataset_split", ""))
-    if dataset_split not in {"train", "validation", "test"}:
-        raise ValueError(
-            f"{raw_path} has invalid or missing dataset_split: {dataset_split!r}"
-        )
-    physics_randomization = raw_metadata.get("physics_randomization")
-    if not isinstance(physics_randomization, dict):
-        raise ValueError(f"{raw_path} has invalid or missing physics_randomization")
-    round_id = raw_metadata.get("round_id")
-
-    for metadata_path, state_path in segment_paths(input_root):
-        metadata, state = load_segment(metadata_path, state_path)
-        if metadata.get("dataset_split") != dataset_split:
-            raise ValueError(
-                f"{metadata_path} split {metadata.get('dataset_split')!r} does "
-                f"not match rollout split {dataset_split!r}"
-            )
-        if metadata.get("round_id") != round_id:
-            raise ValueError(
-                f"{metadata_path} round_id does not match its rollout"
-            )
-        segment_randomization = metadata.get("physics_randomization")
-        if segment_randomization != physics_randomization:
-            raise ValueError(
-                f"{metadata_path} physics_randomization does not match its rollout"
-            )
-        record, conversion = convert_record(
-            metadata,
-            state,
-            reference_keys,
-            reference_record,
-            target_order,
-            target_axes,
-            args.seq_length,
-        )
-        motion_type = str(metadata["motion_type"])
-        motion_key = f"skate/{motion_type}/{metadata['segment_id']}"
-        if motion_key in expert_records or motion_key in failure_records:
-            raise ValueError(f"duplicate BFM motion key: {motion_key}")
-        subtask_index = subtask_counts[motion_type]
-        subtask_counts[motion_type] += 1
-        is_failure = motion_type == "fall"
-        output_root = failure_output_root if is_failure else subtask_output_root
-        subtask_output = output_root / motion_type / f"rollout_{subtask_index:03d}.pkl"
-        if is_failure:
-            failure_records[motion_key] = record
-            failure_outputs[subtask_output] = {motion_key: record}
-            library_motion_id = None
-        else:
-            library_motion_id = len(expert_records)
-            expert_records[motion_key] = record
-            subtask_outputs[subtask_output] = {motion_key: record}
-        duration = (int(metadata["num_frames"]) - 1) / float(metadata["fps"])
-        if is_failure:
-            failure_duration += duration
-        else:
-            expert_duration += duration
-        manifest_records.append(
-            {
-                "motion_key": motion_key,
-                "source_episode": metadata["source_episode"],
-                "source_segment": metadata["segment_id"],
-                "motion_type": motion_type,
-                "duration": duration,
-                "fps": float(metadata["fps"]),
-                "num_frames": int(metadata["num_frames"]),
-                "conversion_status": "converted",
-                "dataset_split": dataset_split,
-                "training_role": "failure_only" if is_failure else "expert",
-                "original_npz": str(state_path.resolve()),
-                "output_rollout": str(subtask_output.resolve()),
-                "bfm_motion_id": library_motion_id,
-                **conversion,
-            }
-        )
-
-    if not expert_records:
-        raise ValueError("rollout contains no non-fall expert motions")
-
-    full_metadata = {
-        "segment_id": rollout_name,
-        "source_episode": raw_metadata["episode_id"],
-        "motion_type": "full_rollout",
-        "num_frames": raw_metadata["num_frames"],
-        "fps": raw_metadata["fps"],
-        "dt": raw_metadata["dt"],
-        "joint_order": raw_metadata["joint_order"],
-        "quaternion_order": raw_metadata["qpos_quaternion_order"],
-        "fixed_bfm_joints": raw_metadata["fixed_bfm_joints"],
-    }
-    full_record, full_conversion = convert_record(
-        full_metadata,
-        raw_state,
-        reference_keys,
-        reference_record,
-        target_order,
-        target_axes,
-        args.seq_length,
-    )
-    full_motion_key = f"skate/full_rollout/{rollout_name}"
-    full_payload = {full_motion_key: full_record}
-    full_duration = (
-        (int(full_metadata["num_frames"]) - 1) / float(full_metadata["fps"])
-    )
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary_output = args.output.with_name(f".{args.output.name}.tmp")
-    full_output.parent.mkdir(parents=True, exist_ok=True)
-    temporary_full_output = full_output.with_name(f".{full_output.name}.tmp")
-    temporary_output.unlink(missing_ok=True)
-    temporary_full_output.unlink(missing_ok=True)
-    joblib.dump(expert_records, temporary_output)
-    joblib.dump(full_payload, temporary_full_output)
-    manifest: dict[str, Any] = {
-        "rollout": rollout_name,
-        "round_id": round_id,
-        "dataset_split": dataset_split,
-        "physics_randomization": physics_randomization,
-        "bfm_reference": str(args.bfm_reference.resolve()),
-        "reference_schema": reference_keys,
-        "robot_xml": str(args.robot_xml.resolve()),
-        "bfm_joint_order": target_order,
-        "motion_count": len(expert_records),
-        "total_duration": expert_duration,
-        "failure_motion_count": len(failure_records),
-        "failure_total_duration": failure_duration,
-        "full_rollout": {
-            "motion_key": full_motion_key,
-            "source_npz": str(raw_path.resolve()),
-            "output": str(full_output.resolve()),
-            "num_frames": int(full_metadata["num_frames"]),
-            "duration": full_duration,
-            "fps": float(full_metadata["fps"]),
-            "conversion_status": "converted",
-            "training_role": "archive_only_not_expert",
-            **full_conversion,
-        },
-        "subtask_rollout_root": str(subtask_output_root.resolve()),
-        "failure_rollout_root": str(failure_output_root.resolve()),
-        "motions": manifest_records,
-        "validation": {"status": "not_requested"},
-    }
-
-    try:
-        if args.validate_motionlib:
-            manifest["validation"] = validate_official_motionlib(
-                args.bfm_repo,
-                temporary_output,
-                args.robot_xml,
-                len(expert_records),
-                args.seq_length,
-            )
-            manifest["full_rollout"]["validation"] = validate_official_motionlib(
-                args.bfm_repo,
-                temporary_full_output,
-                args.robot_xml,
-                1,
-                args.seq_length,
-            )
-        temporary_output.replace(args.output)
-        temporary_full_output.replace(full_output)
-    except Exception:
-        temporary_output.unlink(missing_ok=True)
-        temporary_full_output.unlink(missing_ok=True)
-        raise
-
-    expected_subtask_outputs = set(subtask_outputs)
-    if args.overwrite and subtask_output_root.exists():
-        for stale_output in subtask_output_root.rglob("*.pkl"):
-            if stale_output not in expected_subtask_outputs:
-                stale_output.unlink()
-    for subtask_output, payload in subtask_outputs.items():
-        atomic_joblib_dump(payload, subtask_output)
-    expected_failure_outputs = set(failure_outputs)
-    if args.overwrite and failure_output_root.exists():
-        for stale_output in failure_output_root.rglob("*.pkl"):
-            if stale_output not in expected_failure_outputs:
-                stale_output.unlink()
-    for failure_output, payload in failure_outputs.items():
-        atomic_joblib_dump(payload, failure_output)
-
-    if args.base_motion_pkl is not None:
-        base = joblib.load(args.base_motion_pkl)
-        if not isinstance(base, dict):
-            raise TypeError("--base-motion-pkl must contain a dict")
-        collisions = sorted(set(base) & set(expert_records))
-        if collisions:
-            raise ValueError(f"combined motion key collisions: {collisions[:5]}")
-        combined = dict(base)
-        combined.update(expert_records)
-        assert args.combined_output is not None
-        args.combined_output.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(combined, args.combined_output)
-        base_duration = sum(
-            (len(record["pose_aa"]) - 1) / float(record["fps"])
-            for record in base.values()
-        )
-        manifest["combined"] = {
-            "base_motion_pkl": str(args.base_motion_pkl.resolve()),
-            "output": str(args.combined_output.resolve()),
-            "base_motion_count": len(base),
-            "skate_motion_count": len(expert_records),
-            "combined_motion_count": len(combined),
-            "base_total_duration": base_duration,
-            "combined_total_duration": base_duration + expert_duration,
-        }
-
-    write_json(args.manifest, manifest)
-    print(f"Dataset split: {dataset_split}")
-    print(f"BFM expert motions: {len(expert_records)}")
-    print(f"Expert duration: {expert_duration:.3f}s")
-    print(f"Failure motions excluded from expert buffer: {len(failure_records)}")
-    print(f"Subtask library: {args.output}")
-    print(f"Full rollout: {full_output}")
-    print(f"Individual subtask rollouts: {len(subtask_outputs)}")
-    print(f"Individual failure rollouts: {len(failure_outputs)}")
-    print(f"Manifest: {args.manifest}")
-    return 0
+    args = parser().parse_args()
+    if not args.aggregate_phase:
+        raise SystemExit("only --aggregate-phase dataset mode is supported")
+    for name in ("dataset_root", "bfm_repo", "bfm_reference", "robot_xml"):
+        if not getattr(args, name).exists():
+            raise SystemExit(f"--{name.replace('_', '-')} does not exist")
+    if args.seq_length <= 0:
+        raise SystemExit("--seq-length must be positive")
+    if args.manifest is None:
+        args.manifest = args.output.parent / "manifest.json"
+    return aggregate(args)
 
 
 if __name__ == "__main__":

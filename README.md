@@ -52,26 +52,31 @@ train/dataset/skate-expert-pose/motion_library/skate_expert.pkl
 official agent and MotionLib interfaces. `husky_sim/` is the project-owned
 HUSKY runtime boundary.
 
-## Convert Collected HUSKY Data
+## Build Phase Expert Data
 
-The retained collection post-processing entrypoint converts a completed
-`rollout_NNN/dynamic_motion` directory into BFM-Zero MotionLib data. It keeps
-the full rollout, phase-specific subtask rollouts, and failure-only rollouts
-separate:
+The production collector writes complete, frame-aligned robot-board rollouts.
+The dataset processor scans every raw rollout, uses recorded phase IDs for
+strict contiguous segmentation, aggregates all accepted motions, validates the
+result with official BFM interfaces, and can generate post-hoc full-scene QC:
 
 ```bash
 python train/scripts/data_collection/convert_husky_to_bfm.py \
-  --input-root /path/to/rollout_001/dynamic_motion \
+  --aggregate-phase \
+  --dataset-root dataset/sim_collected/phase/raw \
   --bfm-repo $PWD/train/scripts/isaac_env \
   --bfm-reference $PWD/train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl \
   --robot-xml $PWD/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
-  --output /path/to/rollout_001/bfm_motionlib/skate_expert.pkl \
+  --husky-xml $PWD/husky_sim/upstream/test_scene/mjlab_scene.xml \
+  --output dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl \
+  --manifest dataset/sim_collected/phase/motion_library/manifest.json \
+  --qc-root dataset/sim_collected/phase/qc \
   --validate-motionlib
 ```
 
-The six absent HUSKY wrist joints are explicitly fixed to zero. The converter
-rejects malformed arrays, incomplete sequences, mismatched metadata, and
-unvalidated BFM schemas.
+The six absent HUSKY wrist joints are explicitly fixed to zero. Each accepted
+record retains board state, action, phase annotations, and source provenance.
+The converter rejects malformed arrays, cross-boundary motions, incomplete
+sequences, and invalid BFM schemas.
 
 ## Train
 

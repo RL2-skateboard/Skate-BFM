@@ -1520,3 +1520,41 @@ the formal Skate runtime action contract.
 - Evaluation protocol: `NO`; existing fixed evaluator, now terminal-safe.
 - Training performed: `YES`; 20,000 transitions and 1,900 native updates.
 - Performance evaluated: `YES`; fixed offline evaluation only.
+
+## M2.5c-P0 - Phase Collection Pipeline Finalization
+
+- Date: `2026-08-13`
+- Local HEAD before this cleanup: `179e778`.
+- Scope: production data-collection and phase-dataset pipeline cleanup only.
+  No BFM training, model, loss, optimizer, replay, observation, action, or
+  evaluation logic was changed.
+- Formal raw output root: `dataset/sim_collected/phase/raw/`.
+- `rollout_split.py` is now a canonical raw collector. It retains parallel
+  command-grid collection, resume/replacement, official per-rollout HUSKY
+  physics randomization, fixed phase recording, shared fall detection,
+  robot-board state capture, progress, collection plan, and collection
+  summary.
+- Removed from the collector: legacy offline rollout parsing, key-event and
+  key-map segmentation, manual command parsing, synchronized-video
+  segmentation, pose-only BFM preview generation, per-phase intermediate
+  files, and the old single-rollout test CLI. Historical artifacts remain in
+  git history and prior experiment records.
+- `convert_husky_to_bfm.py` now reads complete raw rollouts directly, validates
+  frame alignment and metadata, uses recorded `phase_id` for contiguous
+  segmentation, applies fall/reset hard boundaries, enforces the seq8 minimum
+  of `9` frames, maps HUSKY 23DoF to BFM 29DoF by joint name, preserves paired
+  board/action/phase fields and provenance, aggregates one final pkl, validates
+  the official MotionLib and expert loader, and generates post-hoc full-scene
+  QC videos.
+- Final artifact paths:
+  `dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl`,
+  `dataset/sim_collected/phase/motion_library/manifest.json`, and
+  `dataset/sim_collected/phase/qc/`.
+- Bounded validation used only `/tmp`: two parallel 50-frame raw rollouts
+  (`h=+0.2` and `h=-0.2`), raw-to-phase aggregation, full MotionLib loading,
+  official expert-loader seq8 sampling, provenance checks, and six QC video
+  outputs. Existing regression tests passed: `8 passed`; `ruff` and
+  `py_compile` passed.
+- The full formal collection was not run in this cleanup stage.
+- Formal command for the next stage:
+  `python train/scripts/data_collection/rollout_split.py --parallel-config`
