@@ -791,6 +791,7 @@ def run_parallel(args: argparse.Namespace) -> int:
             "round_start": str(round_start).zfill(3),
             "baseline_rounds": args.round_count,
             "max_extra_rounds": args.max_extra_rounds,
+            "extra_rollout_capacity": len(jobs) - baseline_count,
             "rollouts_per_round": args.rollouts_per_round,
             "baseline_rollouts": baseline_count,
             "parallel_workers": args.parallel_workers,
@@ -814,20 +815,23 @@ def run_parallel(args: argparse.Namespace) -> int:
             ],
         },
     )
-    print("Parallel collection parameters")
-    print(f"  h grid: {args.parallel_heading_values}")
-    print(f"  v grid: {args.parallel_velocity_values}")
-    print(
-        f"  command cells: {len(args.parallel_heading_values) * len(args.parallel_velocity_values)}"
-    )
-    print(f"  planned baseline rollouts: {baseline_count}; workers: {args.parallel_workers}")
-    print(f"  max frames/rollout: {args.max_policy_frames}; fps: {args.policy_frequency}")
-    print(
-        f"  maximum nominal raw duration: "
-        f"{len(jobs) * args.max_policy_frames / args.policy_frequency / 60:.2f} min"
-    )
-    print(f"  output: {output_root}")
-    print(f"  plan: {plan_path}")
+    command_cells = len(args.parallel_heading_values) * len(args.parallel_velocity_values)
+    extra_capacity = len(jobs) - baseline_count
+    target_minutes = target_frames / args.policy_frequency / 60
+    maximum_minutes = len(jobs) * args.max_policy_frames / args.policy_frequency / 60
+    print("[Collection Plan]")
+    print(f"Raw root: {output_root}")
+    print(f"Velocity grid: {args.parallel_velocity_values}")
+    print(f"Heading grid: {args.parallel_heading_values}")
+    print(f"Command cells: {command_cells}")
+    print(f"Baseline rollouts: {baseline_count}")
+    print(f"Extra replacement capacity: {extra_capacity}")
+    print(f"Parallel workers: {args.parallel_workers}")
+    print(f"Frames / rollout: {args.max_policy_frames}")
+    print(f"FPS: {args.policy_frequency}")
+    print(f"Target raw: {target_minutes:.2f} min")
+    print(f"Maximum nominal capacity: {maximum_minutes:.2f} min")
+    print(f"Collection plan: {plan_path}")
     completed: dict[str, dict[str, Any]] = {}
     failed: list[str] = []
     if not args.overwrite:
@@ -840,7 +844,7 @@ def run_parallel(args: argparse.Namespace) -> int:
     progress = tqdm(
         total=target_frames,
         initial=min(target_frames, sum(r["raw_frames"] for r in completed.values())),
-        desc="Raw rollout target",
+        desc="M2.5c-P raw collection",
         unit="frame",
         dynamic_ncols=True,
     )
@@ -857,6 +861,14 @@ def run_parallel(args: argparse.Namespace) -> int:
             "target_raw_minutes": args.target_raw_minutes,
             "target_raw_frames": target_frames,
             "target_achieved": raw_frames >= target_frames,
+            "baseline_planned": baseline_count,
+            "baseline_completed": sum(
+                1 for record in records if not record.get("replacement", False)
+            ),
+            "extra_rollout_capacity": extra_capacity,
+            "replacement_completed": sum(
+                1 for record in records if record.get("replacement", False)
+            ),
             "planned_rollouts": len(jobs),
             "completed_rollouts": len(records),
             "failed_rollouts": sorted(failed),
@@ -865,6 +877,8 @@ def run_parallel(args: argparse.Namespace) -> int:
                 1 for record in records if record.get("replacement", False)
             ),
             "raw_frames": raw_frames,
+            "raw_seconds": raw_frames / args.policy_frequency,
+            "raw_minutes": raw_frames / args.policy_frequency / 60,
             "raw_duration_seconds": raw_frames / args.policy_frequency,
             "raw_duration_minutes": raw_frames / args.policy_frequency / 60,
             "terminal_reasons": dict(Counter(r["terminal_reason"] for r in records)),
@@ -879,6 +893,8 @@ def run_parallel(args: argparse.Namespace) -> int:
         payload = summary()
         write_json(output_root / "collection_summary.json", payload)
         return payload
+
+    write_summary()
 
     def launch(job: dict[str, Any]) -> None:
         job["rollout_root"].mkdir(parents=True, exist_ok=True)
@@ -898,6 +914,18 @@ def run_parallel(args: argparse.Namespace) -> int:
             },
         )
         log = (job["rollout_root"] / "collection.log").open("w", encoding="utf-8")
+        log.write(
+            "[Worker Startup]\n"
+            f"episode_id={job['episode_id']}\n"
+            f"round={job['round_id']}\n"
+            f"rollout={job['rollout_id']}\n"
+            f"command_v={job['velocity']}\n"
+            f"command_h={job['heading']}\n"
+            f"physics_seed={job['physics_seed']}\n"
+            f"policy={args.policy.resolve()}\n"
+            f"robot_xml={args.robot_xml.resolve()}\n\n"
+        )
+        log.flush()
         command = [
             sys.executable,
             str(script),
@@ -965,7 +993,7 @@ def run_parallel(args: argparse.Namespace) -> int:
                 launch(queue[next_index])
                 active.append(queue[next_index])
                 next_index += 1
-            postfix = {}
+            worker_states = []
             for job in list(active):
                 try:
                     payload = json.loads(job["progress_path"].read_text(encoding="utf-8"))
@@ -976,32 +1004,50 @@ def run_parallel(args: argparse.Namespace) -> int:
                 increment = max(0, captured - job["displayed_frames"])
                 progress.update(min(increment, max(0, target_frames - progress.n)))
                 job["displayed_frames"] = max(job["displayed_frames"], captured)
-                postfix[f"{job['round_id']}/{job['rollout_id']}"] = (
-                    f"{captured}/{args.max_policy_frames}:{payload.get('phase', 'starting')}"
+                worker_states.append(
+                    f"{job['round_id']}/{job['rollout_id']}:"
+                    f"{captured}/{args.max_policy_frames} "
+                    f"{payload.get('phase', 'starting')}"
                 )
                 process = job["process"]
                 if process.poll() is None:
                     continue
                 process.wait()
-                job["log_handle"].close()
                 active.remove(job)
                 record = collection_job_summary(job, args.policy_frequency)
                 if process.returncode != 0 or record is None:
                     failure = f"round_{job['round_id']}/rollout_{job['rollout_id']}"
                     failed.append(failure)
+                    job["log_handle"].write(
+                        f"\n[Worker Complete]\nreturncode={process.returncode}\n"
+                        "terminal_reason=failed_or_missing_raw\n"
+                    )
                     tqdm.write(f"Failed {failure}: returncode={process.returncode}")
                 else:
                     record["replacement"] = not job["baseline"]
                     completed[job["episode_id"]] = record
+                    job["log_handle"].write(
+                        f"\n[Worker Complete]\nreturncode={process.returncode}\n"
+                        f"terminal_reason={record['terminal_reason']}\n"
+                    )
                     tqdm.write(
                         f"Finished round_{job['round_id']}/"
                         f"rollout_{job['rollout_id']}: "
                         f"raw={record['raw_duration_seconds']:.2f}s"
                     )
                     write_summary()
+                job["log_handle"].close()
             now = summary()
-            postfix["total"] = f"raw={now['raw_duration_minutes']:.2f}min"
-            progress.set_postfix(postfix, refresh=True)
+            current_minutes = progress.n / args.policy_frequency / 60
+            worker_text = ", ".join(worker_states)
+            progress.set_postfix_str(
+                f"raw={current_minutes:.1f}/{target_minutes:.1f}min | "
+                f"done={now['baseline_completed']}/{baseline_count} | "
+                f"failed={now['failed_rollout_count']} | "
+                f"replacement={now['replacement_completed']} | "
+                f"active={len(active)}" + (f" | {worker_text}" if worker_text else ""),
+                refresh=True,
+            )
             if active:
                 time.sleep(0.2)
 
@@ -1024,6 +1070,8 @@ def run_parallel(args: argparse.Namespace) -> int:
             f"({result['raw_frames']} frames)"
         )
         print(f"Completed rollouts: {result['completed_rollouts']}/{result['planned_rollouts']}")
+        print(f"Failed rollouts: {result['failed_rollout_count']}")
+        print(f"Replacement rollouts: {result['replacement_completed']}")
         print(f"Target achieved: {result['target_achieved']}")
         return 0 if result["target_achieved"] else 2
     except KeyboardInterrupt:

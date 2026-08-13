@@ -75,16 +75,6 @@ RAW_REQUIRED = (
     "fall",
     "reset",
 )
-BFM_MIN_FRAMES = 9
-DISCARD_KEYS = (
-    "fall",
-    "too_short_for_bfm",
-    "reset",
-    "nan_inf",
-    "alignment",
-    "invalid_phase",
-    "other",
-)
 BFM_JOINT_ORDER = (
     "left_hip_pitch_joint",
     "left_hip_roll_joint",
@@ -159,6 +149,11 @@ def discard_category(error: Exception) -> str:
     if any(word in message for word in ("align", "shape", "frame_idx", "sim_time")):
         return "alignment"
     return "other"
+
+
+def motion_discard_category(error: Exception) -> str:
+    category = discard_category(error)
+    return category if category != "other" else "conversion_error"
 
 
 def load_reference(path: Path) -> tuple[list[str], Mapping[str, Any]]:
@@ -448,8 +443,15 @@ def convert_record(
 
 
 def validate_official_motionlib(
-    bfm_repo: Path, motion_file: Path, robot_xml: Path, motion_count: int, seq_length: int
+    bfm_repo: Path,
+    motion_file: Path,
+    robot_xml: Path,
+    motion_count: int,
+    seq_length: int,
+    fps: float,
 ) -> dict[str, Any]:
+    if not math.isclose(fps, 50.0, rel_tol=0.0, abs_tol=1e-6):
+        raise ValueError(f"Official BFM validation requires 50 Hz motions, got {fps:g} Hz")
     sys.path.insert(0, str(bfm_repo.resolve()))
     import torch
     from easydict import EasyDict
@@ -462,7 +464,7 @@ def validate_official_motionlib(
     cfg = EasyDict(
         {
             "motion_file": str(motion_file.resolve()),
-            "step_dt": 1.0 / 50.0,
+            "step_dt": 1.0 / fps,
             "fix_height": FixHeightMode.no_fix,
             "asset": EasyDict(
                 {"assetRoot": str(robot_xml.resolve().parent), "assetFileName": robot_xml.name}
@@ -491,7 +493,7 @@ def validate_official_motionlib(
         raise ValueError("MotionLib returned NaN/Inf")
     env = SimpleNamespace(
         _motion_lib=motion_lib,
-        dt=1.0 / 50.0,
+        dt=1.0 / fps,
         device="cpu",
         default_dof_pos=torch.zeros((1, 29)),
         gravity_vec=torch.tensor([[0.0, 0.0, -1.0]]),
@@ -588,6 +590,10 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
     import imageio.v2 as imageio
 
     records = joblib.load(motion_file)
+    fps_values = {float(record["fps"]) for record in records.values()}
+    if len(fps_values) != 1:
+        raise ValueError(f"QC requires one dataset FPS, got {sorted(fps_values)}")
+    fps = fps_values.pop()
     model = mujoco.MjModel.from_xml_path(str(husky_xml.resolve()))
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, height=720, width=1280)
@@ -620,7 +626,7 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
             )
             selected = [candidates[int(index)] for index in indexes]
             path = video_root / f"{phase}_{len(selected)}samples.mp4"
-            writer = imageio.get_writer(path, fps=50, macro_block_size=1, codec="libx264")
+            writer = imageio.get_writer(path, fps=fps, macro_block_size=1, codec="libx264")
             samples = []
             try:
                 if not selected:
@@ -652,7 +658,7 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
                         f"Command: v={record['command_v']:.2f}, h={record['command_h']:.2f}",
                         f"Physics Seed: {record['physics_seed']}",
                     ]
-                    for _ in range(20):
+                    for _ in range(max(1, round(0.4 * fps))):
                         writer.append_data(text_frame(1280, 720, title))
                     for local, raw_index in enumerate(range(start, end)):
                         data.qpos[:] = raw["qpos"][raw_index]
@@ -751,7 +757,7 @@ def plan_stats(raw_root: Path) -> dict[str, Any]:
 
 
 def aggregate(args: argparse.Namespace) -> int:
-    raw_root, dataset_root = raw_root_from_arg(args.dataset_root)
+    raw_root, _ = raw_root_from_arg(args.dataset_root)
     output = args.output.resolve()
     manifest_path = (args.manifest or output.parent / "manifest.json").resolve()
     reference_keys, reference_record = load_reference(args.bfm_reference)
@@ -762,11 +768,23 @@ def aggregate(args: argparse.Namespace) -> int:
         for phase in PHASES
     }
     command_stats: dict[str, dict[str, Any]] = {}
-    discard = Counter({key: 0 for key in DISCARD_KEYS})
+    discard_frames = Counter({"fall": 0, "failure_margin": 0, "reset": 0})
+    discard_motions = Counter(
+        {
+            "too_short_for_bfm": 0,
+            "nan_inf": 0,
+            "alignment": 0,
+            "invalid_phase": 0,
+            "conversion_error": 0,
+        }
+    )
     rejected: list[dict[str, Any]] = []
+    rejected_rollouts: set[Path] = set()
+    rejected_motion_count = 0
     raw_frames = raw_seconds = 0.0
     accepted_rollouts: set[Path] = set()
     physics_seeds: set[int] = set()
+    fps_values: set[float] = set()
 
     for rollout in rollout_paths(raw_root):
         raw_path = rollout
@@ -775,9 +793,10 @@ def aggregate(args: argparse.Namespace) -> int:
             frame_count, source = validate_raw(raw_path, metadata, state)
         except Exception as error:
             category = discard_category(error)
-            discard[category] += 1
+            rejected_rollouts.add(rollout.resolve())
             rejected.append(
                 {
+                    "level": "rollout",
                     "rollout": str(rollout),
                     "reason": str(error),
                     "category": category,
@@ -786,6 +805,10 @@ def aggregate(args: argparse.Namespace) -> int:
             continue
         raw_frames += frame_count
         raw_seconds += frame_count / float(metadata["fps"])
+        fps_value = float(metadata["fps"])
+        if not math.isclose(fps_value, round(fps_value), rel_tol=0.0, abs_tol=1e-3):
+            raise RuntimeError(f"{raw_path} has non-integral FPS: {fps_value:g}")
+        fps_values.add(float(round(fps_value)))
         physics_seeds.add(source["physics_seed"])
         phase_ids = np.asarray(state["phase_id"], dtype=np.int16)
         fall_start = next(
@@ -800,18 +823,19 @@ def aggregate(args: argparse.Namespace) -> int:
         segment_index = 0
         for phase_id, start, end in phase_runs(phase_ids):
             if fall_start is not None and start >= fall_start:
-                if phase_id != PHASE_IDS["fall"]:
-                    discard["fall"] += end - start
+                discard_frames["fall"] += end - start
                 continue
             if phase_id == PHASE_IDS["fall"]:
-                discard["fall"] += end - start
+                discard_frames["fall"] += end - start
                 continue
             if phase_id not in range(6):
-                discard["invalid_phase"] += end - start
+                discard_motions["invalid_phase"] += 1
                 continue
             name = next(label for label, value in PHASE_IDS.items() if value == phase_id)
             if fall_start is not None and end == fall_start:
-                end = max(start, end - margin)
+                trimmed_end = max(start, end - margin)
+                discard_frames["failure_margin"] += end - trimmed_end
+                end = trimmed_end
             reset_indices = np.flatnonzero(state["reset"][start:end])
             cuts: list[tuple[int, int]] = []
             cursor = start
@@ -819,7 +843,7 @@ def aggregate(args: argparse.Namespace) -> int:
                 if cursor < reset_index:
                     cuts.append((cursor, reset_index))
                 cursor = reset_index + 1
-                discard["reset"] += 1
+                discard_frames["reset"] += 1
             if cursor < end:
                 cuts.append((cursor, end))
             if not reset_indices.size:
@@ -828,7 +852,7 @@ def aggregate(args: argparse.Namespace) -> int:
                 occurrence = segment_index
                 segment_index += 1
                 if segment_end - segment_start < args.seq_length + 1:
-                    discard["too_short_for_bfm"] += 1
+                    discard_motions["too_short_for_bfm"] += 1
                     continue
                 try:
                     record, conversion = convert_record(
@@ -845,10 +869,12 @@ def aggregate(args: argparse.Namespace) -> int:
                         args.seq_length,
                     )
                 except Exception as error:
-                    category = discard_category(error)
-                    discard[category] += 1
+                    category = motion_discard_category(error)
+                    discard_motions[category] += 1
+                    rejected_motion_count += 1
                     rejected.append(
                         {
+                            "level": "motion",
                             "rollout": str(rollout),
                             "phase": name,
                             "start_frame": segment_start,
@@ -891,6 +917,9 @@ def aggregate(args: argparse.Namespace) -> int:
 
     if not records:
         raise RuntimeError("no accepted phase motions were produced")
+    if len(fps_values) != 1:
+        raise RuntimeError(f"accepted raw rollouts have mixed FPS values: {sorted(fps_values)}")
+    dataset_fps = fps_values.pop()
     if output.exists() and not args.overwrite:
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -914,12 +943,13 @@ def aggregate(args: argparse.Namespace) -> int:
         "dataset_stage": "M2.5c-P",
         "dataset_type": "phase_structured",
         "source_policy": plan["source_policy"],
-        "fps": 50,
+        "fps": dataset_fps,
         "planned_rollouts": plan["planned_rollouts"],
         "completed_rollouts": plan["completed_rollouts"],
         "accepted_rollouts": len(accepted_rollouts),
         "failed_rollouts": plan["failed_rollouts"],
-        "rejected_rollouts": len(rejected),
+        "rejected_rollout_count": len(rejected_rollouts),
+        "rejected_motion_count": rejected_motion_count,
         "replacement_rollouts": plan["replacement_rollouts"],
         "raw_frames": int(raw_frames),
         "raw_seconds": raw_seconds,
@@ -933,7 +963,8 @@ def aggregate(args: argparse.Namespace) -> int:
         "command_statistics": sorted(
             command_stats.values(), key=lambda item: (item["command_v"], item["command_h"])
         ),
-        "discard_statistics": dict(discard),
+        "discard_frame_counts": dict(discard_frames),
+        "discard_motion_counts": dict(discard_motions),
         "rejection_details": rejected,
         "motion_library": str(output),
         "structural_validation": "PENDING",
@@ -942,7 +973,12 @@ def aggregate(args: argparse.Namespace) -> int:
     write_json(manifest_path, manifest)
     if args.validate_motionlib:
         manifest["official_motionlib_validation"] = validate_official_motionlib(
-            args.bfm_repo, output, args.robot_xml, len(records), args.seq_length
+            args.bfm_repo,
+            output,
+            args.robot_xml,
+            len(records),
+            args.seq_length,
+            dataset_fps,
         )
         manifest["structural_validation"] = "PASS"
         write_json(manifest_path, manifest)
@@ -951,7 +987,7 @@ def aggregate(args: argparse.Namespace) -> int:
         qc = generate_qc(
             output,
             args.qc_root.resolve(),
-            (args.husky_xml or args.robot_xml).resolve(),
+            args.husky_xml.resolve(),
             args.qc_seed,
         )
         manifest["qc"] = {
@@ -977,6 +1013,11 @@ def main() -> int:
             raise SystemExit(f"--{name.replace('_', '-')} does not exist")
     if args.seq_length <= 0:
         raise SystemExit("--seq-length must be positive")
+    if args.qc_root is not None:
+        if args.husky_xml is None:
+            raise SystemExit("--qc-root requires an explicit --husky-xml")
+        if not args.husky_xml.is_file():
+            raise SystemExit(f"--husky-xml does not exist: {args.husky_xml}")
     if args.manifest is None:
         args.manifest = args.output.parent / "manifest.json"
     return aggregate(args)
