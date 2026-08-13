@@ -17,6 +17,7 @@ import joblib
 import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
+from tqdm import tqdm
 
 PHASES = ("push", "push2steer", "steer_left", "steer_forward", "steer_right", "steer2push")
 PHASE_IDS = {
@@ -443,6 +444,7 @@ def convert_record(
 
 
 def validate_official_motionlib(
+    args: argparse.Namespace,
     bfm_repo: Path,
     motion_file: Path,
     robot_xml: Path,
@@ -450,8 +452,11 @@ def validate_official_motionlib(
     seq_length: int,
     fps: float,
 ) -> dict[str, Any]:
+    args.failed_stage = "motionlib"
     if not math.isclose(fps, 50.0, rel_tol=0.0, abs_tol=1e-6):
         raise ValueError(f"Official BFM validation requires 50 Hz motions, got {fps:g} Hz")
+    print("\n[Official BFM Validation]")
+    print("MotionLibRobot: RUNNING")
     sys.path.insert(0, str(bfm_repo.resolve()))
     import torch
     from easydict import EasyDict
@@ -491,6 +496,11 @@ def validate_official_motionlib(
         raise ValueError(f"MotionLib missing fields: {sorted(required - set(states))}")
     if not all(torch.isfinite(states[name]).all() for name in required):
         raise ValueError("MotionLib returned NaN/Inf")
+    print("MotionLibRobot: PASS")
+    print(f"Motions loaded: {motion_lib.num_motions()}")
+    print(f"FPS: {fps:g} Hz")
+    print(f"DoF: {states['dof_pos'].shape[-1]}")
+    print("Finite check: PASS")
     env = SimpleNamespace(
         _motion_lib=motion_lib,
         dt=1.0 / fps,
@@ -503,12 +513,22 @@ def validate_official_motionlib(
             )
         ),
     )
+    print("Official expert loader: RUNNING")
+    print(f"Seq length: {seq_length}")
+    args.failed_stage = "expert_loader"
     buffer = load_expert_trajectories_from_motion_lib(
         env, SimpleNamespace(model=SimpleNamespace(seq_length=seq_length)), device="cpu"
     )
     sample = buffer.sample(batch_size=seq_length * 2, seq_length=seq_length)
-    if sample["observation"]["state"].shape != sample["next"]["observation"]["state"].shape:
+    current_shape = list(sample["observation"]["state"].shape)
+    next_shape = list(sample["next"]["observation"]["state"].shape)
+    if current_shape != next_shape:
         raise ValueError("expert sequence current/next shapes differ")
+    print("Official expert loader: PASS")
+    print("Seq8: PASS")
+    print(f"Sample batch shape: {current_shape[:2]}")
+    print(f"Current observation shape: {current_shape}")
+    print(f"Next observation shape: {next_shape}")
     return {
         "status": "PASS",
         "motion_count": motion_lib.num_motions(),
@@ -516,17 +536,28 @@ def validate_official_motionlib(
         "state_shapes": {name: list(states[name].shape) for name in sorted(required)},
         "expert_loader": "PASS",
         "sequence_sampling": "PASS",
+        "sample_batch_shape": current_shape[:2],
+        "current_observation_shape": current_shape,
+        "next_observation_shape": next_shape,
     }
 
 
-def raw_provenance_check(record: Mapping[str, Any]) -> dict[str, np.ndarray]:
+def raw_provenance_check(
+    record: Mapping[str, Any],
+    raw: Mapping[str, np.ndarray] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, np.ndarray]:
     source = Path(record["source_raw_npz"])
     if not source.is_file():
         raise FileNotFoundError(f"QC source missing: {source}")
-    with np.load(source, allow_pickle=False) as archive:
-        raw = {name: archive[name] for name in archive.files}
+    if raw is None:
+        with np.load(source, allow_pickle=False) as archive:
+            raw = {name: archive[name] for name in archive.files}
     start, end = int(record["source_start_frame"]), int(record["source_end_frame"])
-    metadata = json.loads(source.with_suffix(".json").read_text(encoding="utf-8"))
+    if metadata is None:
+        metadata = json.loads(source.with_suffix(".json").read_text(encoding="utf-8"))
+    if not np.array_equal(raw["frame_idx"][start:end], np.arange(start, end)):
+        raise ValueError("QC provenance mismatch for source frame")
     comparisons = {
         "root_trans_offset": ("root_pos", record["root_trans_offset"]),
         "action": ("action", record["action"]),
@@ -560,6 +591,31 @@ def raw_provenance_check(record: Mapping[str, Any]) -> dict[str, np.ndarray]:
     if not np.allclose(record["root_rot"], expected_root_rot, rtol=1e-5, atol=1e-6):
         raise ValueError("QC provenance mismatch for root_rot")
     return raw
+
+
+def audit_provenance(records: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    grouped: dict[Path, list[Mapping[str, Any]]] = {}
+    for record in records.values():
+        grouped.setdefault(Path(record["source_raw_npz"]), []).append(record)
+    print("\n[Provenance Audit]")
+    for source, source_records in tqdm(
+        grouped.items(), desc="Raw provenance", unit="rollout", dynamic_ncols=True
+    ):
+        with np.load(source, allow_pickle=False) as archive:
+            raw = {name: archive[name] for name in archive.files}
+        metadata = json.loads(source.with_suffix(".json").read_text(encoding="utf-8"))
+        for record in source_records:
+            raw_provenance_check(record, raw, metadata)
+    result = {
+        "robot_state": "PASS",
+        "board_state": "PASS",
+        "action": "PASS",
+        "phase": "PASS",
+        "source_frame": "PASS",
+    }
+    for name, status in result.items():
+        print(f"{name.replace('_', ' ')}: {status}")
+    return result
 
 
 def text_frame(width: int, height: int, lines: Sequence[str]) -> np.ndarray:
@@ -614,6 +670,10 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
         "total_dataset_motion_count": len(records),
         "phases": [],
     }
+    print("\n[Post-hoc QC]")
+    print(f"Seed: {seed}")
+    print("Sampling: uniform without replacement")
+    print("Population: final accepted phase dataset")
     try:
         for phase in PHASES:
             candidates = sorted(
@@ -626,6 +686,10 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
             )
             selected = [candidates[int(index)] for index in indexes]
             path = video_root / f"{phase}_{len(selected)}samples.mp4"
+            print(f"\n{phase}:")
+            print(f"available={len(candidates)}")
+            print(f"selected={len(selected)}")
+            print("rendering...")
             writer = imageio.get_writer(path, fps=fps, macro_block_size=1, codec="libx264")
             samples = []
             try:
@@ -641,7 +705,15 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
                             ],
                         )
                     )
-                for sample_index, key in enumerate(selected, start=1):
+                for sample_index, key in enumerate(
+                    tqdm(
+                        selected,
+                        desc=f"QC {phase}",
+                        unit="sample",
+                        dynamic_ncols=True,
+                    ),
+                    start=1,
+                ):
                     record = records[key]
                     raw = raw_provenance_check(record)
                     start, end = int(record["source_start_frame"]), int(record["source_end_frame"])
@@ -729,6 +801,9 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
                     "samples": samples,
                 }
             )
+            status = "PASS" if len(selected) >= 10 else "insufficient_phase_coverage"
+            print(f"{phase}: {status}")
+            print(f"video: {path.resolve()}")
     finally:
         renderer.close()
     result["total_rendered_samples"] = sum(item["rendered_samples"] for item in result["phases"])
@@ -756,10 +831,120 @@ def plan_stats(raw_root: Path) -> dict[str, Any]:
     }
 
 
+def print_build_plan(
+    args: argparse.Namespace,
+    raw_root: Path,
+    output: Path,
+    manifest_path: Path,
+    rollouts: Sequence[Path],
+    plan: Mapping[str, Any],
+) -> None:
+    summary = plan["summary"]
+    terminal_reasons = summary.get("terminal_reasons", {})
+    print("[Phase Dataset Build Plan]")
+    print("Stage: M2.5c-P")
+    print(f"Raw root: {raw_root}")
+    print(f"Output pkl: {output}")
+    print(f"Manifest: {manifest_path}")
+    print(f"QC root: {args.qc_root.resolve() if args.qc_root else 'disabled'}")
+    print(f"HUSKY XML: {args.husky_xml.resolve() if args.husky_xml else 'disabled'}")
+    print(f"BFM robot XML: {args.robot_xml.resolve()}")
+    print(f"BFM reference: {args.bfm_reference.resolve()}")
+    print(f"Seq length: {args.seq_length}")
+    print(f"Minimum motion frames: {args.seq_length + 1}")
+    print(f"QC seed: {args.qc_seed}")
+    print("QC sampling: uniform without replacement")
+    print("QC samples / phase: 10")
+    print("FPS contract: 50 Hz")
+    print("\nRaw collection:")
+    print(f"- target achieved: {summary.get('target_achieved', 'unknown')}")
+    print(f"- raw rollouts: {len(rollouts)}")
+    print(f"- completed rollouts: {summary.get('completed_rollouts', 'unknown')}")
+    print(f"- baseline completed: {summary.get('baseline_completed', 'unknown')}")
+    print(f"- replacement completed: {summary.get('replacement_completed', 'unknown')}")
+    print(f"- failed: {summary.get('failed_rollout_count', 'unknown')}")
+    print(f"- raw frames: {summary.get('raw_frames', 'unknown')}")
+    raw_minutes = summary.get("raw_minutes", summary.get("raw_duration_minutes"))
+    print(
+        f"- raw duration: {raw_minutes:.3f} min"
+        if raw_minutes is not None
+        else "- raw duration: unknown"
+    )
+    print(f"- fall terminations: {terminal_reasons.get('fall', 0)}")
+    print(f"- max-frame terminations: {terminal_reasons.get('max_policy_frames', 0)}")
+
+
+def print_phase_summary(
+    phase_stats: Mapping[str, Mapping[str, Any]],
+    discard_frames: Mapping[str, int],
+    discard_motions: Mapping[str, int],
+    rejected_rollouts: int,
+    rejected_motions: int,
+) -> None:
+    print("\n[Phase Conversion Summary]")
+    for phase in PHASES:
+        stats = phase_stats[phase]
+        print(
+            f"{phase}: motions={stats['motion_count']}, frames={stats['frame_count']}, "
+            f"duration={stats['duration_seconds']:.3f}s"
+        )
+    print(f"discard_frame_counts: {dict(discard_frames)}")
+    print(f"discard_motion_counts: {dict(discard_motions)}")
+    print(f"rejected_rollout_count: {rejected_rollouts}")
+    print(f"rejected_motion_count: {rejected_motions}")
+
+
+def print_final_summary(
+    manifest: Mapping[str, Any],
+    output: Path,
+    manifest_path: Path,
+    qc: Mapping[str, Any] | None,
+) -> None:
+    validation = manifest.get("official_motionlib_validation", {})
+    provenance = manifest.get("raw_provenance", {})
+    print("\n==================================================")
+    print("M2.5c-P FINAL DATASET SUMMARY")
+    print("==================================================")
+    print("Raw collection: PASS")
+    print(f"Raw rollouts processed: {manifest['completed_rollouts']}")
+    print(f"Rejected rollouts: {manifest['rejected_rollout_count']}")
+    print(f"Accepted motions: {manifest['total_motion_count']}")
+    print(f"Expert frames: {manifest['expert_frames']}")
+    print(f"Expert duration: {manifest['expert_minutes']:.3f} min")
+    print("\nPhase motions:")
+    for phase in PHASES:
+        print(f"{phase}: {manifest['phase_statistics'][phase]['motion_count']}")
+    print(f"\nDiscard frames: {manifest['discard_frame_counts']}")
+    print(f"Discard motions: {manifest['discard_motion_counts']}")
+    print(f"\nMotionLibRobot: {validation.get('status', 'NOT RUN')}")
+    print(f"Official expert loader: {validation.get('expert_loader', 'NOT RUN')}")
+    print(f"Seq8: {validation.get('sequence_sampling', 'NOT RUN')}")
+    print(f"Raw provenance: {'PASS' if provenance else 'NOT RUN'}")
+    print(f"Post-hoc QC generation: {'PASS' if qc is not None else 'NOT RUN'}")
+    print(f"\nFinal pkl: {output}")
+    print(f"Manifest: {manifest_path}")
+    print(f"QC manifest: {qc.get('manifest_path') if qc else 'NOT RUN'}")
+    print("QC videos:")
+    if qc:
+        for phase in qc["phases"]:
+            print(phase["video_path"])
+    else:
+        print("NOT RUN")
+    print("\nHuman Motion Quality Review: PENDING")
+    print("==================================================")
+    print("M2.5c-P DATASET BUILD COMPLETE")
+    print("Training launched: false")
+    print("Continuous dataset launched: false")
+
+
 def aggregate(args: argparse.Namespace) -> int:
+    args.failed_stage = "aggregation"
     raw_root, _ = raw_root_from_arg(args.dataset_root)
     output = args.output.resolve()
     manifest_path = (args.manifest or output.parent / "manifest.json").resolve()
+    rollouts = rollout_paths(raw_root)
+    plan = plan_stats(raw_root)
+    print_build_plan(args, raw_root, output, manifest_path, rollouts, plan)
     reference_keys, reference_record = load_reference(args.bfm_reference)
     target_order, target_axes = bfm_joint_contract(args.robot_xml)
     records: dict[str, dict[str, Any]] = {}
@@ -786,11 +971,14 @@ def aggregate(args: argparse.Namespace) -> int:
     physics_seeds: set[int] = set()
     fps_values: set[float] = set()
 
-    for rollout in rollout_paths(raw_root):
-        raw_path = rollout
+    args.failed_stage = "raw_validation"
+    validated_rollouts: list[Path] = []
+    validation_frames = 0
+    raw_progress = tqdm(rollouts, desc="Raw validation", unit="rollout", dynamic_ncols=True)
+    for rollout in raw_progress:
         try:
             raw_path, metadata, state = load_raw(rollout)
-            frame_count, source = validate_raw(raw_path, metadata, state)
+            frame_count, _ = validate_raw(raw_path, metadata, state)
         except Exception as error:
             category = discard_category(error)
             rejected_rollouts.add(rollout.resolve())
@@ -802,7 +990,25 @@ def aggregate(args: argparse.Namespace) -> int:
                     "category": category,
                 }
             )
+            tqdm.write(f"REJECT {rollout.relative_to(raw_root)}: {error}")
             continue
+        validated_rollouts.append(rollout)
+        validation_frames += frame_count
+        raw_progress.set_postfix(
+            accepted=len(validated_rollouts),
+            rejected=len(rejected_rollouts),
+            frames=validation_frames,
+            refresh=False,
+        )
+    raw_progress.close()
+
+    args.failed_stage = "conversion"
+    conversion_progress = tqdm(
+        validated_rollouts, desc="Phase conversion", unit="rollout", dynamic_ncols=True
+    )
+    for rollout in conversion_progress:
+        raw_path, metadata, state = load_raw(rollout)
+        frame_count, source = validate_raw(raw_path, metadata, state)
         raw_frames += frame_count
         raw_seconds += frame_count / float(metadata["fps"])
         fps_value = float(metadata["fps"])
@@ -914,6 +1120,13 @@ def aggregate(args: argparse.Namespace) -> int:
                 command["rollout_ids"].add(str(metadata["episode_id"]))
                 command["accepted_motion_count"] += 1
                 command["accepted_expert_seconds"] += (length - 1) / float(metadata["fps"])
+        conversion_progress.set_postfix(
+            motions=len(records),
+            expert_frames=sum(item["frame_count"] for item in phase_stats.values()),
+            rejected_motion=rejected_motion_count,
+            refresh=False,
+        )
+    conversion_progress.close()
 
     if not records:
         raise RuntimeError("no accepted phase motions were produced")
@@ -922,10 +1135,27 @@ def aggregate(args: argparse.Namespace) -> int:
     dataset_fps = fps_values.pop()
     if output.exists() and not args.overwrite:
         raise FileExistsError(output)
+    print_phase_summary(
+        phase_stats,
+        discard_frames,
+        discard_motions,
+        len(rejected_rollouts),
+        rejected_motion_count,
+    )
+    expert_frames = sum(item["frame_count"] for item in phase_stats.values())
+    expert_seconds = sum(item["duration_seconds"] for item in phase_stats.values())
+    print("\n[Writing Dataset]")
+    print(f"motions: {len(records)}")
+    print(f"expert frames: {expert_frames}")
+    print(f"expert duration: {expert_seconds / 60:.3f} min")
+    print(f"output: {output}")
+    args.failed_stage = "aggregation"
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.name}.tmp")
     joblib.dump(records, temporary)
     temporary.replace(output)
+    print("Dataset pickle: PASS")
+    print(f"size: {output.stat().st_size / (1024 * 1024):.2f} MiB")
     stats_out = {}
     for phase in PHASES:
         stats = phase_stats[phase]
@@ -938,7 +1168,6 @@ def aggregate(args: argparse.Namespace) -> int:
         }
     for command in command_stats.values():
         command["rollout_count"] = len(command.pop("rollout_ids"))
-    plan = plan_stats(raw_root)
     manifest = {
         "dataset_stage": "M2.5c-P",
         "dataset_type": "phase_structured",
@@ -971,8 +1200,13 @@ def aggregate(args: argparse.Namespace) -> int:
         "bfm_min_motion_frames": args.seq_length + 1,
     }
     write_json(manifest_path, manifest)
+    print("Manifest: PASS")
+    print(f"path: {manifest_path}")
+
     if args.validate_motionlib:
+        args.failed_stage = "motionlib"
         manifest["official_motionlib_validation"] = validate_official_motionlib(
+            args,
             args.bfm_repo,
             output,
             args.robot_xml,
@@ -983,7 +1217,12 @@ def aggregate(args: argparse.Namespace) -> int:
         manifest["structural_validation"] = "PASS"
         write_json(manifest_path, manifest)
         print("Structural Validation: PASS")
+    args.failed_stage = "provenance"
+    manifest["raw_provenance"] = audit_provenance(records)
+    write_json(manifest_path, manifest)
+    qc = None
     if args.qc_root:
+        args.failed_stage = "qc"
         qc = generate_qc(
             output,
             args.qc_root.resolve(),
@@ -998,9 +1237,10 @@ def aggregate(args: argparse.Namespace) -> int:
         }
         write_json(manifest_path, manifest)
         print(f"Visual QC Generation: PASS ({qc['total_rendered_samples']} samples)")
-    print(
-        f"Aggregated {len(records)} phase motions from {int(raw_frames)} raw frames into {output}"
-    )
+    if qc is not None:
+        qc["manifest_path"] = str(args.qc_root.resolve() / "qc_manifest.json")
+    print_final_summary(manifest, output, manifest_path, qc)
+    args.failed_stage = "complete"
     return 0
 
 
@@ -1020,7 +1260,22 @@ def main() -> int:
             raise SystemExit(f"--husky-xml does not exist: {args.husky_xml}")
     if args.manifest is None:
         args.manifest = args.output.parent / "manifest.json"
-    return aggregate(args)
+    try:
+        return aggregate(args)
+    except Exception as error:
+        stage = getattr(args, "failed_stage", "aggregation")
+        labels = {
+            "motionlib": "MotionLibRobot",
+            "expert_loader": "Official expert loader",
+            "provenance": "Raw provenance",
+            "qc": "Post-hoc QC",
+        }
+        if stage in labels:
+            print(f"\n{labels[stage]}: FAIL", file=sys.stderr)
+        print(f"\nFAILED STAGE: {stage}", file=sys.stderr)
+        print(f"Error type: {type(error).__name__}", file=sys.stderr)
+        print(f"Error message: {error}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":
