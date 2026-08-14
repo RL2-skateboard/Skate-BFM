@@ -14,3 +14,9 @@
 - Connected the basic BFM0 interface to the HUSKY 23DoF runtime.
 - Configured the `skatebfm` Conda environment.
 - Organized the repository structure and documentation.
+
+## 2026-08-14
+
+- Organized the published simulation dataset into peer-level `phase/` and
+  `continuous/` directories on Hugging Face.
+- Updated the main project README with the dataset layout and restore commands.

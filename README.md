@@ -84,6 +84,45 @@ revision `62b4206d68e026de5e5dc7efb1529bccfb95164c`. Its
 Model files are intentionally excluded from Git because the checkpoint is
 3.38 GB.
 
+## Simulation Dataset
+
+The formal HUSKY skateboard data is published in the
+[Skate-BFM Hugging Face dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset).
+The two dataset stages are peer-level directories:
+
+```text
+phase/
+├── raw/
+├── motion_library/
+└── qc/
+
+continuous/
+├── motion_library/
+└── qc/
+```
+
+`phase/` contains the M2.5c-P raw collection, phase MotionLib, and phase QC.
+`continuous/` contains the M2.5c-C fixed-window 500-frame MotionLib and QC.
+Both stages are derived from the same canonical raw rollout collection.
+
+Restore the Phase dataset:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "phase/**" \
+  --local-dir dataset/sim_collected
+```
+
+Restore the Continuous dataset:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "continuous/**" \
+  --local-dir dataset/sim_collected
+```
+
 ## Tests
 
 Run all development checks:
