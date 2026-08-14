@@ -1,7 +1,7 @@
 # Skate-BFM Training
 
-This directory contains data and records for the final M2.5b Skate-BFM
-baseline. Training logic is deliberately limited to two project-owned scripts:
+This directory contains data and records for formal M2.6 Skate-BFM training.
+Training logic is deliberately limited to two project-owned scripts:
 
 ```text
 scripts/train_skate_bfm.py  strict official BFM0 -> HUSKY closed-loop training
@@ -17,20 +17,23 @@ The final training path is equivalent in role to BFM-Zero's upstream
 `humanoidverse/train.py`: it constructs the official FB-CPR-Aux agent, loads
 MotionLib experts, grows replay from online interaction, and calls the native
 agent update. Project code owns only HUSKY integration, data selection, and
-the fixed M2.5b schedule.
+the parameterized M2.6 schedule.
 
 ## Required Data
 
 ```text
 dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl
-dataset/skate-expert-pose/motion_library/skate_expert.pkl
+dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl
+dataset/sim_collected/phase/motion_library/manifest.json
+dataset/sim_collected/continuous/motion_library/skate_expert_continuous.pkl
+dataset/sim_collected/continuous/motion_library/manifest.json
 ```
 
-The LAFAN source provides Base motions. The Skate MotionLib file provides the
-single current Skate expert source. The collector writes canonical continuous
-HUSKY robot-board rollouts. The phase and continuous converters use the same
-canonical raw collection for conversion, official MotionLib validation, and
-post-hoc QC.
+The LAFAN source provides Base motions. `SKATE_EXPERT_DATASET` selects either
+the formal Phase or Continuous Skate MotionLib; Phase is the default.
+`SKATE_EXPERT_MOTION_FILE` remains a higher-priority explicit override. Both
+formal datasets derive from the same canonical HUSKY robot-board raw
+collection.
 
 The short parallel collection test uses the checked-in configuration:
 
@@ -40,7 +43,7 @@ python train/scripts/data_collection/rollout_split.py \
 ```
 
 The production configuration writes raw data to
-`dataset/sim_collected/phase/raw/`. The collector preserves each rollout,
+`dataset/sim_collected/raw/`. The collector preserves each rollout,
 organizes output as `round_NNN/rollout_NNN`, reports raw duration, and applies
 the official HUSKY per-rollout randomization. Accepted expert duration is
 computed only by the converter.
@@ -80,16 +83,36 @@ hf download Yak9Ce3teeh/skate-sim-dataset \
 
 ## Formal Run
 
+Phase:
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
-SKATE_WORK_DIR=$PWD/results/m2.5b-original-bfm-baseline \
+SKATE_EXPERT_DATASET=phase \
+SKATE_MAX_STEPS=100000 \
+SKATE_WORK_DIR=$PWD/results/m2.6-phase-100k-seed4728 \
 python train/scripts/train_skate_bfm.py
 ```
 
-The fixed configuration is 20,000 online transitions, 38 update blocks, 50
-native updates per block, and 1,900 updates total. It samples 64 complete Base
-sequences and 64 complete Skate sequences per update.
+Continuous:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SKATE_EXPERT_DATASET=continuous \
+SKATE_MAX_STEPS=100000 \
+SKATE_WORK_DIR=$PWD/results/m2.6-continuous-100k-seed4728 \
+python train/scripts/train_skate_bfm.py
+```
+
+The default contract uses 100,000 online transitions, 1,024 warmup
+transitions, updates beginning at transition 1,500, 50 native updates every
+500 transitions, and checkpoints at 20k, 50k, and 100k. Replay capacity
+defaults to the transition budget and may be increased with
+`SKATE_BUFFER_SIZE`, but it cannot be smaller than the budget. Every update
+samples 64 complete Base sequences and 64 complete Skate sequences at sequence
+length 8.
+
+M2.6-0a establishes trainer readiness only. Neither the formal Phase 100k nor
+the formal Continuous 100k run has been launched.
 
 See [train_log.md](train_log.md) for the current engineering record and
 [train_res.md](train_res.md) for the completed baseline result.

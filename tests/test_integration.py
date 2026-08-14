@@ -148,19 +148,47 @@ def test_official_randomization_is_deterministic_per_rollout_id() -> None:
     assert first_offsets == second_offsets
 
 
-def test_m25b_configuration_and_schedule_are_fixed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_m26_configuration_and_schedule_are_parameterized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _training_module()
     cfg = module.build_train_config()
-    schedule = module.closed_loop_update_steps(cfg.skate_max_steps)
+    schedule = module.training_update_steps(
+        cfg.skate_max_steps,
+        cfg.first_update_transition,
+        cfg.update_interval,
+    )
 
-    assert cfg.skate_max_steps == 20_000
+    assert cfg.expert_dataset_kind == "phase"
+    assert cfg.skate_expert_motion_file.endswith("skate_expert_phase.pkl")
+    assert cfg.skate_max_steps == 100_000
+    assert cfg.buffer_size == 100_000
     assert cfg.skate_expert_ratio == 0.5
     assert schedule[0] == 1500
-    assert schedule[-1] == 20_000
-    assert len(schedule) == 38
-    assert len(schedule) * module.SKATE_UPDATES_PER_BLOCK == 1900
-    assert module.closed_loop_checkpoint_steps(20_000) == (10_000, 20_000)
+    assert schedule[-1] == 100_000
+    assert len(schedule) == 198
+    assert len(schedule) * cfg.updates_per_block == 9900
+    assert module.training_checkpoint_steps(100_000) == (20_000, 50_000, 100_000)
+    assert module.training_checkpoint_steps(300_000) == (
+        20_000,
+        50_000,
+        100_000,
+        300_000,
+    )
 
-    monkeypatch.setenv("SKATE_MAX_STEPS", "1024")
-    with pytest.raises(ValueError, match="20000"):
+    monkeypatch.setenv("SKATE_EXPERT_DATASET", "continuous")
+    monkeypatch.setenv("SKATE_MAX_STEPS", "2000")
+    monkeypatch.setenv("SKATE_UPDATES_PER_BLOCK", "1")
+    cfg = module.build_train_config()
+    assert cfg.expert_dataset_kind == "continuous"
+    assert cfg.skate_expert_motion_file.endswith("skate_expert_continuous.pkl")
+    assert module.training_update_steps(
+        cfg.skate_max_steps,
+        cfg.first_update_transition,
+        cfg.update_interval,
+    ) == (1500, 2000)
+    assert module.training_checkpoint_steps(cfg.skate_max_steps) == (2000,)
+
+    monkeypatch.setenv("SKATE_BUFFER_SIZE", "1999")
+    with pytest.raises(ValueError, match="SKATE_BUFFER_SIZE"):
         module.build_train_config()

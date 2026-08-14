@@ -23,6 +23,7 @@ dependencies = [
     "scipy>=1.13,<2",
     "tensordict>=0.7,<1",
     "torch>=2.5,<3",
+    "tqdm>=4.67,<5",
     "tyro>=0.9,<1",
 ]
 

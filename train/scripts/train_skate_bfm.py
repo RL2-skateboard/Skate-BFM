@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402, E501, I001
-"""Train the final Skate-BFM M2.5b closed-loop baseline.
+"""Train the formal Skate-BFM M2.6 closed-loop baseline.
 
 This is intentionally a small project-owned entrypoint. The vendored
 ``isaac_env/humanoidverse`` package retains the official BFM-Zero algorithms;
@@ -37,6 +37,7 @@ import safetensors.torch
 import torch
 from safetensors import safe_open
 from torch.utils._pytree import tree_map
+from tqdm import tqdm
 
 from humanoidverse.agents.base import BaseConfig
 from humanoidverse.agents.buffers.transition import DictBuffer
@@ -59,56 +60,91 @@ OFFICIAL_BFM0_SHA256 = (
     "33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361"
 )
 SKATE_EPISODE_HORIZON = 1024
-SKATE_BASELINE_TRANSITIONS = 20_000
-SKATE_WARMUP_TRANSITIONS = 1024
-SKATE_FIRST_UPDATE = 1500
-SKATE_UPDATE_INTERVAL = 500
-SKATE_UPDATES_PER_BLOCK = 50
-SKATE_CHECKPOINT_STEPS = (10_000, 20_000)
+DEFAULT_MAX_STEPS = 100_000
+DEFAULT_WARMUP_TRANSITIONS = 1024
+DEFAULT_FIRST_UPDATE = 1500
+DEFAULT_UPDATE_INTERVAL = 500
+DEFAULT_UPDATES_PER_BLOCK = 50
+EXPERT_DATASETS = {
+    "phase": REPOSITORY_ROOT
+    / "dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl",
+    "continuous": REPOSITORY_ROOT
+    / "dataset/sim_collected/continuous/motion_library/skate_expert_continuous.pkl",
+}
 
 
-def closed_loop_update_steps(total_transitions: int) -> tuple[int, ...]:
-    """Return the fixed M2.5b update schedule."""
+def training_update_steps(
+    max_steps: int, first_update: int, update_interval: int
+) -> tuple[int, ...]:
+    return tuple(range(first_update, max_steps + 1, update_interval))
 
-    if total_transitions != SKATE_BASELINE_TRANSITIONS:
-        raise ValueError(
-            "M2.5b supports exactly "
-            f"{SKATE_BASELINE_TRANSITIONS} transitions, got {total_transitions}."
+
+def training_checkpoint_steps(max_steps: int) -> tuple[int, ...]:
+    return tuple(sorted({step for step in (20_000, 50_000, 100_000, max_steps) if step <= max_steps}))
+
+
+def resolve_expert_dataset() -> tuple[str, Path, Path]:
+    override = os.environ.get("SKATE_EXPERT_MOTION_FILE")
+    if override:
+        expert_path = Path(override).expanduser().resolve()
+        dataset_kind = next(
+            (
+                kind
+                for kind, path in EXPERT_DATASETS.items()
+                if expert_path == path.resolve()
+            ),
+            "custom",
         )
-    return tuple(range(SKATE_FIRST_UPDATE, total_transitions + 1, SKATE_UPDATE_INTERVAL))
-
-
-def closed_loop_checkpoint_steps(total_transitions: int) -> tuple[int, ...]:
-    closed_loop_update_steps(total_transitions)
-    return SKATE_CHECKPOINT_STEPS
+    else:
+        dataset_kind = os.environ.get("SKATE_EXPERT_DATASET", "phase").strip().lower()
+        if dataset_kind not in EXPERT_DATASETS:
+            raise ValueError("SKATE_EXPERT_DATASET must be 'phase' or 'continuous'.")
+        expert_path = EXPERT_DATASETS[dataset_kind].resolve()
+    return dataset_kind, expert_path, expert_path.with_name("manifest.json")
 
 
 class TrainConfig(BaseConfig):
-    """Narrow configuration surface for the final original-BFM Skate baseline."""
+    """Narrow configuration surface for formal Skate-BFM training."""
 
     agent: FBcprAuxAgentConfig
     env: HumanoidVerseIsaacConfig
+    expert_dataset_kind: str
     skate_expert_motion_file: str
+    expert_manifest_file: str
     pretrained_checkpoint: str
     work_dir: str
     seed: int = 4728
-    skate_max_steps: int = SKATE_BASELINE_TRANSITIONS
+    skate_max_steps: int = DEFAULT_MAX_STEPS
+    warmup_transitions: int = DEFAULT_WARMUP_TRANSITIONS
+    first_update_transition: int = DEFAULT_FIRST_UPDATE
+    update_interval: int = DEFAULT_UPDATE_INTERVAL
+    updates_per_block: int = DEFAULT_UPDATES_PER_BLOCK
     skate_expert_ratio: float = 0.5
-    buffer_size: int = SKATE_BASELINE_TRANSITIONS
+    buffer_size: int = DEFAULT_MAX_STEPS
     buffer_device: str = "cpu"
 
     def model_post_init(self, context: Any) -> None:
-        if self.skate_max_steps != SKATE_BASELINE_TRANSITIONS:
-            raise ValueError(
-                "M2.5b requires SKATE_MAX_STEPS="
-                f"{SKATE_BASELINE_TRANSITIONS}."
-            )
+        if self.skate_max_steps <= 0:
+            raise ValueError("SKATE_MAX_STEPS must be positive.")
+        if self.warmup_transitions <= 0:
+            raise ValueError("SKATE_WARMUP_TRANSITIONS must be positive.")
+        if self.first_update_transition < self.warmup_transitions:
+            raise ValueError("SKATE_FIRST_UPDATE must be at least SKATE_WARMUP_TRANSITIONS.")
+        if self.first_update_transition > self.skate_max_steps:
+            raise ValueError("SKATE_FIRST_UPDATE must not exceed SKATE_MAX_STEPS.")
+        if self.update_interval <= 0:
+            raise ValueError("SKATE_UPDATE_INTERVAL must be positive.")
+        if self.updates_per_block <= 0:
+            raise ValueError("SKATE_UPDATES_PER_BLOCK must be positive.")
+        if self.buffer_size < self.skate_max_steps:
+            raise ValueError("SKATE_BUFFER_SIZE must be at least SKATE_MAX_STEPS.")
         if self.skate_expert_ratio != 0.5:
-            raise ValueError("M2.5b requires SKATE_EXPERT_RATIO=0.5.")
+            raise ValueError("Formal Skate-BFM requires SKATE_EXPERT_RATIO=0.5.")
         if self.buffer_device != "cpu":
-            raise ValueError("M2.5b requires CPU DictBuffer replay.")
+            raise ValueError("Formal Skate-BFM requires CPU DictBuffer replay.")
         for field_name, value in (
             ("Skate expert MotionLib", self.skate_expert_motion_file),
+            ("Skate expert manifest", self.expert_manifest_file),
             ("official BFM0 checkpoint", self.pretrained_checkpoint),
         ):
             if not Path(value).expanduser().is_file() and not Path(value).expanduser().is_dir():
@@ -134,7 +170,7 @@ class BaseSkateExpertSampler:
             raise ValueError("Expert batch size must contain complete sequences.")
         sequences = batch_size // sequence_length
         if sequences % 2:
-            raise ValueError("M2.5b requires an even number of expert sequences.")
+            raise ValueError("Formal Skate-BFM requires an even number of expert sequences.")
         half = sequences // 2 * sequence_length
         base = self.expert_base.sample(half, seq_length=sequence_length)
         skate = self.expert_skate.sample(half, seq_length=sequence_length)
@@ -278,7 +314,7 @@ def load_bfm_checkpoint(agent: Any, checkpoint_dir: Path) -> dict[str, Any]:
     checkpoint_config = json.loads(config_path.read_text())
     init_kwargs = json.loads(init_kwargs_path.read_text())
     if checkpoint_config != agent._model.cfg.model_dump():
-        raise RuntimeError("Pretrained BFM0 model configuration differs from M2.5b.")
+        raise RuntimeError("Pretrained BFM0 model configuration differs from Skate-BFM.")
     if init_kwargs.get("action_dim") != agent.action_dim:
         raise RuntimeError("Pretrained BFM0 action dimension mismatch.")
     if _space_signature(json_to_space(init_kwargs["obs_space"])) != _space_signature(agent.obs_space):
@@ -302,7 +338,7 @@ def load_bfm_checkpoint(agent: Any, checkpoint_dir: Path) -> dict[str, Any]:
         "source": str(checkpoint_dir),
         "model_file": str(model_path),
         "model_sha256": hash_file(model_path),
-        "optimizer_policy": "fresh M2.5b optimizers; pretrained optimizer state is not loaded",
+        "optimizer_policy": "fresh optimizers; pretrained optimizer state is not loaded",
     }
 
 
@@ -390,7 +426,7 @@ def encode_target(agent: Any, observations: dict[str, torch.Tensor]) -> np.ndarr
 
 
 def load_frozen_agent(checkpoint: Path) -> tuple[Any, dict[str, Any]]:
-    """Build the M2.5b architecture and freeze an arbitrary validated checkpoint."""
+    """Build the Skate-BFM architecture and freeze a validated checkpoint."""
 
     cfg = build_train_config()
     env = HuskyBfmOnlineEnv()
@@ -410,15 +446,44 @@ def load_frozen_agent(checkpoint: Path) -> tuple[Any, dict[str, Any]]:
 
 
 class Workspace:
-    """M2.5b equivalent of the upstream BFM-Zero training workspace."""
+    """Project-owned formal Skate-BFM training workspace."""
 
     def __init__(self, cfg: TrainConfig) -> None:
         self.cfg = cfg
         self.work_dir = Path(cfg.work_dir).expanduser().resolve()
         if (self.work_dir / "summary.json").exists() or (self.work_dir / CHECKPOINT_DIR_NAME).exists():
-            raise RuntimeError("M2.5b requires a fresh SKATE_WORK_DIR.")
+            raise RuntimeError("Formal Skate-BFM requires a fresh SKATE_WORK_DIR.")
         self.work_dir.mkdir(parents=True, exist_ok=False)
         set_seed_everywhere(cfg.seed)
+
+        expert_path = Path(cfg.skate_expert_motion_file).expanduser().resolve()
+        manifest_path = Path(cfg.expert_manifest_file).expanduser().resolve()
+        manifest = json.loads(manifest_path.read_text())
+        fields = {
+            "dataset_stage": "dataset_stage",
+            "dataset_type": "dataset_type",
+            "motion_count": "total_motion_count",
+            "expert_frames": "expert_frames",
+            "expert_minutes": "expert_minutes",
+            "fps": "fps",
+        }
+        self.dataset_report = {
+            "kind": cfg.expert_dataset_kind,
+            "motion_file": str(expert_path),
+            "manifest_file": str(manifest_path),
+            "motion_file_sha256": hash_file(expert_path),
+            "manifest_sha256": hash_file(manifest_path),
+            **{
+                output_name: manifest[source_name]
+                for output_name, source_name in fields.items()
+                if source_name in manifest
+            },
+        }
+        missing_fields = [
+            source_name for source_name in fields.values() if source_name not in manifest
+        ]
+        if missing_fields:
+            self.dataset_report["missing_manifest_fields"] = missing_fields
 
         self.train_env = HuskyBfmOnlineEnv()
         observation = self.train_env.reset()
@@ -432,7 +497,7 @@ class Workspace:
             self.agent, Path(cfg.pretrained_checkpoint)
         )
         if self.agent.pretrained_load_report["model_sha256"] != OFFICIAL_BFM0_SHA256:
-            raise RuntimeError("M2.5b requires the verified official BFM0 checkpoint.")
+            raise RuntimeError("Formal Skate-BFM requires the verified official BFM0 checkpoint.")
         self.agent.checkpoint_source = "official_bfm0_pretrained"
         self.agent._model.eval()
         self.agent_update_calls = 0
@@ -482,7 +547,9 @@ class Workspace:
         batch_size = self.agent.cfg.train.batch_size
         sequence_length = self.agent.cfg.model.seq_length
         if batch_size != 1024 or sequence_length != 8:
-            raise RuntimeError("M2.5b expects BFM0 batch_size=1024 and sequence_length=8.")
+            raise RuntimeError(
+                "Formal Skate-BFM expects BFM0 batch_size=1024 and sequence_length=8."
+            )
         expert = replay["expert_slicer"].sample(batch_size)
         tracking = replay["expert_tracking"].sample(batch_size, seq_length=sequence_length)
         online = replay["train"].sample(min(16, len(replay["train"])))
@@ -501,7 +568,16 @@ class Workspace:
             )
         if not all(bool(torch.isfinite(value).all()) for value in (expert_z, forward, backward)):
             raise RuntimeError("Expert/replay preflight produced NaN or Inf.")
-        if expert_z.shape != (1024, 256) or tracking["observation"]["state"].shape[0] != 1024:
+        expert_observations = (
+            *expert["observation"].values(),
+            *expert["next"]["observation"].values(),
+        )
+        if (
+            expert_z.shape != (1024, 256)
+            or tracking["observation"]["state"].shape[0] != 1024
+            or any(value.shape[0] != 1024 for value in expert_observations)
+            or not all(bool(torch.isfinite(value).all()) for value in expert_observations)
+        ):
             raise RuntimeError("Expert data contract is invalid.")
         return {"base_sequences": 64, "skate_sequences": 64, "sequence_length": 8}
 
@@ -527,7 +603,9 @@ class Workspace:
                 raise RuntimeError(f"Checkpoint {env_step} model reload mismatch.")
             if hash_buffers(reloaded._model) != hash_buffers(self.agent._model):
                 raise RuntimeError(f"Checkpoint {env_step} buffer reload mismatch.")
-            expected = [float(self.agent_update_calls)]
+            expected = (
+                [float(self.agent_update_calls)] if self.agent_update_calls else []
+            )
             reports = [
                 optimizer_step_report(optimizer)
                 for optimizer in (
@@ -552,9 +630,45 @@ class Workspace:
     def train(self) -> dict[str, Any]:
         """Collect HUSKY online data and call only native ``agent.update``."""
 
+        update_steps = training_update_steps(
+            self.cfg.skate_max_steps,
+            self.cfg.first_update_transition,
+            self.cfg.update_interval,
+        )
+        checkpoint_steps = training_checkpoint_steps(self.cfg.skate_max_steps)
+        expected_updates = len(update_steps) * self.cfg.updates_per_block
+        dataset = self.dataset_report
+        print(
+            "\n".join(
+                (
+                    "=" * 50,
+                    "M2.6 FORMAL TRAINING PLAN",
+                    "=" * 50,
+                    f"Expert dataset: {dataset['kind']}",
+                    f"Expert pkl: {dataset['motion_file']}",
+                    f"Manifest: {dataset['manifest_file']}",
+                    f"Motions: {dataset.get('motion_count', 'not available')}",
+                    f"Expert frames: {dataset.get('expert_frames', 'not available')}",
+                    f"Expert minutes: {dataset.get('expert_minutes', 'not available')}",
+                    f"Expert SHA256: {dataset['motion_file_sha256']}",
+                    f"BFM0 SHA256: {self.agent.pretrained_load_report['model_sha256']}",
+                    f"Seed: {self.cfg.seed}",
+                    "Online envs: 1",
+                    f"Transitions: {self.cfg.skate_max_steps}",
+                    f"Replay capacity: {self.cfg.buffer_size}",
+                    f"Warmup: {self.cfg.warmup_transitions}",
+                    f"First update: {self.cfg.first_update_transition}",
+                    f"Update interval: {self.cfg.update_interval}",
+                    f"Updates / block: {self.cfg.updates_per_block}",
+                    f"Expected update blocks: {len(update_steps)}",
+                    f"Expected native updates: {expected_updates}",
+                    f"Checkpoints: {', '.join(map(str, checkpoint_steps))}",
+                    f"Work dir: {self.work_dir}",
+                    "=" * 50,
+                )
+            )
+        )
         replay = self._build_replay()
-        update_steps = closed_loop_update_steps(self.cfg.skate_max_steps)
-        checkpoint_steps = closed_loop_checkpoint_steps(self.cfg.skate_max_steps)
         optimizers = {
             "forward": self.agent.forward_optimizer,
             "backward": self.agent.backward_optimizer,
@@ -564,7 +678,7 @@ class Workspace:
             "actor": self.agent.actor_optimizer,
         }
         if any(optimizer_step_report(item)["state_entries"] for item in optimizers.values()):
-            raise RuntimeError("M2.5b requires fresh optimizers.")
+            raise RuntimeError("Formal Skate-BFM requires fresh optimizers.")
 
         model = self.agent._model
         observation = self.train_env.reset()
@@ -574,9 +688,17 @@ class Workspace:
         checkpoints: dict[str, Any] = {}
         actor_hashes = {"A0": hash_params(model._actor)}
         start = 1
+        episodes = 0
+        falls = 0
+        progress = tqdm(
+            total=self.cfg.skate_max_steps,
+            desc="M2.6 training",
+            unit="transition",
+            dynamic_ncols=True,
+        )
 
         def collect(end: int) -> None:
-            nonlocal observation, z, start
+            nonlocal episodes, falls, observation, z, start
             model.eval()
             for step in range(start, end + 1):
                 if z is None or (step - 1) % self.agent.cfg.train.update_z_every_step == 0:
@@ -592,43 +714,56 @@ class Workspace:
                 )
                 replay["train"].extend(transition.as_buffer_data())
                 transitions.append(transition)
+                progress.update()
                 if transition.terminated or transition.truncated:
+                    episodes += 1
+                    falls += int(transition.terminated)
                     observation, z = self.train_env.reset(), None
                 else:
                     observation = transition.next_observation
             start = end + 1
+            progress.set_postfix(
+                replay=len(replay["train"]),
+                episodes=episodes,
+                falls=falls,
+                updates=self.agent_update_calls,
+                block=len(update_blocks),
+            )
 
         try:
-            collect(SKATE_WARMUP_TRANSITIONS)
-            for block_index, env_step in enumerate(update_steps, start=1):
+            events = sorted(
+                set(update_steps)
+                | set(checkpoint_steps)
+                | {self.cfg.warmup_transitions}
+            )
+            for env_step in events:
                 collect(env_step)
-                expert_contract = self._preflight(replay)
-                model.train()
-                model.requires_grad_(True)
-                metrics: list[dict[str, float]] = []
-                for _ in range(SKATE_UPDATES_PER_BLOCK):
-                    self.agent_update_calls += 1
-                    result = {
-                        name: float(value.detach().mean().cpu())
-                        for name, value in self.agent.update(replay, env_step).items()
-                    }
-                    if not result or not all(np.isfinite(value) for value in result.values()):
-                        raise RuntimeError(f"Non-finite native update at step {env_step}.")
-                    if any(f"aux_rew/{name}" not in result for name in AUX_REWARD_KEYS):
-                        raise RuntimeError("Native update did not consume all auxiliary rewards.")
-                    metrics.append(result)
-                if not all(module_state_is_finite(item) for item in (
-                    model, model._obs_normalizer, model._aux_reward_normalizer
-                )):
-                    raise RuntimeError("Native update produced non-finite model state.")
-                actor_hash = hash_params(model._actor)
-                if actor_hash == actor_hashes[f"A{block_index - 1}"]:
-                    raise RuntimeError("Actor did not change after native update block.")
-                actor_hashes[f"A{block_index}"] = actor_hash
-                update_blocks.append({
-                    "env_step": env_step,
-                    "native_updates": SKATE_UPDATES_PER_BLOCK,
-                    "metric_summary": {
+                if env_step in update_steps:
+                    block_index = len(update_blocks) + 1
+                    expert_contract = self._preflight(replay)
+                    model.train()
+                    model.requires_grad_(True)
+                    metrics: list[dict[str, float]] = []
+                    for _ in range(self.cfg.updates_per_block):
+                        self.agent_update_calls += 1
+                        result = {
+                            name: float(value.detach().mean().cpu())
+                            for name, value in self.agent.update(replay, env_step).items()
+                        }
+                        if not result or not all(np.isfinite(value) for value in result.values()):
+                            raise RuntimeError(f"Non-finite native update at step {env_step}.")
+                        if any(f"aux_rew/{name}" not in result for name in AUX_REWARD_KEYS):
+                            raise RuntimeError("Native update did not consume all auxiliary rewards.")
+                        metrics.append(result)
+                    if not all(module_state_is_finite(item) for item in (
+                        model, model._obs_normalizer, model._aux_reward_normalizer
+                    )):
+                        raise RuntimeError("Native update produced non-finite model state.")
+                    actor_hash = hash_params(model._actor)
+                    if actor_hash == actor_hashes[f"A{block_index - 1}"]:
+                        raise RuntimeError("Actor did not change after native update block.")
+                    actor_hashes[f"A{block_index}"] = actor_hash
+                    metric_summary = {
                         name: {
                             "first": values[0], "mean": float(np.mean(values)),
                             "min": min(values), "max": max(values), "last": values[-1],
@@ -636,54 +771,90 @@ class Workspace:
                         for name, values in {
                             name: [row[name] for row in metrics] for name in metrics[0]
                         }.items()
-                    },
-                })
+                    }
+                    update_blocks.append({
+                        "env_step": env_step,
+                        "native_updates": self.cfg.updates_per_block,
+                        "metric_summary": metric_summary,
+                    })
+                    key_metrics = ", ".join(
+                        f"{name}=({values['first']:.4g}/{values['mean']:.4g}/{values['last']:.4g})"
+                        for name, values in list(sorted(metric_summary.items()))[:3]
+                    )
+                    progress.write(
+                        f"[Update Block] env step={env_step}, block={block_index}, "
+                        f"native updates total={self.agent_update_calls}, "
+                        f"first/mean/last: {key_metrics}"
+                    )
                 if env_step in checkpoint_steps:
                     checkpoints[str(env_step)] = self._save_checkpoint(replay, env_step)
+                    report = checkpoints[str(env_step)]
+                    progress.write(
+                        f"[Checkpoint] step={env_step}, path={report['path']}, "
+                        f"model reload={report['reload']}, "
+                        f"optimizer step={report['optimizer_step']}"
+                    )
         finally:
+            progress.close()
             self.train_env.close()
 
-        expected_updates = len(update_steps) * SKATE_UPDATES_PER_BLOCK
         full_replay = replay["train"].get_full_buffer()
         terminated = full_replay["next"]["terminated"]
         truncated = full_replay["next"]["truncated"]
-        if len(transitions) != SKATE_BASELINE_TRANSITIONS or len(replay["train"]) != SKATE_BASELINE_TRANSITIONS:
-            raise RuntimeError("M2.5b replay length mismatch.")
+        replay_size = self.cfg.skate_max_steps
+        if len(transitions) != replay_size or len(replay["train"]) != replay_size:
+            raise RuntimeError("Formal Skate-BFM replay length mismatch.")
         if self.agent_update_calls != expected_updates:
-            raise RuntimeError("M2.5b native update count mismatch.")
-        if tuple(full_replay["action"].shape) != (20_000, 29) or tuple(full_replay["z"].shape) != (20_000, 256):
-            raise RuntimeError("M2.5b replay action/latent schema mismatch.")
+            raise RuntimeError("Formal Skate-BFM native update count mismatch.")
+        if (
+            tuple(full_replay["action"].shape) != (replay_size, 29)
+            or tuple(full_replay["z"].shape) != (replay_size, 256)
+        ):
+            raise RuntimeError("Formal Skate-BFM replay action/latent schema mismatch.")
         if bool((terminated & truncated).any()) or tuple(full_replay["aux_rewards"]) != AUX_REWARD_KEYS:
-            raise RuntimeError("M2.5b terminal or auxiliary-reward contract mismatch.")
+            raise RuntimeError("Formal Skate-BFM terminal or auxiliary-reward contract mismatch.")
         for value in full_replay["aux_rewards"].values():
-            if tuple(value.shape) != (20_000, 1) or not bool(torch.isfinite(value).all()):
-                raise RuntimeError("M2.5b auxiliary replay contains invalid values.")
+            if tuple(value.shape) != (replay_size, 1) or not bool(torch.isfinite(value).all()):
+                raise RuntimeError("Formal Skate-BFM auxiliary replay contains invalid values.")
         optimizer_report = {name: optimizer_step_report(item) for name, item in optimizers.items()}
-        if any(report["step_values"] != [1900.0] or not report["finite"] for report in optimizer_report.values()):
-            raise RuntimeError("M2.5b optimizer contract mismatch.")
+        expected_optimizer_steps = [float(expected_updates)]
+        if any(
+            report["step_values"] != expected_optimizer_steps or not report["finite"]
+            for report in optimizer_report.values()
+        ):
+            raise RuntimeError("Formal Skate-BFM optimizer contract mismatch.")
 
         summary = {
-            "milestone": "M2.5b Original BFM-Zero Skate Baseline Training",
+            "milestone": "M2.6 Formal Skate-BFM Training",
+            "dataset": self.dataset_report,
             "checkpoint": self.agent.pretrained_load_report,
             "training": {
-                "env_transitions": 20_000,
-                "warmup_transitions": 1024,
-                "first_update_transition": 1500,
-                "update_every_transitions": 500,
-                "updates_per_block": 50,
-                "total_update_blocks": 38,
-                "total_native_updates": 1900,
+                "env_transitions": self.cfg.skate_max_steps,
+                "warmup_transitions": self.cfg.warmup_transitions,
+                "first_update_transition": self.cfg.first_update_transition,
+                "update_every_transitions": self.cfg.update_interval,
+                "updates_per_block": self.cfg.updates_per_block,
+                "total_update_blocks": len(update_steps),
+                "total_native_updates": expected_updates,
+                "seed": self.cfg.seed,
+                "online_env_count": 1,
                 "warmup_source": "pretrained_actor_stochastic",
                 "domain_randomization": False,
             },
             "replay": {
+                "capacity": self.cfg.buffer_size,
                 "final_size": len(replay["train"]),
                 "train_is_train_skate": replay["train"] is replay["train_skate"],
                 "terminated_count": int(terminated.sum()),
                 "truncated_count": int(truncated.sum()),
                 "normal_count": int((~(terminated | truncated)).sum()),
             },
-            "expert": expert_contract,
+            "expert": {
+                "base_skate_ratio": [0.5, 0.5],
+                "base_sequences_per_batch": expert_contract["base_sequences"],
+                "skate_sequences_per_batch": expert_contract["skate_sequences"],
+                "sequence_length": expert_contract["sequence_length"],
+            },
             "update_blocks": update_blocks,
             "policy_versions": actor_hashes,
             "checkpoint_reports": checkpoints,
@@ -692,17 +863,20 @@ class Workspace:
             and module_state_is_finite(model._aux_reward_normalizer),
             "native_closed_loop": "PASS",
             "performance_evaluated": False,
-            "next_milestone": "M2.5c Baseline Extension / Domain-Randomization Decision",
+            "next_milestone": "M2.6-0b Parallel Online Environment Readiness",
         }
         (self.work_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True) + "\n"
         )
-        print(f"M2.5b complete: {len(transitions)} transitions, {self.agent_update_calls} updates")
+        print(
+            "Formal Skate-BFM complete: "
+            f"{len(transitions)} transitions, {self.agent_update_calls} updates"
+        )
         return summary
 
 
 def build_train_config() -> TrainConfig:
-    """Build the fixed M2.5b configuration from its small environment interface."""
+    """Build formal Skate-BFM configuration from environment variables."""
 
     from humanoidverse.agents.fb_cpr_aux.agent import FBcprAuxAgentTrainConfig
     from humanoidverse.agents.fb_cpr_aux.model import FBcprAuxModelArchiConfig, FBcprAuxModelConfig
@@ -713,10 +887,10 @@ def build_train_config() -> TrainConfig:
     )
     from humanoidverse.agents.normalizers import BatchNormNormalizerConfig, ObsNormalizerConfig
 
-    expert_motion = os.environ.get(
-        "SKATE_EXPERT_MOTION_FILE",
-        str(REPOSITORY_ROOT / "train/dataset/skate-expert-pose/motion_library/skate_expert.pkl"),
-    )
+    dataset_kind, expert_path, manifest_path = resolve_expert_dataset()
+    max_steps = int(os.environ.get("SKATE_MAX_STEPS", str(DEFAULT_MAX_STEPS)))
+    seed = int(os.environ.get("SKATE_SEED", "4728"))
+    budget = f"{max_steps // 1000}k" if max_steps % 1000 == 0 else str(max_steps)
     TrainConfig.model_rebuild(
         _types_namespace={
             "FBcprAuxAgentConfig": FBcprAuxAgentConfig,
@@ -778,11 +952,30 @@ def build_train_config() -> TrainConfig:
             include_history_actor=True, include_history_noaction=False,
             make_config_g1env_compatible=False, root_height_obs=True,
         ),
-        skate_expert_motion_file=expert_motion,
+        expert_dataset_kind=dataset_kind,
+        skate_expert_motion_file=str(expert_path),
+        expert_manifest_file=str(manifest_path),
         pretrained_checkpoint=os.environ.get("BFM0_PRETRAINED_CHECKPOINT", str(REPOSITORY_ROOT / "model/bfm-zero-official")),
-        work_dir=os.environ.get("SKATE_WORK_DIR", str(REPOSITORY_ROOT / "results/m2.5b-original-bfm-baseline")),
-        skate_max_steps=int(os.environ.get("SKATE_MAX_STEPS", str(SKATE_BASELINE_TRANSITIONS))),
+        work_dir=os.environ.get(
+            "SKATE_WORK_DIR",
+            str(REPOSITORY_ROOT / f"results/m2.6-{dataset_kind}-{budget}-seed{seed}"),
+        ),
+        seed=seed,
+        skate_max_steps=max_steps,
+        warmup_transitions=int(
+            os.environ.get("SKATE_WARMUP_TRANSITIONS", str(DEFAULT_WARMUP_TRANSITIONS))
+        ),
+        first_update_transition=int(
+            os.environ.get("SKATE_FIRST_UPDATE", str(DEFAULT_FIRST_UPDATE))
+        ),
+        update_interval=int(
+            os.environ.get("SKATE_UPDATE_INTERVAL", str(DEFAULT_UPDATE_INTERVAL))
+        ),
+        updates_per_block=int(
+            os.environ.get("SKATE_UPDATES_PER_BLOCK", str(DEFAULT_UPDATES_PER_BLOCK))
+        ),
         skate_expert_ratio=float(os.environ.get("SKATE_EXPERT_RATIO", "0.5")),
+        buffer_size=int(os.environ.get("SKATE_BUFFER_SIZE", str(max_steps))),
     )
 
 

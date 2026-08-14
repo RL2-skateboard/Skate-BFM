@@ -1625,3 +1625,31 @@ the formal Skate runtime action contract.
 - Added a root dataset README describing both stages and updated all current
   raw, Phase, and Continuous restore commands.
 - No raw bytes, model files, dataset contents, or training logic were changed.
+
+## M2.6-0a - Formal Trainer Parameterization
+
+- Date: `2026-08-14`.
+- The active trainer is no longer locked to the historical 20k pilot. Its
+  formal default is 100,000 transitions with 1,024 warmup transitions, the
+  first update at 1,500, an update interval of 500, and 50 native updates per
+  block.
+- The default 100k schedule contains 198 update blocks and 9,900 native
+  `agent.update()` calls. Default checkpoints are 20k, 50k, and 100k, and
+  replay capacity scales with the transition budget without overwrite.
+- Added the formal `phase` / `continuous` expert dataset selector and removed
+  the old tiny Skate expert as the active default. The selected MotionLib,
+  adjacent manifest, dataset statistics, and SHA256 provenance are recorded.
+- Official BFM0 strict initialization, fresh optimizer state, native
+  `agent.update()`, Base/Skate 50/50 sampling, batch size 1024, sequence length
+  8, model/loss/optimizer settings, and one online HUSKY environment are
+  unchanged.
+- Real formal expert preflight passed for both datasets. Phase loaded 6,038
+  motions and Continuous loaded 890 motions; both produced finite current and
+  next expert observations and finite expert latent tensors of shape
+  `[1024, 256]`.
+- A temporary Phase smoke passed with 2,000 transitions, update steps at 1,500
+  and 2,000, two native updates, dynamic replay validation, finite model and
+  optimizer states, Actor changes, and final checkpoint reload. All temporary
+  artifacts were deleted.
+- Parallel online environments remain deliberately deferred to M2.6-0b.
+  Formal Phase 100k and Continuous 100k training were not launched.
