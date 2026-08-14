@@ -17,6 +17,7 @@
 
 ## 2026-08-14
 
-- Organized the published simulation dataset into peer-level `phase/` and
-  `continuous/` directories on Hugging Face.
-- Updated the main project README with the dataset layout and restore commands.
+- Organized the published simulation dataset into peer-level `raw/`, `phase/`,
+  and `continuous/` directories on Hugging Face.
+- Updated the main project README with the raw, Phase, and Continuous layout
+  and restore commands.
