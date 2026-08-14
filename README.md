@@ -60,14 +60,15 @@ strict contiguous segmentation, aggregates all accepted motions, validates the
 result with official BFM interfaces, and can generate post-hoc full-scene QC:
 
 The completed M2.5c-P raw collection, BFM-compatible phase MotionLib,
-manifests, and QC videos are hosted at
-[Yak9Ce3teeh/skate-sim-dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset).
-Restore them to the repository layout with:
+manifests, and QC videos are hosted under
+[phase/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase)
+in the Skate-BFM Hugging Face dataset. Restore them with:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --local-dir dataset/sim_collected/phase
+  --include "phase/**" \
+  --local-dir dataset/sim_collected
 ```
 
 ```bash

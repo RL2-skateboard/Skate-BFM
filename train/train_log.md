@@ -1586,7 +1586,7 @@ the formal Skate runtime action contract.
   `dataset/sim_collected/phase/motion_library/manifest.json`,
   `dataset/sim_collected/phase/qc/qc_manifest.json`, and six phase QC videos.
 - Published dataset:
-  `https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset`.
+  `https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase`.
 - Training was not launched. Continuous-dataset collection was not launched.
 
 ## M2.5c-C0 - Continuous Dataset Pipeline Preparation
@@ -1613,3 +1613,14 @@ the formal Skate runtime action contract.
   `https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous`.
 - The GitHub README and `train/README.md` now document the Continuous download
   path. No raw data, model, or training logic was changed.
+
+## M2.5c Dataset Layout Reorganization
+
+- Date: `2026-08-14`.
+- Reorganized the Hugging Face dataset so `phase/` and `continuous/` are
+  peer-level dataset stages.
+- Moved the existing Phase raw collection, MotionLib, manifests, and QC files
+  under `phase/` using Git/LFS pointer renames.
+- Added a root dataset README describing both stages and updated all current
+  Phase and Continuous restore commands.
+- No raw bytes, model files, dataset contents, or training logic were changed.

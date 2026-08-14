@@ -56,6 +56,17 @@ hf download Yak9Ce3teeh/skate-sim-dataset \
   --local-dir dataset/sim_collected
 ```
 
+The formal M2.5c-P Phase dataset is stored beside it under
+[phase/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase).
+Restore the Phase files with:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "phase/**" \
+  --local-dir dataset/sim_collected
+```
+
 ## Formal Run
 
 ```bash
