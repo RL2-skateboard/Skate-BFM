@@ -45,6 +45,17 @@ organizes output as `round_NNN/rollout_NNN`, reports raw duration, and applies
 the official HUSKY per-rollout randomization. Accepted expert duration is
 computed only by the converter.
 
+The shared M2.5c-P raw collection is available from the
+[raw/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/raw)
+directory:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "raw/**" \
+  --local-dir dataset/sim_collected
+```
+
 The validated M2.5c-C continuous dataset is available from the
 [Skate-BFM Hugging Face dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous).
 Restore only the Continuous files with:
@@ -56,7 +67,7 @@ hf download Yak9Ce3teeh/skate-sim-dataset \
   --local-dir dataset/sim_collected
 ```
 
-The formal M2.5c-P Phase dataset is stored beside it under
+The formal M2.5c-P Phase dataset is stored beside raw under
 [phase/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase).
 Restore the Phase files with:
 

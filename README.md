@@ -59,10 +59,22 @@ The dataset processor scans every raw rollout, uses recorded phase IDs for
 strict contiguous segmentation, aggregates all accepted motions, validates the
 result with official BFM interfaces, and can generate post-hoc full-scene QC:
 
-The completed M2.5c-P raw collection, BFM-compatible phase MotionLib,
-manifests, and QC videos are hosted under
+The completed M2.5c-P BFM-compatible phase MotionLib, manifests, and QC
+videos are hosted under
 [phase/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase)
-in the Skate-BFM Hugging Face dataset. Restore them with:
+in the Skate-BFM Hugging Face dataset. The shared raw collection is stored
+beside it under
+[raw/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/raw).
+Restore the raw collection with:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "raw/**" \
+  --local-dir dataset/sim_collected
+```
+
+Restore the Phase artifacts with:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \

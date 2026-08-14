@@ -1618,9 +1618,10 @@ the formal Skate runtime action contract.
 
 - Date: `2026-08-14`.
 - Reorganized the Hugging Face dataset so `phase/` and `continuous/` are
-  peer-level dataset stages.
-- Moved the existing Phase raw collection, MotionLib, manifests, and QC files
-  under `phase/` using Git/LFS pointer renames.
+  peer-level dataset stages, with the shared `raw/` collection at the same
+  level.
+- Moved the existing Phase MotionLib and QC files under `phase/`, and kept the
+  shared raw collection at root `raw/`, using Git/LFS pointer renames.
 - Added a root dataset README describing both stages and updated all current
-  Phase and Continuous restore commands.
+  raw, Phase, and Continuous restore commands.
 - No raw bytes, model files, dataset contents, or training logic were changed.
