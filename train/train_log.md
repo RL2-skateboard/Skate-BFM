@@ -1604,3 +1604,12 @@ the formal Skate runtime action contract.
 - Temporary conversion, MotionLibRobot, Seq8, provenance, and full-scene QC
   smoke checks passed. All temporary artifacts were removed.
 - The formal Continuous dataset build was not launched.
+
+## M2.5c-C Dataset Publication
+
+- Date: `2026-08-14`.
+- Published the validated Continuous MotionLib, manifest, QC manifest, and
+  stitched QC video to
+  `https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous`.
+- The GitHub README and `train/README.md` now document the Continuous download
+  path. No raw data, model, or training logic was changed.

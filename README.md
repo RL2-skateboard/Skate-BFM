@@ -87,6 +87,18 @@ python train/scripts/data_collection/convert_phase.py \
 Phase datasets use `convert_phase.py`; fixed-window continuous datasets use
 `convert_continuous.py`. Both consume the same canonical raw collection.
 
+The completed M2.5c-C continuous dataset is published under the same Hugging
+Face dataset repository at
+[continuous/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous).
+Restore it with:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "continuous/**" \
+  --local-dir dataset/sim_collected
+```
+
 The six absent HUSKY wrist joints are explicitly fixed to zero. Each accepted
 record retains board state, action, phase annotations, and source provenance.
 The converter rejects malformed arrays, cross-boundary motions, incomplete

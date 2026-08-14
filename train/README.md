@@ -45,6 +45,17 @@ organizes output as `round_NNN/rollout_NNN`, reports raw duration, and applies
 the official HUSKY per-rollout randomization. Accepted expert duration is
 computed only by the converter.
 
+The validated M2.5c-C continuous dataset is available from the
+[Skate-BFM Hugging Face dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous).
+Restore only the Continuous files with:
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "continuous/**" \
+  --local-dir dataset/sim_collected
+```
+
 ## Formal Run
 
 ```bash
