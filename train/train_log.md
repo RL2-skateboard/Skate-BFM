@@ -1588,3 +1588,19 @@ the formal Skate runtime action contract.
 - Published dataset:
   `https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset`.
 - Training was not launched. Continuous-dataset collection was not launched.
+
+## M2.5c-C0 - Continuous Dataset Pipeline Preparation
+
+- Date: `2026-08-14`.
+- Renamed the formal Phase converter from `convert_husky_to_bfm.py` to
+  `convert_phase.py` without changing its content or behavior.
+- Created `convert_continuous.py` from the Phase converter with a fixed
+  `500`-frame, `10.0 s`, non-overlapping Continuous clip contract.
+- Both converters use the same M2.5c-P canonical raw collection; no raw data is
+  copied, regenerated, or modified.
+- Continuous clips preserve frame-aligned phase annotations and may cross
+  normal phase transitions, but never cross confirmed fall or reset
+  boundaries.
+- Temporary conversion, MotionLibRobot, Seq8, provenance, and full-scene QC
+  smoke checks passed. All temporary artifacts were removed.
+- The formal Continuous dataset build was not launched.

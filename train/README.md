@@ -7,7 +7,8 @@ baseline. Training logic is deliberately limited to two project-owned scripts:
 scripts/train_skate_bfm.py  strict official BFM0 -> HUSKY closed-loop training
 scripts/eval_target.py      frozen target-conditioned fixed evaluation
 scripts/data_collection/rollout_split.py  canonical HUSKY raw rollout collection
-scripts/data_collection/convert_husky_to_bfm.py  phase dataset build, validation, and QC
+scripts/data_collection/convert_phase.py  phase dataset build, validation, and QC
+scripts/data_collection/convert_continuous.py  continuous dataset build, validation, and QC
 scripts/data_collection/rollout_config.json  parallel collection configuration
 scripts/isaac_env/          vendored BFM-Zero runtime
 ```
@@ -27,8 +28,9 @@ dataset/skate-expert-pose/motion_library/skate_expert.pkl
 
 The LAFAN source provides Base motions. The Skate MotionLib file provides the
 single current Skate expert source. The collector writes canonical continuous
-HUSKY robot-board rollouts. The converter performs phase segmentation,
-conversion, aggregation, official MotionLib validation, and post-hoc QC.
+HUSKY robot-board rollouts. The phase and continuous converters use the same
+canonical raw collection for conversion, official MotionLib validation, and
+post-hoc QC.
 
 The short parallel collection test uses the checked-in configuration:
 

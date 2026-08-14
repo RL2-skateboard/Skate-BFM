@@ -71,7 +71,7 @@ hf download Yak9Ce3teeh/skate-sim-dataset \
 ```
 
 ```bash
-python train/scripts/data_collection/convert_husky_to_bfm.py \
+python train/scripts/data_collection/convert_phase.py \
   --aggregate-phase \
   --dataset-root dataset/sim_collected/phase/raw \
   --bfm-repo $PWD/train/scripts/isaac_env \
@@ -83,6 +83,9 @@ python train/scripts/data_collection/convert_husky_to_bfm.py \
   --qc-root dataset/sim_collected/phase/qc \
   --validate-motionlib
 ```
+
+Phase datasets use `convert_phase.py`; fixed-window continuous datasets use
+`convert_continuous.py`. Both consume the same canonical raw collection.
 
 The six absent HUSKY wrist joints are explicitly fixed to zero. Each accepted
 record retains board state, action, phase annotations, and source provenance.
