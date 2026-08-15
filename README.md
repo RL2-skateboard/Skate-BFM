@@ -134,23 +134,26 @@ checkpoint reload contract is invalid.
 
 ## Evaluate
 
-After a successful training run, evaluate the official BFM0, 10k checkpoint,
-and 20k checkpoint without updating any training state:
+Evaluate one frozen formal checkpoint with the same expert-reset and latent
+lifecycle used by online training. Add `--viewer` for the realtime MuJoCo
+window:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/eval_target.py \
-  --official-checkpoint model/bfm-zero-official \
-  --checkpoint-10k results/m2.5b-original-bfm-baseline/checkpoint_10000 \
-  --checkpoint-20k results/m2.5b-original-bfm-baseline/checkpoint_20000 \
-  --training-summary results/m2.5b-original-bfm-baseline/summary.json \
-  --output-dir results/m2.5b-original-bfm-baseline/fixed_eval
+CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluator.py \
+  --checkpoint model/motion_library/2026-08-15_143013/checkpoint_100000 \
+  --dataset phase \
+  --episodes 4 \
+  --viewer
 ```
+
+The historical official/10k/20k target-conditioned protocol remains available
+through `--mode fixed-target`.
 
 ## Layout
 
 ```text
 train/scripts/train_skate_bfm.py  M2.5b training entrypoint
-train/scripts/eval_target.py      frozen fixed evaluator
+train/scripts/evaluator.py        frozen rollout and fixed-target evaluator
 train/scripts/data_collection/    HUSKY expert-motion conversion
 train/scripts/isaac_env/          vendored BFM-Zero runtime
 train/dataset/                    Base LAFAN and Skate MotionLib data

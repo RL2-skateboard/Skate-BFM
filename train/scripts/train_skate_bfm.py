@@ -15,6 +15,7 @@ import json
 import joblib
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -193,6 +194,7 @@ class TrainConfig(BaseConfig):
     expert_manifest_file: str
     pretrained_checkpoint: str
     work_dir: str
+    checkpoint_dir: str
     seed: int = 4728
     skate_max_steps: int = DEFAULT_MAX_STEPS
     warmup_transitions: int = DEFAULT_WARMUP_TRANSITIONS
@@ -752,7 +754,12 @@ class Workspace:
         return {"base_sequences": 64, "skate_sequences": 64, "sequence_length": 8}
 
     def _save_checkpoint(self, replay: dict[str, Any], env_step: int) -> dict[str, Any]:
-        checkpoint_dir = self.work_dir / f"{CHECKPOINT_DIR_NAME}_{env_step:05d}"
+        checkpoint_dir = (
+            Path(self.cfg.checkpoint_dir).expanduser().resolve()
+            / f"{CHECKPOINT_DIR_NAME}_{env_step:05d}"
+        )
+        if checkpoint_dir.exists():
+            raise RuntimeError(f"Checkpoint output already exists: {checkpoint_dir}")
         self.agent.save(str(checkpoint_dir))
         replay["train"].save(checkpoint_dir / "buffers" / "train")
         (checkpoint_dir / "train_status.json").write_text(json.dumps({"time": env_step}) + "\n")
@@ -833,6 +840,7 @@ class Workspace:
                     f"Expected update blocks: {len(update_steps)}",
                     f"Expected native updates: {expected_updates}",
                     f"Checkpoints: {', '.join(map(str, checkpoint_steps))}",
+                    f"Checkpoint root: {self.cfg.checkpoint_dir}",
                     f"Work dir: {self.work_dir}",
                     "=" * 50,
                 )
@@ -1163,6 +1171,14 @@ def build_train_config() -> TrainConfig:
         work_dir=os.environ.get(
             "SKATE_WORK_DIR",
             str(REPOSITORY_ROOT / f"results/m2.6-{dataset_kind}-{budget}-seed{seed}"),
+        ),
+        checkpoint_dir=os.environ.get(
+            "SKATE_CHECKPOINT_DIR",
+            str(
+                REPOSITORY_ROOT
+                / "model/motion_library"
+                / datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            ),
         ),
         seed=seed,
         skate_max_steps=max_steps,

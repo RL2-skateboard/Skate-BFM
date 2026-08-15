@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402, I001
-"""Evaluate frozen target-conditioned Skate responses without training."""
+"""Evaluate frozen Skate-BFM checkpoints without training."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import joblib
 import mujoco
 import numpy as np
 import torch
@@ -26,6 +27,7 @@ sys.path.insert(0, str(SCRIPT_DIRECTORY))
 from skate_bfm.integration import HuskyBfmOnlineEnv
 from skate_husky import randomize_husky_play_physics
 from train_skate_bfm import (
+    EXPERT_DATASETS,
     OFFICIAL_BFM0_SHA256,
     checkpoint_model_path,
     encode_target,
@@ -36,6 +38,7 @@ from train_skate_bfm import (
     hash_params,
     load_expert,
     load_frozen_agent,
+    validate_raw_layout,
 )
 
 
@@ -45,6 +48,10 @@ DEFAULT_TARGET_BANK = (
 )
 DEFAULT_PROTOCOL = REPOSITORY_ROOT / "train/evaluation_protocol.json"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "results/m2.5b-target-conditioned"
+DEFAULT_TARGET_EXPERT = (
+    REPOSITORY_ROOT
+    / "train/dataset/skate-expert-pose/motion_library/skate_expert.pkl"
+)
 DEFAULT_RANDOM_SEEDS = (2026081101, 2026081102, 2026081103, 2026081104)
 
 METRIC_NAMES = (
@@ -62,14 +69,54 @@ METRIC_NAMES = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode",
+        choices=("rollout", "fixed-target"),
+        default="rollout",
+        help="Evaluate one formal checkpoint or run the historical fixed-target protocol.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Frozen checkpoint directory for mode=rollout.",
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=tuple(EXPERT_DATASETS),
+        default="phase",
+        help="Formal expert dataset used to sample rollout reset states.",
+    )
+    parser.add_argument("--episodes", type=int, default=4)
+    parser.add_argument("--horizon", type=int, default=1024)
+    parser.add_argument("--seed", type=int, default=4728)
+    parser.add_argument(
+        "--latent-refresh",
+        type=int,
+        default=100,
+        help="Resample z at the same transition interval used during formal training.",
+    )
+    parser.add_argument(
+        "--stochastic-actions",
+        action="store_true",
+        help="Sample Actor actions as in training; evaluation is deterministic by default.",
+    )
+    parser.add_argument(
+        "--viewer",
+        action="store_true",
+        help="Open the MuJoCo viewer and run at the 50 Hz control rate.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Frozen rollout JSON path; defaults beside the checkpoint result directory.",
+    )
     parser.add_argument("--target-bank", type=Path, default=DEFAULT_TARGET_BANK)
     parser.add_argument("--protocol", type=Path, default=DEFAULT_PROTOCOL)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
         "--expert-motion",
         type=Path,
-        default=REPOSITORY_ROOT
-        / "train/dataset/skate-expert-pose/motion_library/skate_expert.pkl",
+        help="Override the formal reset dataset or historical target MotionLib.",
     )
     parser.add_argument(
         "--official-checkpoint",
@@ -79,13 +126,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-10k",
         type=Path,
-        required=True,
         help="M2.5b checkpoint saved after 10,000 transitions.",
     )
     parser.add_argument(
         "--checkpoint-20k",
         type=Path,
-        required=True,
         help="M2.5b checkpoint saved after 20,000 transitions.",
     )
     parser.add_argument(
@@ -94,6 +139,89 @@ def parse_args() -> argparse.Namespace:
         help="Optional M2.5b training summary to update after inference-only evaluation.",
     )
     return parser.parse_args()
+
+
+class ExpertResetSampler:
+    """Sample the same raw expert reset distribution used by formal training."""
+
+    def __init__(
+        self,
+        motion_file: Path,
+        env: HuskyBfmOnlineEnv,
+        seed: int,
+    ) -> None:
+        loaded = joblib.load(motion_file)
+        if not isinstance(loaded, dict) or not loaded:
+            raise RuntimeError("Expert reset dataset must be a non-empty motion dictionary.")
+        self.records: dict[str, dict[str, Any]] = {}
+        for motion_key, record in loaded.items():
+            required = (
+                "source_raw_npz",
+                "source_start_frame",
+                "source_end_frame",
+                "dof",
+            )
+            if any(field not in record for field in required):
+                raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
+            motion_frames = int(np.asarray(record["dof"]).shape[0])
+            source_start = int(record["source_start_frame"])
+            source_end = int(record["source_end_frame"])
+            if motion_frames <= 0 or source_end - source_start != motion_frames:
+                raise RuntimeError(f"Expert motion {motion_key} has an invalid frame range.")
+            self.records[str(motion_key)] = {
+                "source_raw_npz": record["source_raw_npz"],
+                "source_start_frame": source_start,
+                "motion_frames": motion_frames,
+                "source_round": record.get("source_round"),
+                "source_rollout": record.get("source_rollout"),
+                "command_v": record.get("command_v"),
+                "command_h": record.get("command_h"),
+                "phase": record.get("phase"),
+            }
+        del loaded, record
+        self.motion_keys = tuple(self.records)
+        self.env = env
+        self.rng = np.random.default_rng(seed)
+        self.raw_cache: dict[Path, tuple[np.ndarray, np.ndarray]] = {}
+
+    def sample(self) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+        motion_key = self.motion_keys[int(self.rng.integers(len(self.motion_keys)))]
+        record = self.records[motion_key]
+        local_frame = int(self.rng.integers(record["motion_frames"]))
+        source_frame = int(record["source_start_frame"]) + local_frame
+        source_path = Path(record["source_raw_npz"]).expanduser().resolve()
+        if source_path not in self.raw_cache:
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Canonical raw rollout not found: {source_path}")
+            with np.load(source_path, allow_pickle=False) as archive:
+                if "qpos" not in archive or "qvel" not in archive:
+                    raise RuntimeError(f"Canonical raw rollout lacks qpos/qvel: {source_path}")
+                raw_qpos = np.asarray(archive["qpos"]).copy()
+                raw_qvel = np.asarray(archive["qvel"]).copy()
+            validate_raw_layout(
+                source_path.with_suffix(".json"),
+                raw_qpos,
+                raw_qvel,
+                self.env,
+            )
+            self.raw_cache[source_path] = raw_qpos, raw_qvel
+        raw_qpos, raw_qvel = self.raw_cache[source_path]
+        if source_frame >= raw_qpos.shape[0] or source_frame >= raw_qvel.shape[0]:
+            raise RuntimeError(f"Expert reset frame is outside raw rollout: {source_path}")
+        return (
+            np.asarray(raw_qpos[source_frame], dtype=np.float64).copy(),
+            np.asarray(raw_qvel[source_frame], dtype=np.float64).copy(),
+            {
+                "motion_key": motion_key,
+                "source_raw_npz": str(source_path),
+                "source_frame": source_frame,
+                "source_round": record["source_round"],
+                "source_rollout": record["source_rollout"],
+                "command_v": record["command_v"],
+                "command_h": record["command_h"],
+                "phase": record["phase"],
+            },
+        )
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -331,6 +459,205 @@ def aggregate(rows: list[dict[str, float]]) -> dict[str, dict[str, float]]:
             "count": int(values.size),
         }
     return result
+
+
+def run_frozen_evaluation(args: argparse.Namespace) -> int:
+    """Run inference-only rollouts for one formal Skate-BFM checkpoint."""
+
+    if args.checkpoint is None:
+        raise ValueError("--checkpoint is required for mode=rollout.")
+    if args.episodes <= 0 or args.horizon <= 0 or args.latent_refresh <= 0:
+        raise ValueError("--episodes, --horizon, and --latent-refresh must be positive.")
+
+    checkpoint = args.checkpoint.expanduser().resolve()
+    if not checkpoint.is_dir():
+        raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint}")
+    expert_motion = (
+        args.expert_motion.expanduser().resolve()
+        if args.expert_motion is not None
+        else EXPERT_DATASETS[args.dataset].resolve()
+    )
+    if not expert_motion.is_file():
+        raise FileNotFoundError(f"Expert reset dataset not found: {expert_motion}")
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    agent, checkpoint_report = load_frozen_agent(checkpoint)
+    gradients_enabled = any(
+        parameter.requires_grad for parameter in agent._model.parameters()
+    )
+    if agent._model.training or gradients_enabled:
+        raise RuntimeError("Frozen evaluator requires an eval-mode model with gradients disabled.")
+    before = {
+        "parameters": hash_params(agent._model),
+        "buffers": hash_buffers(agent._model),
+        "components": hash_components(agent),
+    }
+
+    env = HuskyBfmOnlineEnv(viewer=args.viewer, realtime=args.viewer)
+    sampler = ExpertResetSampler(expert_motion, env, args.seed)
+    rollouts: list[dict[str, Any]] = []
+    viewer_closed = False
+    try:
+        for episode_index in range(args.episodes):
+            torch.manual_seed(args.seed + episode_index)
+            qpos, qvel, reset = sampler.sample()
+            observation = env.reset(qpos=qpos, qvel=qvel)
+            initial_raw = env.env._observation()
+            records: list[dict[str, Any]] = []
+            latent_fingerprints: list[str] = []
+            terminated = False
+            truncated = False
+            z: torch.Tensor | None = None
+
+            for step in range(args.horizon):
+                if args.viewer and not env.env.is_running:
+                    viewer_closed = True
+                    break
+                if z is None or step % args.latent_refresh == 0:
+                    z = agent._model.sample_z(1, device=agent.device)[0]
+                    latent_fingerprints.append(hash_data(z))
+                model_observation = {
+                    key: value.unsqueeze(0).to(agent.device)
+                    for key, value in observation.items()
+                }
+                with torch.no_grad():
+                    action = agent.act(
+                        obs=model_observation,
+                        z=z.unsqueeze(0),
+                        mean=not args.stochastic_actions,
+                    )[0]
+                transition = env.step(
+                    action,
+                    z,
+                    truncated=step == args.horizon - 1,
+                )
+                records.append(dict(transition.raw_metadata))
+                observation = transition.next_observation
+                terminated = transition.terminated
+                truncated = transition.truncated
+                if terminated or truncated:
+                    break
+
+            if not records:
+                if viewer_closed:
+                    break
+                raise RuntimeError("Frozen rollout produced no transitions.")
+            metrics = physical_metrics(records, initial_raw, env.env.control_dt)
+            row = {
+                "episode_index": episode_index,
+                "episode_seed": args.seed + episode_index,
+                "reset": reset,
+                "latent_refresh_steps": args.latent_refresh,
+                "latent_fingerprints": latent_fingerprints,
+                "action_mode": (
+                    "stochastic" if args.stochastic_actions else "deterministic_mean"
+                ),
+                "episode": {
+                    "transition_count": len(records),
+                    "terminated": terminated,
+                    "truncated": truncated,
+                    "viewer_closed": viewer_closed,
+                    "time_to_fall_s": (
+                        len(records) * env.env.control_dt if terminated else None
+                    ),
+                    "fall_reason": (
+                        records[-1].get("fall_reason", "") if terminated else ""
+                    ),
+                },
+                "metrics": metrics,
+            }
+            rollouts.append(row)
+            print(
+                "[Frozen rollout] "
+                f"episode={episode_index + 1}/{args.episodes}, "
+                f"steps={len(records)}, duration={metrics['episode_duration_s']:.2f}s, "
+                f"terminated={terminated}, truncated={truncated}, "
+                f"fall_reason={row['episode']['fall_reason'] or 'none'}"
+            )
+            if viewer_closed:
+                break
+    finally:
+        env.close()
+
+    after = {
+        "parameters": hash_params(agent._model),
+        "buffers": hash_buffers(agent._model),
+        "components": hash_components(agent),
+    }
+    if before != after:
+        raise RuntimeError("Frozen evaluation mutated model parameters or buffers.")
+    if not rollouts:
+        raise RuntimeError("Frozen evaluation ended before completing any rollout.")
+
+    durations = np.asarray(
+        [row["metrics"]["episode_duration_s"] for row in rollouts],
+        dtype=np.float64,
+    )
+    terminated_count = sum(row["episode"]["terminated"] for row in rollouts)
+    truncated_count = sum(row["episode"]["truncated"] for row in rollouts)
+    output = {
+        "schema": "skate-bfm-frozen-rollout-eval-v1",
+        "evaluation": {
+            "date": date.today().isoformat(),
+            "evaluation_only": True,
+            "training_performed": False,
+            "checkpoint": str(checkpoint),
+            "checkpoint_report": checkpoint_report,
+            "dataset": args.dataset,
+            "expert_motion": str(expert_motion),
+            "expert_motion_sha256": hash_file(expert_motion),
+            "reset_mode": "uniform_motion_uniform_local_frame_raw_qpos_qvel",
+            "domain_randomization": False,
+            "episodes_requested": args.episodes,
+            "horizon": args.horizon,
+            "control_dt_s": env.env.control_dt,
+            "latent_refresh_steps": args.latent_refresh,
+            "action_mode": (
+                "stochastic" if args.stochastic_actions else "deterministic_mean"
+            ),
+            "viewer": args.viewer,
+            "seed": args.seed,
+            "mutation": {
+                "parameters_changed": False,
+                "buffers_changed": False,
+                "optimizer_steps": 0,
+                "backward_calls": 0,
+                "agent_update_calls": 0,
+                "before": before,
+                "after": after,
+            },
+        },
+        "summary": {
+            "episodes_completed": len(rollouts),
+            "terminated_count": terminated_count,
+            "truncated_count": truncated_count,
+            "fall_rate": terminated_count / len(rollouts),
+            "duration_s": {
+                "mean": float(durations.mean()),
+                "median": float(np.median(durations)),
+                "min": float(durations.min()),
+                "max": float(durations.max()),
+            },
+            "viewer_closed": viewer_closed,
+            "performance_claim": "NONE",
+        },
+        "rollouts": rollouts,
+    }
+    output_path = (
+        args.output.expanduser().resolve()
+        if args.output is not None
+        else checkpoint.parent / "evaluation" / f"frozen_rollout_{args.dataset}.json"
+    )
+    write_json(output_path, output)
+    print(
+        "Frozen evaluation complete: "
+        f"episodes={len(rollouts)}, falls={terminated_count}, "
+        f"horizon_completions={truncated_count}, mutation=False"
+    )
+    print(f"Metrics: {output_path}")
+    return 0
 
 
 def run_rollout(
@@ -603,11 +930,20 @@ def eval_checkpoint(
     return rollouts, report
 
 
-def main() -> int:
-    args = parse_args()
+def run_fixed_target_evaluation(args: argparse.Namespace) -> int:
+    """Run the historical M2.5b fixed target-conditioned protocol."""
+
+    if args.checkpoint_10k is None or args.checkpoint_20k is None:
+        raise ValueError(
+            "--checkpoint-10k and --checkpoint-20k are required for mode=fixed-target."
+        )
     target_bank_path = args.target_bank.expanduser().resolve()
     protocol_path = args.protocol.expanduser().resolve()
-    expert_motion = args.expert_motion.expanduser().resolve()
+    expert_motion = (
+        args.expert_motion.expanduser().resolve()
+        if args.expert_motion is not None
+        else DEFAULT_TARGET_EXPERT.resolve()
+    )
     target_bank, target_bank_sha = load_and_validate_target_bank(
         target_bank_path
     )
@@ -715,6 +1051,13 @@ def main() -> int:
     )
     print(f"Artifacts: {output_dir}")
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    if args.mode == "rollout":
+        return run_frozen_evaluation(args)
+    return run_fixed_target_evaluation(args)
 
 
 if __name__ == "__main__":

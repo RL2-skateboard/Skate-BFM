@@ -58,8 +58,14 @@ class HuskyBfmOnlineEnv:
         *,
         control_dt: float = 0.02,
         action_gain: float = 1.0,
+        viewer: bool = False,
+        realtime: bool = False,
     ) -> None:
-        self.env = HuskyLiteEnv(control_dt=control_dt)
+        self.env = HuskyLiteEnv(
+            control_dt=control_dt,
+            viewer=viewer,
+            realtime=realtime,
+        )
         neutral, scale = official_husky_control_parameters(action_gain)
         self.env.set_control_mapping(neutral, scale)
         self.action_adapter = Bfm0ToHusky23(action_gain=1.0, action_clip=1.0)

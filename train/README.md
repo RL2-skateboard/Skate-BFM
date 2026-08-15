@@ -5,7 +5,7 @@ Training logic is deliberately limited to two project-owned scripts:
 
 ```text
 scripts/train_skate_bfm.py  strict official BFM0 -> HUSKY closed-loop training
-scripts/eval_target.py      frozen target-conditioned fixed evaluation
+scripts/evaluator.py        frozen rollout and fixed-target evaluation
 scripts/data_collection/rollout_split.py  canonical HUSKY raw rollout collection
 scripts/data_collection/convert_phase.py  phase dataset build, validation, and QC
 scripts/data_collection/convert_continuous.py  continuous dataset build, validation, and QC
@@ -18,6 +18,10 @@ The final training path is equivalent in role to BFM-Zero's upstream
 MotionLib experts, grows replay from online interaction, and calls the native
 agent update. Project code owns only HUSKY integration, data selection, and
 the parameterized M2.6 schedule.
+
+Completed checkpoints are organized under
+`model/motion_library/YYYY-MM-DD_HHMMSS/`. Evaluate any compatible checkpoint
+by passing its directory to `scripts/evaluator.py --checkpoint`.
 
 ## Required Data
 
