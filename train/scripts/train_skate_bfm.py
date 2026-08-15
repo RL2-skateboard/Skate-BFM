@@ -33,6 +33,7 @@ sys.path[:0] = [
 ]
 
 import gymnasium
+import mujoco
 import numpy as np
 import safetensors.torch
 import torch
@@ -102,6 +103,84 @@ def resolve_expert_dataset() -> tuple[str, Path, Path]:
             raise ValueError("SKATE_EXPERT_DATASET must be 'phase' or 'continuous'.")
         expert_path = EXPERT_DATASETS[dataset_kind].resolve()
     return dataset_kind, expert_path, expert_path.with_name("manifest.json")
+
+
+def validate_raw_layout(
+    metadata_path: Path,
+    raw_qpos: np.ndarray,
+    raw_qvel: np.ndarray,
+    env: HuskyBfmOnlineEnv,
+) -> None:
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"Canonical raw metadata not found: {metadata_path}")
+    metadata = json.loads(metadata_path.read_text())
+    required = (
+        "nq",
+        "nv",
+        "joint_order",
+        "board_joint_order",
+        "qpos_quaternion_order",
+        "robot_xml",
+        "fields",
+    )
+    if any(field not in metadata for field in required):
+        raise RuntimeError(f"Canonical raw layout metadata is incomplete: {metadata_path}")
+    model = env.env.model
+    if raw_qpos.ndim != 2 or raw_qvel.ndim != 2:
+        raise RuntimeError("Canonical raw qpos/qvel must be rank-2 arrays.")
+    fields = metadata["fields"]
+    if (
+        int(metadata["nq"]) != model.nq
+        or int(metadata["nv"]) != model.nv
+        or raw_qpos.shape[1] != model.nq
+        or raw_qvel.shape[1] != model.nv
+        or fields.get("qpos", {}).get("shape") != list(raw_qpos.shape)
+        or fields.get("qvel", {}).get("shape") != list(raw_qvel.shape)
+        or fields.get("qpos", {}).get("dtype") != str(raw_qpos.dtype)
+        or fields.get("qvel", {}).get("dtype") != str(raw_qvel.dtype)
+        or metadata["qpos_quaternion_order"] != "wxyz"
+    ):
+        raise RuntimeError(f"Canonical raw qpos/qvel layout mismatch: {metadata_path}")
+    robot_joint_order = tuple(
+        model.joint(index).name
+        for index in range(model.njnt)
+        if (model.joint(index).name or "").startswith("robot/")
+        and model.jnt_type[index] != mujoco.mjtJoint.mjJNT_FREE
+    )
+    board_joint_order = tuple(
+        model.joint(index).name
+        for index in range(model.njnt)
+        if (model.joint(index).name or "").startswith("skateboard/")
+        and model.jnt_type[index] != mujoco.mjtJoint.mjJNT_FREE
+    )
+    free_joint_order = tuple(
+        model.joint(index).name
+        for index in range(model.njnt)
+        if model.jnt_type[index] == mujoco.mjtJoint.mjJNT_FREE
+    )
+    actuator_order = tuple(
+        model.actuator(index).name
+        for index in range(model.nu)
+        if (model.actuator(index).name or "").startswith("robot/")
+    )
+    if (
+        tuple(metadata["joint_order"]) != robot_joint_order
+        or tuple(metadata["board_joint_order"]) != board_joint_order
+        or len(actuator_order) != len(robot_joint_order)
+        or set(actuator_order) != set(robot_joint_order)
+        or free_joint_order
+        != (
+            "robot/floating_base_joint",
+            "skateboard/floating_base_joint_skateboard",
+        )
+    ):
+        raise RuntimeError(f"Canonical raw joint order mismatch: {metadata_path}")
+    source_xml = Path(metadata["robot_xml"]).expanduser()
+    current_xml = env.env.xml_path.expanduser().resolve()
+    if not source_xml.is_file() or not source_xml.resolve().samefile(current_xml):
+        raise RuntimeError(
+            f"Canonical raw source XML differs from current HUSKY XML: {metadata_path}"
+        )
 
 
 class TrainConfig(BaseConfig):
@@ -552,10 +631,15 @@ class Workspace:
             with np.load(source_path, allow_pickle=False) as archive:
                 if "qpos" not in archive or "qvel" not in archive:
                     raise RuntimeError(f"Canonical raw rollout lacks qpos/qvel: {source_path}")
-                self.reset_raw_cache[source_path] = (
-                    np.asarray(archive["qpos"]).copy(),
-                    np.asarray(archive["qvel"]).copy(),
-                )
+                raw_qpos = np.asarray(archive["qpos"]).copy()
+                raw_qvel = np.asarray(archive["qvel"]).copy()
+            validate_raw_layout(
+                source_path.with_suffix(".json"),
+                raw_qpos,
+                raw_qvel,
+                self.train_envs[0],
+            )
+            self.reset_raw_cache[source_path] = raw_qpos, raw_qvel
         raw_qpos, raw_qvel = self.reset_raw_cache[source_path]
         if not 0 <= source_frame < raw_qpos.shape[0] or source_frame >= raw_qvel.shape[0]:
             raise RuntimeError(f"Expert reset frame is outside raw rollout: {source_path}")
@@ -966,7 +1050,7 @@ class Workspace:
             and module_state_is_finite(model._aux_reward_normalizer),
             "native_closed_loop": "PASS",
             "performance_evaluated": False,
-            "next_milestone": "M2.6-0b Parallel Online Environment Readiness",
+            "next_milestone": "M2.6 Formal Phase/Continuous 100k Training",
         }
         (self.work_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True) + "\n"

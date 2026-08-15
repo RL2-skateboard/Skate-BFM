@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import math
 import sys
 from pathlib import Path
@@ -87,9 +88,18 @@ def test_husky_reset_accepts_complete_expert_state() -> None:
         qpos = env.data.qpos.copy()
         qvel = env.data.qvel.copy()
         qpos[0] += 0.25
+        env.step(np.full(23, 0.1, dtype=np.float32))
+        env.data.qacc_warmstart.fill(1.0)
+        env.data.qfrc_applied.fill(1.0)
+        env.data.xfrc_applied.fill(1.0)
+        assert env.data.time > 0.0
         env.reset(qpos=qpos, qvel=qvel)
+        assert env.data.time == 0.0
         assert np.array_equal(env.data.qpos, qpos)
         assert np.array_equal(env.data.qvel, qvel)
+        assert np.array_equal(env.data.qacc_warmstart, np.zeros(env.model.nv))
+        assert np.array_equal(env.data.qfrc_applied, np.zeros(env.model.nv))
+        assert np.array_equal(env.data.xfrc_applied, np.zeros((env.model.nbody, 6)))
         with pytest.raises(ValueError, match="provided together"):
             env.reset(qpos=qpos)
         with pytest.raises(ValueError, match="Expected qpos"):
@@ -238,3 +248,46 @@ def test_m26_configuration_and_schedule_are_parameterized(
     monkeypatch.setenv("SKATE_ONLINE_ENVS", "3")
     with pytest.raises(ValueError, match="schedule boundary"):
         module.build_train_config()
+
+
+def test_raw_layout_validation_fails_closed(
+    tmp_path: Path,
+) -> None:
+    module = _training_module()
+    env = HuskyBfmOnlineEnv()
+    try:
+        model = env.env.model
+        qpos = np.zeros((2, model.nq), dtype=np.float32)
+        qvel = np.zeros((2, model.nv), dtype=np.float32)
+        metadata = {
+            "nq": model.nq,
+            "nv": model.nv,
+            "joint_order": [
+                model.joint(index).name
+                for index in range(model.njnt)
+                if (model.joint(index).name or "").startswith("robot/")
+                and model.jnt_type[index] != mujoco.mjtJoint.mjJNT_FREE
+            ],
+            "board_joint_order": [
+                model.joint(index).name
+                for index in range(model.njnt)
+                if (model.joint(index).name or "").startswith("skateboard/")
+                and model.jnt_type[index] != mujoco.mjtJoint.mjJNT_FREE
+            ],
+            "qpos_quaternion_order": "wxyz",
+            "robot_xml": str(env.env.xml_path.resolve()),
+            "fields": {
+                "qpos": {"shape": list(qpos.shape), "dtype": str(qpos.dtype)},
+                "qvel": {"shape": list(qvel.shape), "dtype": str(qvel.dtype)},
+            },
+        }
+        metadata_path = tmp_path / "raw.json"
+        metadata_path.write_text(json.dumps(metadata))
+        module.validate_raw_layout(metadata_path, qpos, qvel, env)
+
+        metadata["joint_order"][0] = "robot/wrong_joint"
+        metadata_path.write_text(json.dumps(metadata))
+        with pytest.raises(RuntimeError, match="joint order mismatch"):
+            module.validate_raw_layout(metadata_path, qpos, qvel, env)
+    finally:
+        env.close()

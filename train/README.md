@@ -116,7 +116,12 @@ dataset's canonical raw `qpos`/`qvel` frame. Online domain randomization remains
 disabled.
 
 M2.6-0a/0b establish trainer readiness only. Neither the formal Phase 100k nor
-the formal Continuous 100k run has been launched.
+the formal Continuous 100k run has been launched. The final pre-formal audit
+also clears transient MuJoCo state before every expert reset and validates each
+canonical raw source against its adjacent `nq`/`nv`, dtype, joint-order,
+quaternion-order, and source-XML metadata before direct `qpos`/`qvel`
+injection. The current path is ready for the controlled Phase and Continuous
+100k runs.
 
 See [train_log.md](train_log.md) for the current engineering record and
 [train_res.md](train_res.md) for the completed baseline result.

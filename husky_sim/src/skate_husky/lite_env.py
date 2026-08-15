@@ -355,6 +355,7 @@ class HuskyLiteEnv:
                 joint = self.model.joint(joint_name)
                 self.data.qpos[joint.qposadr[0]] += offset
         else:
+            mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
             qpos = np.asarray(qpos, dtype=np.float64)
             qvel = np.asarray(qvel, dtype=np.float64)
             if qpos.shape != (self.model.nq,) or qvel.shape != (self.model.nv,):

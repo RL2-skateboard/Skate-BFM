@@ -1686,3 +1686,30 @@ the formal Skate runtime action contract.
   training were not launched. BFM0 algorithm, loss, optimizer, reward,
   termination definition, dataset contents, and official checkpoint were not
   modified.
+
+## M2.6 Pre-Formal Correctness and Provenance Audit
+
+- Date: `2026-08-15`.
+- Starting HEAD: `e3842cd`.
+- Expert reset now begins with `mj_resetDataKeyframe` before canonical raw
+  `qpos/qvel` injection, clearing episode time, warmstart, applied force, and
+  other transient `MjData` state while retaining the existing action, reward,
+  fall-detector, observation-history, and viewer reset lifecycle.
+- On the first use of each raw source, the trainer now checks the adjacent raw
+  JSON against the current HUSKY model: `nq/nv`, array shape/dtype, robot joint
+  order, board joint order, `wxyz` quaternion convention, two free-joint names
+  and order, robot actuator-to-joint name coverage, and source/current XML
+  same-file identity. Any mismatch fails closed without reordering.
+- Current Phase and Continuous raw layouts, clean post-step expert reset, four
+  independent env construction, finite observations, and the formal
+  1024/1500/500/20k/50k/100k schedule all passed direct validation.
+- Validation passed: `ruff`, `py_compile`, `pytest` (`11 passed`), and
+  `git diff --check`. The previous 2,000-transition native smoke was not
+  repeated because no rollout, replay, latent, update, reward, termination, or
+  schedule logic changed.
+- Provenance limitation: raw metadata records absolute `source_raw_npz` and
+  source XML paths but no source XML hash. All paths exist on the formal
+  machine, and the available structural layout checks pass; portability to a
+  different filesystem remains fail-closed rather than being guessed.
+- `M2.6 PRE-FORMAL READINESS: PASS`. Formal Phase 100k and Continuous 100k
+  training remain unlaunched.
