@@ -35,6 +35,24 @@ HUSKY_DECK_FRICTION_SCALE_RANGE = (0.8, 2.0)
 HUSKY_FOOT_FRICTION_RANGE = (0.3, 1.8)
 HUSKY_WHEEL_FRICTION_SCALE_RANGE = (0.8, 1.6)
 HUSKY_JOINT_POSITION_OFFSET_RANGE = (-0.01, 0.01)
+SOURCE_PHYSICS_KEYS = frozenset(
+    {
+        "enabled",
+        "mode",
+        "lifecycle",
+        "seed",
+        "ranges",
+        "robot_torso_com_offset_m",
+        "skateboard_com_offset_m",
+        "robot_sliding_friction_scale",
+        "deck_sliding_friction_scale",
+        "foot_sliding_friction",
+        "wheel_rolling_friction_scale",
+        "joint_position_offset_rad",
+        "external_push",
+        "observation_corruption",
+    }
+)
 
 
 def contact_tangential_speed(
@@ -261,6 +279,8 @@ class HuskyLiteEnv:
             )
         self.model = mujoco.MjModel.from_xml_path(str(self.xml_path))
         self.data = mujoco.MjData(self.model)
+        self._nominal_body_ipos = self.model.body_ipos.copy()
+        self._nominal_geom_friction = self.model.geom_friction.copy()
         self.control_dt = float(control_dt)
         self.decimation = max(1, round(control_dt / self.model.opt.timestep))
         self.action_scale = float(action_scale)
@@ -342,13 +362,187 @@ class HuskyLiteEnv:
             for name, offset in offsets.items()
         }
 
+    def restore_nominal_physics(self) -> None:
+        """Restore every MjModel field changed by HUSKY play randomization."""
+
+        self.model.body_ipos[:] = self._nominal_body_ipos
+        self.model.geom_friction[:] = self._nominal_geom_friction
+
+    def validate_source_physics(
+        self,
+        source: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Validate and normalize one recorded canonical physics realization."""
+
+        if not isinstance(source, Mapping):
+            raise RuntimeError("Source physics_randomization must be a mapping.")
+        missing = SOURCE_PHYSICS_KEYS - set(source)
+        unknown = set(source) - SOURCE_PHYSICS_KEYS
+        if missing or unknown:
+            raise RuntimeError(
+                "Source physics_randomization schema mismatch: "
+                f"missing={sorted(missing)}, unknown={sorted(unknown)}."
+            )
+        if (
+            source["enabled"] is not True
+            or source["mode"] != "official_husky_play_startup_and_reset"
+            or source["lifecycle"] != "sampled_once_per_rollout"
+            or source["external_push"] is not False
+            or source["observation_corruption"] is not False
+        ):
+            raise RuntimeError("Source physics_randomization mode is unsupported.")
+        seed = source["seed"]
+        if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)):
+            raise RuntimeError("Source physics seed must be an integer.")
+        if not 0 <= int(seed) < 2**32:
+            raise RuntimeError("Source physics seed is outside the uint32 range.")
+
+        expected_ranges = {
+            "robot_torso_com_offset_m": HUSKY_ROBOT_COM_RANGES,
+            "skateboard_com_offset_m": HUSKY_SKATEBOARD_COM_RANGES,
+            "robot_sliding_friction_scale": HUSKY_ROBOT_FRICTION_SCALE_RANGE,
+            "deck_sliding_friction_scale": HUSKY_DECK_FRICTION_SCALE_RANGE,
+            "foot_sliding_friction": HUSKY_FOOT_FRICTION_RANGE,
+            "wheel_rolling_friction_scale": HUSKY_WHEEL_FRICTION_SCALE_RANGE,
+            "joint_position_offset_rad": HUSKY_JOINT_POSITION_OFFSET_RANGE,
+        }
+        ranges = source["ranges"]
+        if not isinstance(ranges, Mapping) or set(ranges) != set(expected_ranges):
+            raise RuntimeError("Source physics ranges schema mismatch.")
+        for name, expected in expected_ranges.items():
+            try:
+                value = np.asarray(ranges[name], dtype=np.float64)
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(f"Source physics range is invalid for {name}.") from error
+            if not np.array_equal(value, np.asarray(expected, dtype=np.float64)):
+                raise RuntimeError(f"Source physics range mismatch for {name}.")
+
+        def vector(
+            name: str,
+            bounds: tuple[tuple[float, float], ...],
+        ) -> np.ndarray:
+            try:
+                value = np.asarray(source[name], dtype=np.float64)
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(f"Source physics {name} is not numeric.") from error
+            if value.shape != (len(bounds),) or not np.isfinite(value).all():
+                raise RuntimeError(f"Source physics {name} must be a finite vector.")
+            if any(not low <= item <= high for item, (low, high) in zip(value, bounds)):
+                raise RuntimeError(f"Source physics {name} is outside its recorded range.")
+            return value
+
+        robot_geom_names = {
+            self.model.geom(index).name
+            for index in range(self.model.ngeom)
+            if (self.model.geom(index).name or "").startswith("robot/")
+        }
+        foot_pattern = re.compile(r"robot/(left|right)_foot[1-7]_collision$")
+        foot_geom_names = {name for name in robot_geom_names if foot_pattern.fullmatch(name)}
+        deck_geom_names = {"skateboard/skateboard_deck_collision"}
+        wheel_geom_names = {
+            self.model.geom(index).name
+            for index in range(self.model.ngeom)
+            if (self.model.geom(index).name or "").startswith("skateboard/")
+            and (self.model.geom(index).name or "").endswith("_wheel_collision")
+        }
+        joint_names = {
+            self.model.joint(index).name
+            for index in range(self.model.njnt)
+            if (self.model.joint(index).name or "").startswith("robot/")
+            and self.model.jnt_type[index] != mujoco.mjtJoint.mjJNT_FREE
+        }
+
+        def named_values(
+            name: str,
+            expected_names: set[str],
+            bounds: tuple[float, float],
+        ) -> dict[str, float]:
+            values = source[name]
+            if not isinstance(values, Mapping) or set(values) != expected_names:
+                raise RuntimeError(f"Source physics names mismatch for {name}.")
+            result = {}
+            for item_name, item in values.items():
+                try:
+                    value = float(item)
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise RuntimeError(
+                        f"Source physics value is not numeric for {item_name}."
+                    ) from error
+                if not np.isfinite(value) or not bounds[0] <= value <= bounds[1]:
+                    raise RuntimeError(f"Source physics value is invalid for {item_name}.")
+                result[str(item_name)] = value
+            return result
+
+        return {
+            "seed": int(seed),
+            "robot_torso_com_offset_m": vector(
+                "robot_torso_com_offset_m",
+                HUSKY_ROBOT_COM_RANGES,
+            ),
+            "skateboard_com_offset_m": vector(
+                "skateboard_com_offset_m",
+                HUSKY_SKATEBOARD_COM_RANGES,
+            ),
+            "robot_sliding_friction_scale": named_values(
+                "robot_sliding_friction_scale",
+                robot_geom_names,
+                HUSKY_ROBOT_FRICTION_SCALE_RANGE,
+            ),
+            "deck_sliding_friction_scale": named_values(
+                "deck_sliding_friction_scale",
+                deck_geom_names,
+                HUSKY_DECK_FRICTION_SCALE_RANGE,
+            ),
+            "foot_sliding_friction": named_values(
+                "foot_sliding_friction",
+                foot_geom_names,
+                HUSKY_FOOT_FRICTION_RANGE,
+            ),
+            "wheel_rolling_friction_scale": named_values(
+                "wheel_rolling_friction_scale",
+                wheel_geom_names,
+                HUSKY_WHEEL_FRICTION_SCALE_RANGE,
+            ),
+            "joint_position_offset_rad": named_values(
+                "joint_position_offset_rad",
+                joint_names,
+                HUSKY_JOINT_POSITION_OFFSET_RANGE,
+            ),
+        }
+
+    def apply_source_physics(self, source: Mapping[str, object]) -> None:
+        """Restore nominal physics, then apply one recorded realization."""
+
+        values = self.validate_source_physics(source)
+        self.restore_nominal_physics()
+        self.model.body_ipos[self.model.body("robot/torso_link").id] += values[
+            "robot_torso_com_offset_m"
+        ]
+        self.model.body_ipos[self.model.body("skateboard/skateboard_deck").id] += values[
+            "skateboard_com_offset_m"
+        ]
+        for name, scale in values["robot_sliding_friction_scale"].items():
+            self.model.geom_friction[self.model.geom(name).id, 0] *= scale
+        for name, scale in values["deck_sliding_friction_scale"].items():
+            self.model.geom_friction[self.model.geom(name).id, 0] *= scale
+        for name, friction in values["foot_sliding_friction"].items():
+            self.model.geom_friction[self.model.geom(name).id, 0] = friction
+        for name, scale in values["wheel_rolling_friction_scale"].items():
+            self.model.geom_friction[self.model.geom(name).id, 2] *= scale
+
     def reset(
         self,
         qpos: np.ndarray | None = None,
         qvel: np.ndarray | None = None,
+        source_physics: Mapping[str, object] | None = None,
     ) -> dict[str, np.ndarray | float]:
         if (qpos is None) != (qvel is None):
             raise ValueError("qpos and qvel must be provided together.")
+        if source_physics is not None:
+            if qpos is None:
+                raise ValueError("Source physics requires explicit raw qpos/qvel.")
+            self.apply_source_physics(source_physics)
+            mujoco.mj_setConst(self.model, self.data)
         if qpos is None:
             mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
             for joint_name, offset in self._reset_joint_offsets.items():

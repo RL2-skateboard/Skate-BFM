@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -78,8 +79,13 @@ class HuskyBfmOnlineEnv:
         self,
         qpos: np.ndarray | None = None,
         qvel: np.ndarray | None = None,
+        source_physics: Mapping[str, object] | None = None,
     ) -> dict[str, torch.Tensor]:
-        raw_observation = self.env.reset(qpos=qpos, qvel=qvel)
+        raw_observation = self.env.reset(
+            qpos=qpos,
+            qvel=qvel,
+            source_physics=source_physics,
+        )
         self.observation_adapter.reset()
         self._observation = self.observation_adapter(
             raw_observation,

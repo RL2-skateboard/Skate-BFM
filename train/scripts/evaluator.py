@@ -38,7 +38,7 @@ from train_skate_bfm import (
     hash_params,
     load_expert,
     load_frozen_agent,
-    validate_raw_layout,
+    load_source_rollout,
 )
 
 
@@ -159,6 +159,7 @@ class ExpertResetSampler:
                 "source_raw_npz",
                 "source_start_frame",
                 "source_end_frame",
+                "physics_seed",
                 "dof",
             )
             if any(field not in record for field in required):
@@ -177,40 +178,38 @@ class ExpertResetSampler:
                 "command_v": record.get("command_v"),
                 "command_h": record.get("command_h"),
                 "phase": record.get("phase"),
+                "physics_seed": int(record["physics_seed"]),
             }
         del loaded, record
         self.motion_keys = tuple(self.records)
         self.env = env
         self.rng = np.random.default_rng(seed)
-        self.raw_cache: dict[Path, tuple[np.ndarray, np.ndarray]] = {}
+        self.raw_cache: dict[
+            Path,
+            tuple[np.ndarray, np.ndarray, dict[str, object]],
+        ] = {}
 
-    def sample(self) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    def sample(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, Any]]:
         motion_key = self.motion_keys[int(self.rng.integers(len(self.motion_keys)))]
         record = self.records[motion_key]
         local_frame = int(self.rng.integers(record["motion_frames"]))
         source_frame = int(record["source_start_frame"]) + local_frame
         source_path = Path(record["source_raw_npz"]).expanduser().resolve()
         if source_path not in self.raw_cache:
-            if not source_path.is_file():
-                raise FileNotFoundError(f"Canonical raw rollout not found: {source_path}")
-            with np.load(source_path, allow_pickle=False) as archive:
-                if "qpos" not in archive or "qvel" not in archive:
-                    raise RuntimeError(f"Canonical raw rollout lacks qpos/qvel: {source_path}")
-                raw_qpos = np.asarray(archive["qpos"]).copy()
-                raw_qvel = np.asarray(archive["qvel"]).copy()
-            validate_raw_layout(
-                source_path.with_suffix(".json"),
-                raw_qpos,
-                raw_qvel,
+            self.raw_cache[source_path] = load_source_rollout(
+                source_path,
                 self.env,
+                int(record["physics_seed"]),
             )
-            self.raw_cache[source_path] = raw_qpos, raw_qvel
-        raw_qpos, raw_qvel = self.raw_cache[source_path]
+        raw_qpos, raw_qvel, source_physics = self.raw_cache[source_path]
         if source_frame >= raw_qpos.shape[0] or source_frame >= raw_qvel.shape[0]:
             raise RuntimeError(f"Expert reset frame is outside raw rollout: {source_path}")
         return (
             np.asarray(raw_qpos[source_frame], dtype=np.float64).copy(),
             np.asarray(raw_qvel[source_frame], dtype=np.float64).copy(),
+            source_physics,
             {
                 "motion_key": motion_key,
                 "source_raw_npz": str(source_path),
@@ -220,6 +219,8 @@ class ExpertResetSampler:
                 "command_v": record["command_v"],
                 "command_h": record["command_h"],
                 "phase": record["phase"],
+                "physics_seed": record["physics_seed"],
+                "source_physics_aligned": True,
             },
         )
 
@@ -502,8 +503,12 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
     try:
         for episode_index in range(args.episodes):
             torch.manual_seed(args.seed + episode_index)
-            qpos, qvel, reset = sampler.sample()
-            observation = env.reset(qpos=qpos, qvel=qvel)
+            qpos, qvel, source_physics, reset = sampler.sample()
+            observation = env.reset(
+                qpos=qpos,
+                qvel=qvel,
+                source_physics=source_physics,
+            )
             initial_raw = env.env._observation()
             records: list[dict[str, Any]] = []
             latent_fingerprints: list[str] = []
@@ -609,6 +614,7 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
             "expert_motion": str(expert_motion),
             "expert_motion_sha256": hash_file(expert_motion),
             "reset_mode": "uniform_motion_uniform_local_frame_raw_qpos_qvel",
+            "source_physics": "canonical_raw_metadata_exact",
             "domain_randomization": False,
             "episodes_requested": args.episodes,
             "horizon": args.horizon,

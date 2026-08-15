@@ -1778,3 +1778,30 @@ the formal Skate runtime action contract.
 - Current decision: numerical execution `PASS`; behavioral adaptation
   `FAIL`. Continuous training is paused pending reset/latent alignment,
   action/observation, and parameter-drift diagnostics.
+
+## M2.6-D1.1 Source Physics Alignment
+
+- Date: `2026-08-15`.
+- Previous formal expert reset combined canonical randomized raw `qpos/qvel`
+  with nominal XML physics. Each formal reset now restores the environment's
+  nominal `body_ipos` and `geom_friction`, applies the exact recorded robot/
+  board COM offsets and robot/deck/foot/wheel friction realization once, calls
+  `mj_setConst`, and then injects the raw state.
+- Strict validation covers the actual `physics_randomization` schema, mode,
+  lifecycle, seed, ranges, body/geom/joint names, dimensions, and finite
+  values. Missing or unknown source fields fail closed.
+- Nominal model arrays are captured once per independent `HuskyLiteEnv`.
+  Every source apply begins from that baseline, preventing cumulative
+  randomization across resets and environments.
+- Collector inspection confirms raw qpos already contains
+  `joint_position_offset_rad`; the offset is retained as validated provenance
+  and is not applied again during raw-state injection.
+- Formal trainer and formal evaluator use the same canonical raw loader and
+  explicit source-physics reset. Historical no-argument/keyframe reset
+  behavior is unchanged.
+- Phase and Continuous multi-source audits passed baseline restoration,
+  source application, `mj_setConst`, exact raw qpos/qvel, finite observation,
+  and distinct-physics checks. All `158` raw source schemas validated.
+- Latent, history, action mapping, observation, reward, termination, replay,
+  model, loss, optimizer, and training schedule were not modified.
+- Training performed: `NO`.

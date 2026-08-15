@@ -111,7 +111,7 @@ def validate_raw_layout(
     raw_qpos: np.ndarray,
     raw_qvel: np.ndarray,
     env: HuskyBfmOnlineEnv,
-) -> None:
+) -> dict[str, Any]:
     if not metadata_path.is_file():
         raise FileNotFoundError(f"Canonical raw metadata not found: {metadata_path}")
     metadata = json.loads(metadata_path.read_text())
@@ -182,6 +182,37 @@ def validate_raw_layout(
         raise RuntimeError(
             f"Canonical raw source XML differs from current HUSKY XML: {metadata_path}"
         )
+    return metadata
+
+
+def load_source_rollout(
+    source_path: Path,
+    env: HuskyBfmOnlineEnv,
+    expected_physics_seed: int,
+) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """Load one canonical raw source and validate its recorded physics."""
+
+    source_path = source_path.expanduser().resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Canonical raw rollout not found: {source_path}")
+    with np.load(source_path, allow_pickle=False) as archive:
+        if "qpos" not in archive or "qvel" not in archive:
+            raise RuntimeError(f"Canonical raw rollout lacks qpos/qvel: {source_path}")
+        raw_qpos = np.asarray(archive["qpos"]).copy()
+        raw_qvel = np.asarray(archive["qvel"]).copy()
+    metadata = validate_raw_layout(
+        source_path.with_suffix(".json"),
+        raw_qpos,
+        raw_qvel,
+        env,
+    )
+    source_physics = metadata.get("physics_randomization")
+    if not isinstance(source_physics, dict):
+        raise RuntimeError(f"Canonical raw source lacks physics_randomization: {source_path}")
+    normalized = env.env.validate_source_physics(source_physics)
+    if normalized["seed"] != int(expected_physics_seed):
+        raise RuntimeError(f"Canonical raw physics seed mismatch: {source_path}")
+    return raw_qpos, raw_qvel, copy.deepcopy(source_physics)
 
 
 class TrainConfig(BaseConfig):
@@ -588,7 +619,13 @@ class Workspace:
             raise RuntimeError("Expert reset dataset must be a non-empty motion dictionary.")
         self.reset_records = {}
         for motion_key, record in loaded_records.items():
-            required = ("source_raw_npz", "source_start_frame", "source_end_frame", "dof")
+            required = (
+                "source_raw_npz",
+                "source_start_frame",
+                "source_end_frame",
+                "physics_seed",
+                "dof",
+            )
             if any(field not in record for field in required):
                 raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
             self.reset_records[motion_key] = {
@@ -605,7 +642,10 @@ class Workspace:
         del loaded_records, record
         self.reset_motion_keys = tuple(self.reset_records)
         self.reset_rng = np.random.default_rng(cfg.seed)
-        self.reset_raw_cache: dict[Path, tuple[np.ndarray, np.ndarray]] = {}
+        self.reset_raw_cache: dict[
+            Path,
+            tuple[np.ndarray, np.ndarray, dict[str, object]],
+        ] = {}
 
         self.work_dir.mkdir(parents=True, exist_ok=False)
         self.train_envs = [HuskyBfmOnlineEnv() for _ in range(cfg.online_envs)]
@@ -628,7 +668,7 @@ class Workspace:
 
     def _sample_expert_reset(
         self,
-    ) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, object]]:
         motion_key = self.reset_motion_keys[
             int(self.reset_rng.integers(len(self.reset_motion_keys)))
         ]
@@ -644,27 +684,18 @@ class Workspace:
         local_frame = int(self.reset_rng.integers(motion_frames))
         source_frame = source_start + local_frame
         source_path = Path(record["source_raw_npz"]).expanduser().resolve()
-        if not source_path.is_file():
-            raise FileNotFoundError(f"Canonical raw rollout not found: {source_path}")
         if source_path not in self.reset_raw_cache:
-            with np.load(source_path, allow_pickle=False) as archive:
-                if "qpos" not in archive or "qvel" not in archive:
-                    raise RuntimeError(f"Canonical raw rollout lacks qpos/qvel: {source_path}")
-                raw_qpos = np.asarray(archive["qpos"]).copy()
-                raw_qvel = np.asarray(archive["qvel"]).copy()
-            validate_raw_layout(
-                source_path.with_suffix(".json"),
-                raw_qpos,
-                raw_qvel,
+            self.reset_raw_cache[source_path] = load_source_rollout(
+                source_path,
                 self.train_envs[0],
+                int(record["physics_seed"]),
             )
-            self.reset_raw_cache[source_path] = raw_qpos, raw_qvel
-        raw_qpos, raw_qvel = self.reset_raw_cache[source_path]
+        raw_qpos, raw_qvel, source_physics = self.reset_raw_cache[source_path]
         if not 0 <= source_frame < raw_qpos.shape[0] or source_frame >= raw_qvel.shape[0]:
             raise RuntimeError(f"Expert reset frame is outside raw rollout: {source_path}")
         qpos = np.asarray(raw_qpos[source_frame], dtype=np.float64).copy()
         qvel = np.asarray(raw_qvel[source_frame], dtype=np.float64).copy()
-        return qpos, qvel, {
+        return qpos, qvel, source_physics, {
             "motion_key": motion_key,
             "source_raw_npz": str(source_path),
             "source_frame": source_frame,
@@ -673,6 +704,7 @@ class Workspace:
             "command_v": record.get("command_v"),
             "command_h": record.get("command_h"),
             "physics_seed": record.get("physics_seed"),
+            "source_physics_aligned": True,
         }
 
     def _load_experts(self) -> dict[str, Any]:
@@ -864,8 +896,14 @@ class Workspace:
         episode_steps = [0] * self.cfg.online_envs
         reset_counts = [0] * self.cfg.online_envs
         for index, env in enumerate(self.train_envs):
-            qpos, qvel, _ = self._sample_expert_reset()
-            observations.append(env.reset(qpos=qpos, qvel=qvel))
+            qpos, qvel, source_physics, _ = self._sample_expert_reset()
+            observations.append(
+                env.reset(
+                    qpos=qpos,
+                    qvel=qvel,
+                    source_physics=source_physics,
+                )
+            )
             reset_counts[index] += 1
         transitions: list[Any] = []
         update_blocks: list[dict[str, Any]] = []
@@ -919,8 +957,12 @@ class Workspace:
                     if transition.terminated or transition.truncated:
                         episodes += 1
                         falls += int(transition.terminated)
-                        qpos, qvel, _ = self._sample_expert_reset()
-                        observations[index] = env.reset(qpos=qpos, qvel=qvel)
+                        qpos, qvel, source_physics, _ = self._sample_expert_reset()
+                        observations[index] = env.reset(
+                            qpos=qpos,
+                            qvel=qvel,
+                            source_physics=source_physics,
+                        )
                         z[index] = None
                         episode_steps[index] = 0
                         reset_counts[index] += 1
