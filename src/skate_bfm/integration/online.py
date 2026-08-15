@@ -51,7 +51,7 @@ class SkateOnlineTransition:
 
 
 class HuskyBfmOnlineEnv:
-    """One-environment BFM-to-HUSKY online transition boundary."""
+    """One independent BFM-to-HUSKY online transition boundary."""
 
     def __init__(
         self,
@@ -68,8 +68,12 @@ class HuskyBfmOnlineEnv:
         self._episode_done = True
         self._step_count = 0
 
-    def reset(self) -> dict[str, torch.Tensor]:
-        raw_observation = self.env.reset()
+    def reset(
+        self,
+        qpos: np.ndarray | None = None,
+        qvel: np.ndarray | None = None,
+    ) -> dict[str, torch.Tensor]:
+        raw_observation = self.env.reset(qpos=qpos, qvel=qvel)
         self.observation_adapter.reset()
         self._observation = self.observation_adapter(
             raw_observation,

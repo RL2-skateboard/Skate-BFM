@@ -80,6 +80,24 @@ def test_husky_runtime_and_auxiliary_contract() -> None:
     )
 
 
+def test_husky_reset_accepts_complete_expert_state() -> None:
+    env = HuskyLiteEnv()
+    try:
+        env.reset()
+        qpos = env.data.qpos.copy()
+        qvel = env.data.qvel.copy()
+        qpos[0] += 0.25
+        env.reset(qpos=qpos, qvel=qvel)
+        assert np.array_equal(env.data.qpos, qpos)
+        assert np.array_equal(env.data.qvel, qvel)
+        with pytest.raises(ValueError, match="provided together"):
+            env.reset(qpos=qpos)
+        with pytest.raises(ValueError, match="Expected qpos"):
+            env.reset(qpos=qpos[:-1], qvel=qvel)
+    finally:
+        env.close()
+
+
 def test_online_transition_serializes_bfm_replay_schema() -> None:
     env = HuskyBfmOnlineEnv()
     try:
@@ -97,6 +115,28 @@ def test_online_transition_serializes_bfm_replay_schema() -> None:
     assert transition.truncated and not transition.terminated
     assert tuple(data["aux_rewards"]) == AUX_REWARD_KEYS
     assert all(value.shape == (1, 1) for value in data["aux_rewards"].values())
+
+
+def test_parallel_online_environments_reset_independently() -> None:
+    envs = [HuskyBfmOnlineEnv() for _ in range(4)]
+    try:
+        for env in envs:
+            env.reset()
+        transitions = [
+            env.step(torch.zeros(29), torch.zeros(256), truncated=index == 0)
+            for index, env in enumerate(envs)
+        ]
+        assert transitions[0].truncated and not transitions[0].terminated
+        assert all(
+            not transition.truncated and not transition.terminated
+            for transition in transitions[1:]
+        )
+        envs[0].reset()
+        assert envs[0]._step_count == 0
+        assert [env._step_count for env in envs[1:]] == [1, 1, 1]
+    finally:
+        for env in envs:
+            env.close()
 
 
 def test_fall_contract_ignores_foot_liftoff_and_requires_confirmation() -> None:
@@ -163,6 +203,7 @@ def test_m26_configuration_and_schedule_are_parameterized(
     assert cfg.skate_expert_motion_file.endswith("skate_expert_phase.pkl")
     assert cfg.skate_max_steps == 100_000
     assert cfg.buffer_size == 100_000
+    assert cfg.online_envs == 4
     assert cfg.skate_expert_ratio == 0.5
     assert schedule[0] == 1500
     assert schedule[-1] == 100_000
@@ -191,4 +232,9 @@ def test_m26_configuration_and_schedule_are_parameterized(
 
     monkeypatch.setenv("SKATE_BUFFER_SIZE", "1999")
     with pytest.raises(ValueError, match="SKATE_BUFFER_SIZE"):
+        module.build_train_config()
+
+    monkeypatch.setenv("SKATE_BUFFER_SIZE", "2000")
+    monkeypatch.setenv("SKATE_ONLINE_ENVS", "3")
+    with pytest.raises(ValueError, match="schedule boundary"):
         module.build_train_config()

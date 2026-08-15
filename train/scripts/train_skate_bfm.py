@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import joblib
 import os
 import sys
 from pathlib import Path
@@ -119,6 +120,7 @@ class TrainConfig(BaseConfig):
     first_update_transition: int = DEFAULT_FIRST_UPDATE
     update_interval: int = DEFAULT_UPDATE_INTERVAL
     updates_per_block: int = DEFAULT_UPDATES_PER_BLOCK
+    online_envs: int = 4
     skate_expert_ratio: float = 0.5
     buffer_size: int = DEFAULT_MAX_STEPS
     buffer_device: str = "cpu"
@@ -136,12 +138,29 @@ class TrainConfig(BaseConfig):
             raise ValueError("SKATE_UPDATE_INTERVAL must be positive.")
         if self.updates_per_block <= 0:
             raise ValueError("SKATE_UPDATES_PER_BLOCK must be positive.")
+        if self.online_envs <= 0:
+            raise ValueError("SKATE_ONLINE_ENVS must be positive.")
         if self.buffer_size < self.skate_max_steps:
             raise ValueError("SKATE_BUFFER_SIZE must be at least SKATE_MAX_STEPS.")
         if self.skate_expert_ratio != 0.5:
             raise ValueError("Formal Skate-BFM requires SKATE_EXPERT_RATIO=0.5.")
         if self.buffer_device != "cpu":
             raise ValueError("Formal Skate-BFM requires CPU DictBuffer replay.")
+        boundaries = {
+            self.warmup_transitions,
+            self.first_update_transition,
+            self.update_interval,
+            *training_update_steps(
+                self.skate_max_steps,
+                self.first_update_transition,
+                self.update_interval,
+            ),
+            *training_checkpoint_steps(self.skate_max_steps),
+        }
+        if any(boundary % self.online_envs for boundary in boundaries):
+            raise ValueError(
+                "SKATE_ONLINE_ENVS must divide every training schedule boundary."
+            )
         for field_name, value in (
             ("Skate expert MotionLib", self.skate_expert_motion_file),
             ("Skate expert manifest", self.expert_manifest_file),
@@ -484,9 +503,15 @@ class Workspace:
         ]
         if missing_fields:
             self.dataset_report["missing_manifest_fields"] = missing_fields
+        self.reset_records = joblib.load(expert_path, mmap_mode="r")
+        if not isinstance(self.reset_records, dict) or not self.reset_records:
+            raise RuntimeError("Expert reset dataset must be a non-empty motion dictionary.")
+        self.reset_motion_keys = tuple(self.reset_records)
+        self.reset_rng = np.random.default_rng(cfg.seed)
+        self.reset_raw_cache: dict[Path, tuple[np.ndarray, np.ndarray]] = {}
 
-        self.train_env = HuskyBfmOnlineEnv()
-        observation = self.train_env.reset()
+        self.train_envs = [HuskyBfmOnlineEnv() for _ in range(cfg.online_envs)]
+        observation = self.train_envs[0].reset()
         self.obs_space = gymnasium.spaces.Dict({
             key: gymnasium.spaces.Box(-np.inf, np.inf, tuple(value.shape), np.float32)
             for key, value in observation.items()
@@ -502,6 +527,50 @@ class Workspace:
         self.agent._model.eval()
         self.agent_update_calls = 0
         (self.work_dir / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
+
+    def _sample_expert_reset(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+        motion_key = self.reset_motion_keys[
+            int(self.reset_rng.integers(len(self.reset_motion_keys)))
+        ]
+        record = self.reset_records[motion_key]
+        required = ("source_raw_npz", "source_start_frame", "source_end_frame", "dof")
+        if any(field not in record for field in required):
+            raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
+        motion_frames = int(np.asarray(record["dof"]).shape[0])
+        source_start = int(record["source_start_frame"])
+        source_end = int(record["source_end_frame"])
+        if motion_frames <= 0 or source_end - source_start != motion_frames:
+            raise RuntimeError(f"Expert motion {motion_key} has an invalid frame range.")
+        local_frame = int(self.reset_rng.integers(motion_frames))
+        source_frame = source_start + local_frame
+        source_path = Path(record["source_raw_npz"]).expanduser().resolve()
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Canonical raw rollout not found: {source_path}")
+        if source_path not in self.reset_raw_cache:
+            with np.load(source_path, allow_pickle=False) as archive:
+                if "qpos" not in archive or "qvel" not in archive:
+                    raise RuntimeError(f"Canonical raw rollout lacks qpos/qvel: {source_path}")
+                self.reset_raw_cache[source_path] = (
+                    np.asarray(archive["qpos"]).copy(),
+                    np.asarray(archive["qvel"]).copy(),
+                )
+        raw_qpos, raw_qvel = self.reset_raw_cache[source_path]
+        if not 0 <= source_frame < raw_qpos.shape[0] or source_frame >= raw_qvel.shape[0]:
+            raise RuntimeError(f"Expert reset frame is outside raw rollout: {source_path}")
+        qpos = np.asarray(raw_qpos[source_frame], dtype=np.float64).copy()
+        qvel = np.asarray(raw_qvel[source_frame], dtype=np.float64).copy()
+        return qpos, qvel, {
+            "motion_key": motion_key,
+            "source_raw_npz": str(source_path),
+            "source_frame": source_frame,
+            "source_round": record.get("source_round"),
+            "source_rollout": record.get("source_rollout"),
+            "command_v": record.get("command_v"),
+            "command_h": record.get("command_h"),
+            "physics_seed": record.get("physics_seed"),
+        }
 
     def _load_experts(self) -> dict[str, Any]:
         expert_env = make_expert_env(self.cfg.env)
@@ -653,7 +722,7 @@ class Workspace:
                     f"Expert SHA256: {dataset['motion_file_sha256']}",
                     f"BFM0 SHA256: {self.agent.pretrained_load_report['model_sha256']}",
                     f"Seed: {self.cfg.seed}",
-                    "Online envs: 1",
+                    f"Online envs: {self.cfg.online_envs}",
                     f"Transitions: {self.cfg.skate_max_steps}",
                     f"Replay capacity: {self.cfg.buffer_size}",
                     f"Warmup: {self.cfg.warmup_transitions}",
@@ -681,8 +750,14 @@ class Workspace:
             raise RuntimeError("Formal Skate-BFM requires fresh optimizers.")
 
         model = self.agent._model
-        observation = self.train_env.reset()
-        z: torch.Tensor | None = None
+        observations: list[dict[str, torch.Tensor]] = []
+        z: list[torch.Tensor | None] = [None] * self.cfg.online_envs
+        episode_steps = [0] * self.cfg.online_envs
+        reset_counts = [0] * self.cfg.online_envs
+        for index, env in enumerate(self.train_envs):
+            qpos, qvel, _ = self._sample_expert_reset()
+            observations.append(env.reset(qpos=qpos, qvel=qvel))
+            reset_counts[index] += 1
         transitions: list[Any] = []
         update_blocks: list[dict[str, Any]] = []
         checkpoints: dict[str, Any] = {}
@@ -698,30 +773,52 @@ class Workspace:
         )
 
         def collect(end: int) -> None:
-            nonlocal episodes, falls, observation, z, start
+            nonlocal episodes, falls, start
             model.eval()
-            for step in range(start, end + 1):
-                if z is None or (step - 1) % self.agent.cfg.train.update_z_every_step == 0:
-                    z = model.sample_z(1, device=self.agent.device)[0]
+            while start <= end:
+                refresh = [
+                    index
+                    for index, value in enumerate(z)
+                    if value is None
+                    or episode_steps[index] % self.agent.cfg.train.update_z_every_step == 0
+                ]
+                if refresh:
+                    sampled_z = model.sample_z(len(refresh), device=self.agent.device)
+                    for offset, index in enumerate(refresh):
+                        z[index] = sampled_z[offset]
+                obs_batch = {
+                    key: torch.stack([item[key] for item in observations]).to(self.agent.device)
+                    for key in observations[0]
+                }
+                z_batch = torch.stack([value for value in z if value is not None])
                 with torch.no_grad():
-                    action = self.agent.act(
-                        obs={key: value.unsqueeze(0).to(self.agent.device) for key, value in observation.items()},
-                        z=z.unsqueeze(0),
+                    actions = self.agent.act(
+                        obs=obs_batch,
+                        z=z_batch,
                         mean=False,
-                    )[0]
-                transition = self.train_env.step(
-                    action, z, truncated=step % SKATE_EPISODE_HORIZON == 0
-                )
-                replay["train"].extend(transition.as_buffer_data())
-                transitions.append(transition)
-                progress.update()
-                if transition.terminated or transition.truncated:
-                    episodes += 1
-                    falls += int(transition.terminated)
-                    observation, z = self.train_env.reset(), None
-                else:
-                    observation = transition.next_observation
-            start = end + 1
+                    )
+                for index, env in enumerate(self.train_envs):
+                    episode_steps[index] += 1
+                    transition_z = z_batch[index]
+                    transition = env.step(
+                        actions[index],
+                        transition_z,
+                        truncated=episode_steps[index] >= SKATE_EPISODE_HORIZON,
+                    )
+                    replay["train"].extend(transition.as_buffer_data())
+                    transitions.append(transition)
+                    if transition.terminated or transition.truncated:
+                        episodes += 1
+                        falls += int(transition.terminated)
+                        qpos, qvel, _ = self._sample_expert_reset()
+                        observations[index] = env.reset(qpos=qpos, qvel=qvel)
+                        z[index] = None
+                        episode_steps[index] = 0
+                        reset_counts[index] += 1
+                    else:
+                        observations[index] = transition.next_observation
+                progress.update(self.cfg.online_envs)
+                start += self.cfg.online_envs
             progress.set_postfix(
                 replay=len(replay["train"]),
                 episodes=episodes,
@@ -796,7 +893,8 @@ class Workspace:
                     )
         finally:
             progress.close()
-            self.train_env.close()
+            for env in self.train_envs:
+                env.close()
 
         full_replay = replay["train"].get_full_buffer()
         terminated = full_replay["next"]["terminated"]
@@ -837,9 +935,14 @@ class Workspace:
                 "total_update_blocks": len(update_steps),
                 "total_native_updates": expected_updates,
                 "seed": self.cfg.seed,
-                "online_env_count": 1,
+                "online_env_count": self.cfg.online_envs,
                 "warmup_source": "pretrained_actor_stochastic",
                 "domain_randomization": False,
+            },
+            "online_reset": {
+                "mode": "expert_raw_qpos_qvel",
+                "dataset": self.cfg.expert_dataset_kind,
+                "total_resets": sum(reset_counts),
             },
             "replay": {
                 "capacity": self.cfg.buffer_size,
@@ -974,6 +1077,7 @@ def build_train_config() -> TrainConfig:
         updates_per_block=int(
             os.environ.get("SKATE_UPDATES_PER_BLOCK", str(DEFAULT_UPDATES_PER_BLOCK))
         ),
+        online_envs=int(os.environ.get("SKATE_ONLINE_ENVS", "4")),
         skate_expert_ratio=float(os.environ.get("SKATE_EXPERT_RATIO", "0.5")),
         buffer_size=int(os.environ.get("SKATE_BUFFER_SIZE", str(max_steps))),
     )

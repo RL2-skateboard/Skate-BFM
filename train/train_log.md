@@ -1653,3 +1653,36 @@ the formal Skate runtime action contract.
   artifacts were deleted.
 - Parallel online environments remain deliberately deferred to M2.6-0b.
   Formal Phase 100k and Continuous 100k training were not launched.
+
+## M2.6-0b - Expert-Conditioned Parallel Online Readiness
+
+- Date: `2026-08-15`.
+- Starting HEAD: `88c3e2c`.
+- Added expert-conditioned physical reset to the existing HUSKY boundary. Each
+  reset samples one motion uniformly, then one local frame uniformly within
+  that motion, resolves `source_raw_npz` plus
+  `source_start_frame/source_end_frame`, and restores the same raw frame's
+  complete robot and skateboard `qpos/qvel`. No expert playback, tracking
+  reward, or MotionLib velocity reconstruction is used.
+- `HuskyLiteEnv.reset(qpos, qvel)` now has a strict paired API with shape,
+  finite-value, quaternion, and simulator-state checks. The no-argument reset
+  retains the XML keyframe path.
+- The trainer now uses four independent `HuskyBfmOnlineEnv` instances. Actor
+  inference is batched over all environments; MuJoCo stepping remains
+  deterministic and sequential. Each environment owns its observation, latent,
+  episode step, fall/truncated reset, and expert reset lifecycle.
+- `SKATE_ONLINE_ENVS` defaults to `4`. Schedule boundaries are checked to be
+  divisible by the environment count; no partial batch, padding, masking,
+  multiprocessing, or threading path was added.
+- Formal online domain randomization remains disabled. The selected Phase or
+  Continuous dataset is isolated for both reset sampling and expert training
+  sampling.
+- Validation passed: `ruff`, `py_compile`, `pytest` (`10 passed`), Phase and
+  Continuous raw expert reset checks with four envs, and a Phase 2,000-total-
+  transition four-env native smoke. The smoke used update steps 1,500/2,000,
+  two native updates, 31 expert resets, replay/checkpoint validation, finite
+  optimizer/model states, Actor changes, and checkpoint reload.
+- Temporary artifacts were deleted. Formal Phase 100k and Continuous 100k
+  training were not launched. BFM0 algorithm, loss, optimizer, reward,
+  termination definition, dataset contents, and official checkpoint were not
+  modified.

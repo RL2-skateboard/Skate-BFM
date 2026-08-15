@@ -109,9 +109,13 @@ transitions, updates beginning at transition 1,500, 50 native updates every
 defaults to the transition budget and may be increased with
 `SKATE_BUFFER_SIZE`, but it cannot be smaller than the budget. Every update
 samples 64 complete Base sequences and 64 complete Skate sequences at sequence
-length 8.
+length 8. The formal path uses four independent HUSKY online environments,
+per-environment episode horizons and latent lifecycles, batched Actor
+inference, and expert-conditioned reset states restored from the selected
+dataset's canonical raw `qpos`/`qvel` frame. Online domain randomization remains
+disabled.
 
-M2.6-0a establishes trainer readiness only. Neither the formal Phase 100k nor
+M2.6-0a/0b establish trainer readiness only. Neither the formal Phase 100k nor
 the formal Continuous 100k run has been launched.
 
 See [train_log.md](train_log.md) for the current engineering record and

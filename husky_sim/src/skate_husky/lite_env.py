@@ -342,15 +342,49 @@ class HuskyLiteEnv:
             for name, offset in offsets.items()
         }
 
-    def reset(self) -> dict[str, np.ndarray | float]:
-        mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
-        for joint_name, offset in self._reset_joint_offsets.items():
-            joint = self.model.joint(joint_name)
-            self.data.qpos[joint.qposadr[0]] += offset
+    def reset(
+        self,
+        qpos: np.ndarray | None = None,
+        qvel: np.ndarray | None = None,
+    ) -> dict[str, np.ndarray | float]:
+        if (qpos is None) != (qvel is None):
+            raise ValueError("qpos and qvel must be provided together.")
+        if qpos is None:
+            mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
+            for joint_name, offset in self._reset_joint_offsets.items():
+                joint = self.model.joint(joint_name)
+                self.data.qpos[joint.qposadr[0]] += offset
+        else:
+            qpos = np.asarray(qpos, dtype=np.float64)
+            qvel = np.asarray(qvel, dtype=np.float64)
+            if qpos.shape != (self.model.nq,) or qvel.shape != (self.model.nv,):
+                raise ValueError(
+                    f"Expected qpos [{self.model.nq}] and qvel [{self.model.nv}], "
+                    f"got {qpos.shape} and {qvel.shape}."
+                )
+            if not np.isfinite(qpos).all() or not np.isfinite(qvel).all():
+                raise ValueError("Reset qpos and qvel must be finite.")
+            for joint_id in range(self.model.njnt):
+                if self.model.jnt_type[joint_id] not in (
+                    mujoco.mjtJoint.mjJNT_FREE,
+                    mujoco.mjtJoint.mjJNT_BALL,
+                ):
+                    continue
+                width = 7 if self.model.jnt_type[joint_id] == mujoco.mjtJoint.mjJNT_FREE else 4
+                quaternion = qpos[
+                    self.model.jnt_qposadr[joint_id] + width - 4 :
+                    self.model.jnt_qposadr[joint_id] + width
+                ]
+                if not np.isclose(np.linalg.norm(quaternion), 1.0, atol=1e-4):
+                    raise ValueError("Reset quaternion is not normalized.")
+            self.data.qpos[:] = qpos
+            self.data.qvel[:] = qvel
+            self.data.ctrl[: self.robot_action_dim] = self._neutral_control
         self._last_action.fill(0.0)
         self._previous_action.fill(0.0)
         self._last_aux_rewards = self._zero_aux_rewards()
         mujoco.mj_forward(self.model, self.data)
+        self._require_valid_state()
         self.fall_detector.reset()
         self._last_fall = False
         self._last_fall_reasons = []
