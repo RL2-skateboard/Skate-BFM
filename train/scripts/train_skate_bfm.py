@@ -551,7 +551,6 @@ class Workspace:
         self.work_dir = Path(cfg.work_dir).expanduser().resolve()
         if (self.work_dir / "summary.json").exists() or (self.work_dir / CHECKPOINT_DIR_NAME).exists():
             raise RuntimeError("Formal Skate-BFM requires a fresh SKATE_WORK_DIR.")
-        self.work_dir.mkdir(parents=True, exist_ok=False)
         set_seed_everywhere(cfg.seed)
 
         expert_path = Path(cfg.skate_expert_motion_file).expanduser().resolve()
@@ -582,13 +581,31 @@ class Workspace:
         ]
         if missing_fields:
             self.dataset_report["missing_manifest_fields"] = missing_fields
-        self.reset_records = joblib.load(expert_path, mmap_mode="r")
-        if not isinstance(self.reset_records, dict) or not self.reset_records:
+        loaded_records = joblib.load(expert_path)
+        if not isinstance(loaded_records, dict) or not loaded_records:
             raise RuntimeError("Expert reset dataset must be a non-empty motion dictionary.")
+        self.reset_records = {}
+        for motion_key, record in loaded_records.items():
+            required = ("source_raw_npz", "source_start_frame", "source_end_frame", "dof")
+            if any(field not in record for field in required):
+                raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
+            self.reset_records[motion_key] = {
+                "source_raw_npz": record["source_raw_npz"],
+                "source_start_frame": int(record["source_start_frame"]),
+                "source_end_frame": int(record["source_end_frame"]),
+                "motion_frames": int(np.asarray(record["dof"]).shape[0]),
+                "source_round": record.get("source_round"),
+                "source_rollout": record.get("source_rollout"),
+                "command_v": record.get("command_v"),
+                "command_h": record.get("command_h"),
+                "physics_seed": record.get("physics_seed"),
+            }
+        del loaded_records, record
         self.reset_motion_keys = tuple(self.reset_records)
         self.reset_rng = np.random.default_rng(cfg.seed)
         self.reset_raw_cache: dict[Path, tuple[np.ndarray, np.ndarray]] = {}
 
+        self.work_dir.mkdir(parents=True, exist_ok=False)
         self.train_envs = [HuskyBfmOnlineEnv() for _ in range(cfg.online_envs)]
         observation = self.train_envs[0].reset()
         self.obs_space = gymnasium.spaces.Dict({
@@ -614,10 +631,10 @@ class Workspace:
             int(self.reset_rng.integers(len(self.reset_motion_keys)))
         ]
         record = self.reset_records[motion_key]
-        required = ("source_raw_npz", "source_start_frame", "source_end_frame", "dof")
+        required = ("source_raw_npz", "source_start_frame", "source_end_frame", "motion_frames")
         if any(field not in record for field in required):
             raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
-        motion_frames = int(np.asarray(record["dof"]).shape[0])
+        motion_frames = int(record["motion_frames"])
         source_start = int(record["source_start_frame"])
         source_end = int(record["source_end_frame"])
         if motion_frames <= 0 or source_end - source_start != motion_frames:

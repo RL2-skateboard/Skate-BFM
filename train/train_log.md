@@ -1713,3 +1713,20 @@ the formal Skate runtime action contract.
   different filesystem remains fail-closed rather than being guessed.
 - `M2.6 PRE-FORMAL READINESS: PASS`. Formal Phase 100k and Continuous 100k
   training remain unlaunched.
+
+## M2.6 Formal Startup File-Descriptor Fix
+
+- Date: `2026-08-15`.
+- Starting HEAD: `d31a6ed`.
+- The first manual Phase launch exposed `joblib.load(..., mmap_mode="r")`
+  retaining thousands of per-array memory maps from the 6,038-motion expert
+  pickle and exhausting file descriptors before training began.
+- Formal startup now loads the selected pickle without mmap, immediately
+  reduces each motion to reset provenance plus frame count, releases all large
+  motion arrays, and only then creates the fresh work directory.
+- Read-only Workspace construction passed for Phase and Continuous with zero
+  retained expert arrays and 45 open file descriptors. One real expert reset
+  from each dataset produced finite observations. No `agent.update`, rollout
+  training, checkpoint, dataset change, or formal 100k run occurred.
+- The empty work directory left by the failed launch was removed with
+  `rmdir`; no user result data existed in it.
