@@ -648,7 +648,11 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
     output_path = (
         args.output.expanduser().resolve()
         if args.output is not None
-        else checkpoint.parent / "evaluation" / f"frozen_rollout_{args.dataset}.json"
+        else (
+            checkpoint.parent
+            / "evaluation"
+            / f"{checkpoint.name}_frozen_rollout_{args.dataset}.json"
+        )
     )
     write_json(output_path, output)
     print(
