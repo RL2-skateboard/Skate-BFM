@@ -1730,3 +1730,51 @@ the formal Skate runtime action contract.
   training, checkpoint, dataset change, or formal 100k run occurred.
 - The empty work directory left by the failed launch was removed with
   `rmdir`; no user result data existed in it.
+
+## M2.6 Formal Phase 100k Training
+
+- Date: `2026-08-15`.
+- Frozen training source HEAD: `d0ec85f`.
+- Completed the formal Phase run with `100000` online transitions, four HUSKY
+  environments, `198` update blocks, and `9900` native
+  `FBcprAuxAgent.update()` calls.
+- The run used the formal Phase MotionLib with `6038` motions, Base/Skate
+  `50/50` sequence sampling, sequence length `8`, random 256D online latents,
+  and expert raw `qpos/qvel` reset frames.
+- Checkpoints at `20k`, `50k`, and `100k` passed full reload checks and were
+  organized under `model/motion_library/2026-08-15_143013/`. Compatibility
+  links remain in the original ignored results directory.
+- The training process completed without NaN/Inf, optimizer, normalizer,
+  replay-schema, or checkpoint failures.
+- Training episode behavior was poor: all `3109` completed episodes ended by
+  confirmed fall and none reached the `1024`-transition horizon.
+- Formal Continuous 100k training was not launched.
+
+## M2.6 Frozen-Policy Evaluation and Diagnosis
+
+- Date: `2026-08-15`.
+- Consolidated the historical evaluator into
+  `train/scripts/evaluator.py` and added selectable single-checkpoint rollout
+  evaluation with expert raw reset, latent refresh, mutation checks, optional
+  stochastic Actor sampling, and a realtime MuJoCo viewer.
+- Viewer and headless execution both passed. Evaluation made no optimizer,
+  backward, native update, parameter, or normalizer changes.
+- Evaluated official BFM0 and the Phase `20k`, `50k`, and `100k` checkpoints
+  on the same `32` reset and latent seeds with a `1024`-step horizon.
+- Every rollout ended in confirmed fall. Mean deterministic survival was
+  `1.264 s` for official BFM0 and `0.604/0.519/0.643 s` for
+  `20k/50k/100k`.
+- A stochastic-action control produced `1.312 s` for official BFM0 and
+  `0.631 s` for the 100k checkpoint, excluding deterministic mean action as
+  the primary explanation.
+- Full scanning of the 100k `model.safetensors` found `537` tensors and
+  `846227305/846227305` finite values. The repeated `Infinity` values in
+  `init_kwargs.json` are the expected unbounded 928D Gym observation-space
+  limits, not model weights.
+- Existing training tracking covers configuration, update metrics, Actor
+  hashes, optimizer steps, finite checks, replay terminals, and checkpoint
+  reloads. It does not provide parameter/gradient norms, action saturation,
+  phase-wise survival, or periodic frozen-policy performance curves.
+- Current decision: numerical execution `PASS`; behavioral adaptation
+  `FAIL`. Continuous training is paused pending reset/latent alignment,
+  action/observation, and parameter-drift diagnostics.

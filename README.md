@@ -1,33 +1,42 @@
 # Skate-BFM
 
 Skate-BFM adapts the official BFM-Zero motion prior to one HUSKY MuJoCo
-skateboard environment. The current repository contains the final M2.5b
-baseline: strict BFM0 initialization, Base plus Skate expert sampling, native
-FB-CPR-Aux updates, and fixed target-conditioned evaluation.
+skateboard environment. The current repository has completed the first formal
+M2.6 Phase 100k training run: strict BFM0 initialization, Base plus Skate
+expert sampling, native FB-CPR-Aux updates, frozen-policy rollout evaluation,
+and MuJoCo visual inspection.
 
 ![Project progress](docs/assets/project_progress.svg)
 
 ![Training progress](docs/assets/development_substage.svg)
 
-## Current Baseline
+## Current Status
 
-- Online environment: one nominal HUSKY MuJoCo environment.
+- Online training environment: four independent nominal HUSKY MuJoCo
+  environments.
 - Action contract: 29D BFM action stored in replay; 23D name-mapped HUSKY
   action executed in simulation.
 - Expert batch: 1024 rows = 64 Base sequences + 64 Skate sequences, each of
   length 8.
 - Initialization: fresh official BFM0 checkpoint, verified against SHA256
   `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
-- Training: 20,000 online transitions; native `FBcprAuxAgent.update()` begins
-  at step 1,500 and runs every 500 transitions for 50 updates per block.
-- Checkpoints: saved and reloaded at 10,000 and 20,000 transitions.
-- Physics: training uses nominal HUSKY parameters. Fixed evaluation uses the
-  official HUSKY play-time randomization, deterministically seeded per rollout.
+- Training: 100,000 online transitions and 9,900 native
+  `FBcprAuxAgent.update()` calls. Updates begin at step 1,500 and run every
+  500 transitions for 50 updates per block.
+- Reset: uniform expert motion and local frame sampling, followed by direct
+  raw HUSKY robot-board `qpos/qvel` injection.
+- Latent lifecycle: random BFM latent with refresh every 100 transitions.
+- Physics: formal training uses nominal HUSKY parameters and no domain
+  randomization.
+- Checkpoints: `20k`, `50k`, and `100k`, stored under
+  `model/motion_library/2026-08-15_143013/`.
 
-The completed baseline produced 20,000 replay rows and 1,900 native updates.
-Checkpoint reload passed. Its fixed evaluation is `INCONCLUSIVE`: all 60
-episodes reached the confirmed native-fall terminal condition before the
-128-step horizon, so displacement is not claimed as task success.
+Training and checkpoint integrity passed: replay size, optimizer state,
+normalizers, model finiteness, and checkpoint reloads are valid. Behavioral
+evaluation did not pass: all 32 frozen-policy episodes for each trained
+checkpoint ended in fall before the 1024-step horizon, and trained
+checkpoints were less stable than the official BFM0 on the same reset seeds.
+Continuous 100k training is therefore paused pending diagnosis.
 
 ## Setup
 
@@ -45,7 +54,7 @@ The following local artifacts must exist before training:
 ```text
 model/bfm-zero-official/
 train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl
-train/dataset/skate-expert-pose/motion_library/skate_expert.pkl
+dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl
 ```
 
 `train/scripts/isaac_env/` is the vendored BFM-Zero runtime used for the
@@ -123,13 +132,16 @@ Use a new work directory for each run:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-SKATE_EXPERT_MOTION_FILE=$PWD/train/dataset/skate-expert-pose/motion_library/skate_expert.pkl \
-SKATE_WORK_DIR=$PWD/results/m2.5b-original-bfm-baseline \
+SKATE_EXPERT_DATASET=phase \
+SKATE_MAX_STEPS=100000 \
+SKATE_WORK_DIR=$PWD/results/m2.6-phase-100k-seed4728 \
 python train/scripts/train_skate_bfm.py
 ```
 
-The entrypoint accepts only the M2.5b 20k schedule and 50/50 expert mixture.
-It fails closed when the checkpoint, data, replay schema, optimizer state, or
+The formal entrypoint uses the 100k schedule and 50/50 expert mixture. Each
+new run gets a timestamped checkpoint directory under
+`model/motion_library/`; `SKATE_CHECKPOINT_DIR` can override it. The entrypoint
+fails closed when the checkpoint, data, replay schema, optimizer state, or
 checkpoint reload contract is invalid.
 
 ## Evaluate

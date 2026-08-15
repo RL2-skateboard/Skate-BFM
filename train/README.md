@@ -107,6 +107,10 @@ SKATE_WORK_DIR=$PWD/results/m2.6-continuous-100k-seed4728 \
 python train/scripts/train_skate_bfm.py
 ```
 
+The Phase 100k run has completed. The Continuous command is retained as the
+next controlled experiment, but must not be launched until the frozen-policy
+diagnostic is resolved.
+
 The default contract uses 100,000 online transitions, 1,024 warmup
 transitions, updates beginning at transition 1,500, 50 native updates every
 500 transitions, and checkpoints at 20k, 50k, and 100k. Replay capacity
@@ -119,13 +123,43 @@ inference, and expert-conditioned reset states restored from the selected
 dataset's canonical raw `qpos`/`qvel` frame. Online domain randomization remains
 disabled.
 
-M2.6-0a/0b establish trainer readiness only. Neither the formal Phase 100k nor
-the formal Continuous 100k run has been launched. The final pre-formal audit
-also clears transient MuJoCo state before every expert reset and validates each
-canonical raw source against its adjacent `nq`/`nv`, dtype, joint-order,
-quaternion-order, and source-XML metadata before direct `qpos`/`qvel`
-injection. The current path is ready for the controlled Phase and Continuous
-100k runs.
+The final pre-formal audit clears transient MuJoCo state before every expert
+reset and validates each canonical raw source against its adjacent `nq`/`nv`,
+dtype, joint-order, quaternion-order, and source-XML metadata before direct
+`qpos`/`qvel` injection.
+
+## M2.6 Phase Result
+
+The formal Phase run produced `100000` replay transitions and `9900` native
+updates. Numerical integrity passed, but every completed training episode
+ended in fall: `3109` terminated episodes and `0` horizon truncations.
+
+Frozen evaluation on the same 32 reset/latent seeds gave the following mean
+survival times:
+
+| Checkpoint | Mean survival | Fall rate |
+| :--- | ---: | ---: |
+| Official BFM0 | `1.264 s` | `32/32` |
+| `checkpoint_20000` | `0.604 s` | `32/32` |
+| `checkpoint_50000` | `0.519 s` | `32/32` |
+| `checkpoint_100000` | `0.643 s` | `32/32` |
+
+These are frozen-policy stability diagnostics, not skating-success metrics.
+The trained checkpoints are currently less stable than the official BFM0, so
+Continuous training is blocked pending reset/latent alignment and action/
+observation diagnostics.
+
+Run a visual evaluation by selecting any checkpoint:
+
+```bash
+STEP=100000
+CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluator.py \
+  --checkpoint model/motion_library/2026-08-15_143013/checkpoint_${STEP} \
+  --dataset phase \
+  --episodes 4 \
+  --horizon 1024 \
+  --viewer
+```
 
 See [train_log.md](train_log.md) for the current engineering record and
-[train_res.md](train_res.md) for the completed baseline result.
+[train_res.md](train_res.md) for the formal Phase result and evaluation.

@@ -959,3 +959,101 @@ steering, or task-success claim.
   `results/m2.5b-original-bfm-baseline/summary.json` and
   `results/m2.5b-original-bfm-baseline/fixed_eval/target_conditioned_metrics.json`.
 - Next milestone: `M2.5c — Baseline Extension / Domain-Randomization Decision`.
+
+## M2.6 Formal Phase 100k Training
+
+### Training Contract
+
+- Date: `2026-08-15`.
+- Initialization: verified official BFM0, model SHA256
+  `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`.
+- Skate expert source: formal Phase MotionLib, `6038` motions and `452291`
+  accepted frames at `50 Hz`.
+- Expert update batch: `64` Base sequences plus `64` Phase Skate sequences,
+  each with sequence length `8`.
+- Online execution: four HUSKY environments, 29D replay action, 23D executed
+  action, random 256D latent refresh every `100` transitions, nominal physics,
+  and no domain randomization.
+- Reset: uniform motion and local-frame sampling followed by canonical raw
+  robot-board `qpos/qvel` injection.
+
+| Training result | Value |
+| :--- | ---: |
+| Environment transitions | `100000 / 100000` |
+| Native update blocks | `198 / 198` |
+| Native updates | `9900 / 9900` |
+| Replay final size | `100000` |
+| Normal transitions | `96891` |
+| Confirmed terminal falls | `3109` |
+| Horizon truncations | `0` |
+| Expert resets | `3113` |
+| Normalizers finite | `PASS` |
+| Native closed loop | `PASS` |
+
+### Checkpoints
+
+| Checkpoint | Model SHA256 | Optimizer step | Reload |
+| :--- | :--- | ---: | :--- |
+| `checkpoint_20000` | `6c76f0a6ba20c7ff766de2b8e6e4e73f53465f44c5855e837166f0465a281f00` | `1900` | `PASS` |
+| `checkpoint_50000` | `4e7eda31be77dbb0bdfa8572aa5a6167971ecb1f11578184d578173187da16af` | `4900` | `PASS` |
+| `checkpoint_100000` | `04c51a9bc9387be8120485d2ee3670c7fcb143d904b5863ec098b32ec4942454` | `9900` | `PASS` |
+
+Physical checkpoint location:
+`model/motion_library/2026-08-15_143013/`.
+
+### Frozen-Policy Evaluation
+
+Protocol: identical Phase expert-reset sampler, seed `4728`, `32` episodes,
+`1024`-transition horizon, no domain randomization, latent refresh every
+`100` transitions, and deterministic mean Actor action.
+
+| Checkpoint | Falls | Horizon completions | Mean survival | Median | Min | Max |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Official BFM0 | `32/32` | `0/32` | `1.264 s` | `1.20 s` | `0.84 s` | `2.48 s` |
+| Phase 20k | `32/32` | `0/32` | `0.604 s` | `0.62 s` | `0.42 s` | `0.84 s` |
+| Phase 50k | `32/32` | `0/32` | `0.519 s` | `0.52 s` | `0.36 s` | `0.66 s` |
+| Phase 100k | `32/32` | `0/32` | `0.643 s` | `0.65 s` | `0.38 s` | `1.16 s` |
+
+Paired survival comparison against official BFM0:
+
+| Checkpoint | Better | Equal | Worse |
+| :--- | ---: | ---: | ---: |
+| Phase 20k | `0/32` | `0/32` | `32/32` |
+| Phase 50k | `0/32` | `0/32` | `32/32` |
+| Phase 100k | `2/32` | `0/32` | `30/32` |
+
+Stochastic-action control:
+
+| Checkpoint | Falls | Mean survival | Median |
+| :--- | ---: | ---: | ---: |
+| Official BFM0 | `32/32` | `1.312 s` | `1.25 s` |
+| Phase 100k | `32/32` | `0.631 s` | `0.60 s` |
+
+The result is therefore not an artifact of deterministic mean action. The
+official BFM0 is itself unstable on HUSKY expert resets, but all trained
+checkpoints are less stable under the matched protocol.
+
+### Integrity and Interpretation
+
+- The final model contains `537` tensors and `846227305` values; every value
+  is finite.
+- `Infinity` in checkpoint `init_kwargs.json` represents the expected
+  unbounded 928D Gym observation space, not learned parameters.
+- Update losses, optimizer state, normalizers, replay schema, and checkpoint
+  reloads are numerically valid.
+- Numerical training completion does not establish policy improvement.
+- The current training record lacks parameter/gradient norms, action
+  saturation, phase-wise survival curves, and periodic frozen evaluation.
+- A primary hypothesis is mismatch between a randomly sampled expert reset
+  frame and the unrelated random online latent. This remains a hypothesis and
+  requires a matched target-latent experiment.
+
+### Result
+
+- Formal Phase execution: `PASS`.
+- Checkpoint integrity: `PASS`.
+- Frozen-policy stability: `FAIL`.
+- Evidence of improvement over official BFM0: `NO`.
+- Formal Continuous 100k training: `BLOCKED / NOT RUN`.
+- Next diagnostic: compare official/random-z, trained/random-z, and
+  trained/reset-matched target-z under identical expert reset states.

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="820" viewBox="0 0 1600 820" role="img" aria-labelledby="title desc">
-  <title id="title">Skate-BFM overall research program as of 2026-08-12</title>
-  <desc id="desc">The frozen BFM0 and HUSKY baseline, expert motion integration, full-training preparation, M2.5a closed-loop bring-up, and M2.5b 20k original BFM-Zero Skate baseline are verified. Fixed-evaluation performance is inconclusive; M2.5c is next.</desc>
+  <title id="title">Skate-BFM overall research program as of 2026-08-15</title>
+  <desc id="desc">The frozen BFM0 and HUSKY baseline, expert motion integration, full-training preparation, and M2.6 formal Phase 100k execution are verified numerically. Frozen-policy stability is poor and Continuous training is paused for diagnosis.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
@@ -18,9 +18,9 @@
   <text x="52" y="100" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="17">From a general motion prior to predictive closed-loop skateboarding</text>
 
   <rect x="1038" y="34" width="510" height="82" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="2"/>
-    <text x="1062" y="61" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">CURRENT POSITION - 2026-08-12</text>
-    <text x="1062" y="88" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">M2.5b 20k baseline</text>
-    <text x="1062" y="107" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">38 blocks; 1,900 native updates; eval inconclusive</text>
+    <text x="1062" y="61" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">CURRENT POSITION - 2026-08-15</text>
+    <text x="1062" y="88" fill="#17212b" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">M2.6 Phase 100k</text>
+    <text x="1062" y="107" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="13">198 blocks; 9,900 updates; frozen policy unstable</text>
 
   <line x1="258" y1="292" x2="374" y2="292" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
   <line x1="670" y1="292" x2="765" y2="292" stroke="#94a3b8" stroke-width="5" marker-end="url(#arrow)"/>
@@ -170,7 +170,7 @@
   <text x="52" y="730" fill="#64748b" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">EVIDENCE COMPLETE</text>
   <text x="52" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">Official checkpoint integration, H1 retrieval, and target-bank command audit</text>
   <text x="824" y="730" fill="#9a4d05" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">ACTIVE MILESTONE</text>
-  <text x="824" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">M2.5b training passes; M2.5c extension or domain randomization is next</text>
+  <text x="824" y="754" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15">M2.6 numerics pass; frozen-policy diagnosis gates Continuous training</text>
 
   <text x="52" y="797" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="13">Progress is tracked across main-branch experiment records and train-branch data, training, and result logs.</text>
 </svg>
