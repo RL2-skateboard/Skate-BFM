@@ -1943,3 +1943,78 @@ the formal Skate runtime action contract.
   observations, rewards, termination, and datasets were not changed.
 - Validation passed: `ruff`, `py_compile`, and `pytest` (`25 passed`).
 - Training performed: `NO`.
+
+## M2.6-D2.3a Action Coordinate / Control-Target Alignment Audit
+
+- Date: `2026-08-16`.
+- Audited all `158` canonical raw sources and `452885` frames. Raw actions are
+  finite `float32 [T, 23]` values in the source HUSKY policy coordinate, not
+  normalized BFM actions.
+- Derived the name-based physical-target bridge:
+  `a_bfm_norm = (q0_src + s_src * a_src - q0_bfm) / (5 * s_bfm)`.
+  Reconstruction RMSE was `1.97e-17` with maximum error `4.44e-16`.
+- Raw source actions ranged from `-4.933043` to `6.152792`; `32.1595%` of raw
+  components exceeded `[-1, 1]`. The equivalent BFM normalized range was
+  `[-2.343024, 1.716985]`, with `99.600839%` component-level representability.
+- The remaining mismatch was concentrated in left/right hip pitch. Clipping
+  exact equivalent actions produced a global target RMSE of `0.021775 rad`,
+  but hip-pitch tail errors reached `1.490767 rad`.
+- Direct raw-action and raw-action/5 mappings were invalid, with target RMSE
+  `1.330264` and `0.530560 rad`, respectively.
+- Frozen Official BFM0 first-target jump diagnostics used `512` matched Phase
+  resets. Mean 23D target L2 was `2.1924` for random z and `2.0829` for aligned
+  z; the model and normalizer were unchanged.
+- Classification: `CONTROL INTERFACE MISMATCH`. D2.3 remained blocked.
+- Code changed: `NO`. Training performed: `NO`.
+
+## M2.6-D2.3b Temporal Context Representability Audit
+
+- Date: `2026-08-16`.
+- Evaluated the exact current action plus four predecessor actions under the
+  formal uniform-motion/uniform-local-frame reset distribution. History may
+  cross dataset segment boundaries but not raw episode boundaries; missing
+  predecessors were treated as zero padding.
+- Phase contained `6038` motions and `452291` reset candidates. Formal
+  `CURRENT_OK/HISTORY_OK/STRICT_5CTX_OK` coverage was
+  `79.9611/66.6396/64.8366%`; raw-frame strict coverage was `85.7552%`.
+- Continuous contained `890` motions and `445000` candidates. Formal coverage
+  was `92.2596/87.1721/85.8434%`, equal to `85.8434%` raw strict coverage.
+- Both datasets had `632` partial-history resets and `1580` zero-padded slots.
+  A deterministic `512`-reset Phase sample produced `413` current-valid,
+  `354` history-valid, and `344` strict-valid contexts.
+- Hip pitch explained `99.9612%` of Phase strict failures and `99.9810%` of
+  Continuous failures. Phase strict coverage was `88.0850%` for push,
+  `61.0105%` for push2steer, `12.1379%` for steer2push, and above `95%` for
+  all steer phases.
+- More than `96%` of strict failures were over `50` frames from a terminal
+  boundary, so the mismatch was not primarily a fall/end artifact.
+- Classification: `MODERATE CONTEXT LOSS`. D2.3 remained blocked pending an
+  explicit fallback or control-interface decision.
+- Code changed: `NO`. Training performed: `NO`.
+
+## M2.6-D2.4 Expert Action Bridge / Control-Space Attribution Study
+
+- Date: `2026-08-16`.
+- Re-derived the exact per-joint affine bridge
+  `a_bfm_eq = b + k * a_src`; affine and target-inverse forms agreed within
+  `4.44e-16`.
+- Left hip pitch uses `b=0.090089`, `k=0.493240`; removing its default offset
+  recovered only `3.76%` of violations, so dynamic range dominates. Right hip
+  pitch uses `b=-0.540537`, `k=0.493240`; removing its offset recovered
+  `79.41%`, with a remaining dynamic-range tail.
+- In steer2push, formal current hip violation was `60.15%` and strict
+  five-context failure was `87.86%`. Hip violation runs averaged `4.32`
+  frames, with p95 `9` and maximum `14`, confirming temporal persistence.
+- Fixed-center 99.9% target coverage requires left/right hip range
+  multipliers of `1.510x/1.860x`. Full observed coverage requires
+  `2.156x/2.343x`; this is not a minor range-only extension.
+- Source and current use the same MuJoCo position actuators, PD gains, damping,
+  force limits, 50 Hz control rate, and no delay/filter. They differ in target
+  mapping, clipping, integration (`0.005 x 4` versus `0.002 x 10`), and solver
+  settings, so an exact target bridge does not imply complete low-level
+  dynamics equivalence.
+- Recommended future classification:
+  `MODE 3 - CONTROLLER PARAMETERIZATION ADAPTATION`. A simple affine bridge
+  exactly covers the current representable region; hip-pitch reachable range
+  and low-level integration differences block the remainder.
+- Code changed: `NO`. Training performed: `NO`.
