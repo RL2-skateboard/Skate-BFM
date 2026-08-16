@@ -1828,3 +1828,37 @@ the formal Skate runtime action contract.
   unchanged.
 - Validation passed: `ruff`, `py_compile`, and `pytest` (`20 passed`).
 - Training performed: `NO`.
+
+## M2.6-D1.3 Normalized Observation Distribution Audit
+
+- Date: `2026-08-16`.
+- Used the strictly loaded official BFM0 `_obs_normalizer` in frozen eval mode.
+  Model parameters, all buffers, and normalizer buffers were unchanged.
+- Deterministic samples covered `8192` Base expert, `8192` Phase expert,
+  `8192` Continuous expert, `512` Phase resets, `512` Continuous resets, and
+  `64` Phase rollouts through reset plus steps 1-20 (`1344` observations).
+- Phase and Continuous canonical records were exactly equal on `32` evenly
+  spaced shared interior source frames for pose, root, joints, action, board,
+  and central DoF velocity fields. Segmentation did not change representation.
+- Reset state was mostly within the official distribution. Frozen BFM0
+  rollouts nevertheless drove waist yaw position/velocity and their history
+  to approximately `20-27 sigma` within 20 steps; this is classified as
+  closed-loop task shift rather than a layout change.
+- Privileged-state shift was concentrated in body linear/angular velocity and
+  orientation blocks. No quaternion layout or Phase/Continuous mismatch was
+  found.
+- MotionLib expert `last_action` is the upstream bogus all-zero field and is
+  not representative of online actions. HUSKY reset/rollout wrist actions
+  remained exactly zero under D1.2.
+- Reset `history_actor` is currently zero initialized. Its gravity/action
+  offsets under the official normalizer are an expected current-protocol
+  shift; expert-history restoration was not attempted.
+- Suspected integration mismatch: the official MotionLib expert loader inserts
+  unscaled root angular velocity into `state`, while official online and HUSKY
+  online observations apply the configured `base_ang_vel` scale of `0.25`.
+  Expert normalized `base_ang_vel` reached roughly `7-10 sigma`. No observation
+  semantics were changed during this audit.
+- Classification: expected task shift `YES`; expected current-protocol shift
+  `YES`; suspected integration mismatch `YES`.
+- `D1.3 AUDIT: BLOCKED`.
+- Training performed: `NO`.
