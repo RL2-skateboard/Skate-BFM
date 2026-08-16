@@ -1862,3 +1862,41 @@ the formal Skate runtime action contract.
   `YES`; suspected integration mismatch `YES`.
 - `D1.3 AUDIT: BLOCKED`.
 - Training performed: `NO`.
+
+## M2.6-D2.1 Expert Reset / Tracking-z Alignment
+
+- Date: `2026-08-16`.
+- Built an exact mapping between all `6038` Phase reset motion keys and unique
+  official MotionLib expert trajectories. Expert length minus raw frame count
+  is `-1` for `4521` motions and `0` for `1517`, following the upstream
+  float32 duration and `ceil(length / dt)` construction.
+- Raw local frame `t` maps to expert state `t` while it exists. Its first
+  tracking latent uses expert next states `t+1...t+8`; later latents advance
+  per step, shorten naturally at the trajectory tail, and never cross a Phase
+  segment. Terminal frames without a next expert state fail closed.
+- The deterministic 20-step subset has `4544` eligible motions and `335970`
+  eligible frames; `116321` frames were excluded because fewer than 20 future
+  expert states remained.
+- Project-owned extraction matched direct official `tracking_inference()` on
+  the same exact next-observation slice. Tracking z is finite, has shape
+  `[T, 256]`, and has norm `16` within `2e-6`.
+- A frozen 2x2 diagnostic used the same `32` expert resets, source physics,
+  seeds, deterministic action mode, and 20-step horizon. Official BFM0
+  completed `32/32` for both random and aligned z; mean final waist-yaw sigma
+  remained approximately `-24.6/-24.5`, so alignment alone did not remove its
+  early waist divergence.
+- Historical Phase-100k completed `31/32` with one fall under random z and
+  `32/32` under aligned z. Mean step-20 root tilt changed from `47.8` to
+  `25.2` degrees and action saturation from `17.1%` to `0.29%`. This is a
+  diagnostic of the old checkpoint, not a D2.1 training result.
+- Official and historical checkpoint-specific aligned z differed materially:
+  mean cosine `0.370` and mean L2 distance `17.94`. Each condition used its own
+  frozen B and normalizer.
+- D1.1 source physics and D1.2 wrist-zero invariants passed. Model, buffer, and
+  normalizer hashes were unchanged. The upstream expert `base_ang_vel` scale
+  contract was retained.
+- Evaluator default remains random z; aligned expert mode is explicit. Formal
+  trainer rollout z, history initialization, losses, optimizer, data, and
+  observation semantics were not changed.
+- Validation passed: `ruff`, `py_compile`, and `pytest` (`22 passed`).
+- Training performed: `NO`.

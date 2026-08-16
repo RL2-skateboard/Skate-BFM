@@ -3,6 +3,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import joblib
 import mujoco
@@ -347,6 +348,87 @@ def test_native_action_consumers_project_positional_and_keyword_actions() -> Non
     assert not hasattr(incomplete, "_skate_husky_action_projection_handles")
 
 
+class _TrackingModel:
+    def __init__(self, offset: float = 0.0) -> None:
+        self.cfg = SimpleNamespace(
+            seq_length=3,
+            archi=SimpleNamespace(z_dim=2),
+        )
+        self.device = torch.device("cpu")
+        self.offset = offset
+        self.seen: dict[str, torch.Tensor] | None = None
+
+    def tracking_inference(
+        self,
+        next_observation: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        self.seen = {
+            key: value.clone()
+            for key, value in next_observation.items()
+        }
+        z = next_observation["state"][:, :2].clone() + self.offset
+        for step in range(z.shape[0]):
+            z[step] = z[step : step + self.cfg.seq_length].mean(dim=0)
+        return z
+
+
+def test_aligned_tracking_context_uses_next_states_and_stays_in_trajectory() -> None:
+    module = _training_module()
+    observations = {
+        "state": torch.tensor([
+            [0.0, 0.5], [1.0, 1.5], [2.0, 2.5], [3.0, 3.5], [4.0, 4.5],
+            [100.0, 100.5], [101.0, 101.5], [102.0, 102.5],
+        ]),
+        "privileged_state": torch.zeros(8, 1),
+        "last_action": torch.zeros(8, 1),
+    }
+    context = module.AlignedSkateTrackingContext(
+        observations,
+        ["first", "second"],
+        [5, 3],
+        {"first": 5, "second": 4},
+    )
+    model = _TrackingModel()
+    z, ranges = context.encode(model, "first", local_frame=1, steps=8)
+
+    assert model.seen is not None
+    assert torch.equal(model.seen["state"][:, 0], torch.tensor([2.0, 3.0, 4.0]))
+    assert torch.equal(
+        z,
+        torch.tensor([[3.0, 3.5], [3.5, 4.0], [4.0, 4.5]]),
+    )
+    assert ranges[0] == {
+        "expert_state_index": 1,
+        "future_start": 2,
+        "future_end": 4,
+        "future_count": 3,
+    }
+    assert ranges[-1]["future_count"] == 1
+    assert context.eligible_frame_count("first", 1) == 4
+    assert context.eligible_frame_count("first", 3) == 2
+    assert context.eligible_frame_count("second", 3) == 0
+    with pytest.raises(RuntimeError, match="no valid next"):
+        context.encode(model, "first", local_frame=4, steps=1)
+
+
+def test_aligned_tracking_context_uses_checkpoint_specific_model() -> None:
+    module = _training_module()
+    observations = {
+        "state": torch.arange(12, dtype=torch.float32).reshape(6, 2),
+        "privileged_state": torch.zeros(6, 1),
+        "last_action": torch.zeros(6, 1),
+    }
+    context = module.AlignedSkateTrackingContext(
+        observations,
+        ["motion"],
+        [6],
+        {"motion": 6},
+    )
+    first, _ = context.encode(_TrackingModel(offset=0.0), "motion", 0, 2)
+    second, _ = context.encode(_TrackingModel(offset=10.0), "motion", 0, 2)
+    assert not torch.equal(first, second)
+
+
 def test_parallel_online_environments_reset_independently() -> None:
     envs = [HuskyBfmOnlineEnv() for _ in range(4)]
     try:
@@ -617,6 +699,51 @@ def test_official_checkpoint_stays_strictly_loadable_with_29d_actions() -> None:
         for name in agent._model.state_dict()
     )
     assert hasattr(agent._model, "_skate_husky_action_projection_handles")
+
+    context = module.AlignedSkateTrackingContext.load(
+        agent,
+        module.EXPERT_DATASETS["phase"],
+    )
+    assert len(context.trajectories) == 6038
+    assert context.frame_difference_counts() == {-1: 4521, 0: 1517}
+    assert sum(
+        context.eligible_frame_count(name, 20)
+        for name in context.trajectories
+    ) == 335970
+
+    motion_key = next(
+        name
+        for name in context.trajectories
+        if context.eligible_frame_count(name, 20) > 5
+    )
+    local_frame = 5
+    aligned, ranges = context.encode(
+        agent._model,
+        motion_key,
+        local_frame,
+        20,
+    )
+    trajectory = context.trajectories[motion_key]
+    start = trajectory["start"] + local_frame + 1
+    end = min(
+        trajectory["start"] + trajectory["length"],
+        start + 20 + agent._model.cfg.seq_length - 1,
+    )
+    direct_observation = {
+        name: value[start:end].to(agent.device)
+        for name, value in context.observations.items()
+    }
+    with torch.no_grad():
+        direct = agent._model.tracking_inference(direct_observation)[:20]
+    assert torch.equal(aligned, direct)
+    assert aligned.shape == (20, 256)
+    assert torch.isfinite(aligned).all()
+    assert torch.allclose(
+        aligned.norm(dim=-1),
+        torch.full((20,), 16.0, device=aligned.device),
+        atol=2e-6,
+    )
+    assert ranges[0]["future_start"] == local_frame + 1
 
 
 def test_m26_configuration_and_schedule_are_parameterized(

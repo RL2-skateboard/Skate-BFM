@@ -15,6 +15,8 @@ import json
 import joblib
 import os
 import sys
+from collections import Counter
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -519,8 +521,13 @@ def make_expert_env(env_cfg: HumanoidVerseIsaacConfig) -> SimpleNamespace:
     )
 
 
-def load_expert(agent: Any, motion_file: str | Path) -> dict[str, torch.Tensor]:
-    """Return BFM-compatible observations for one MotionLib source."""
+def load_expert_buffer(
+    agent: Any,
+    motion_file: str | Path,
+    *,
+    device: str | torch.device | None = None,
+) -> Any:
+    """Load one source through the official BFM MotionLib expert path."""
 
     env = make_expert_env(build_train_config().env)
     motion_cfg = copy.deepcopy(env.config.robot.motion)
@@ -535,12 +542,154 @@ def load_expert(agent: Any, motion_file: str | Path) -> dict[str, torch.Tensor]:
         gravity_vec=env.gravity_vec,
         config=env.config,
     )
-    buffer = load_expert_trajectories_from_motion_lib(expert_env, agent.cfg, device=agent.device)
+    return load_expert_trajectories_from_motion_lib(
+        expert_env,
+        agent.cfg,
+        device=agent.device if device is None else device,
+    )
+
+
+def load_expert(agent: Any, motion_file: str | Path) -> dict[str, torch.Tensor]:
+    """Return BFM-compatible observations for one MotionLib source."""
+
+    buffer = load_expert_buffer(agent, motion_file)
     return {
         name: value.detach().cpu()
         for name, value in buffer.storage["observation"].items()
         if name in {"state", "last_action", "privileged_state"}
     }
+
+
+class AlignedSkateTrackingContext:
+    """Strict reset-to-MotionLib lookup for per-step expert tracking latents."""
+
+    def __init__(
+        self,
+        observations: Mapping[str, torch.Tensor],
+        file_names: list[str],
+        trajectory_lengths: list[int],
+        motion_frames: Mapping[str, int],
+    ) -> None:
+        names = tuple(map(str, file_names))
+        if len(names) != len(set(names)):
+            raise RuntimeError("Skate expert MotionLib contains duplicate motion keys.")
+        if set(names) != set(motion_frames):
+            raise RuntimeError("Reset and MotionLib motion-key sets do not match.")
+        if len(names) != len(trajectory_lengths):
+            raise RuntimeError("MotionLib names and trajectory lengths do not match.")
+        if any(value.shape[0] != sum(trajectory_lengths) for value in observations.values()):
+            raise RuntimeError("MotionLib observation storage length is inconsistent.")
+
+        self.observations = dict(observations)
+        self.trajectories: dict[str, dict[str, int]] = {}
+        offset = 0
+        for trajectory_id, (name, length) in enumerate(
+            zip(names, trajectory_lengths, strict=True)
+        ):
+            raw_frames = int(motion_frames[name])
+            if length <= 0 or raw_frames <= 0 or length > raw_frames:
+                raise RuntimeError(f"Invalid frame relation for Skate motion {name}.")
+            self.trajectories[name] = {
+                "trajectory_id": trajectory_id,
+                "start": offset,
+                "length": int(length),
+                "raw_frames": raw_frames,
+            }
+            offset += int(length)
+
+    @classmethod
+    def load(cls, agent: Any, motion_file: str | Path) -> AlignedSkateTrackingContext:
+        motion_file = Path(motion_file).expanduser().resolve()
+        records = joblib.load(motion_file)
+        if not isinstance(records, dict) or not records:
+            raise RuntimeError("Skate expert dataset must be a non-empty motion dictionary.")
+        motion_frames = {
+            str(name): int(np.asarray(record["dof"]).shape[0])
+            for name, record in records.items()
+        }
+        del records
+
+        buffer = load_expert_buffer(agent, motion_file, device="cpu")
+        done = torch.as_tensor(buffer.storage["truncated"]).flatten().cpu()
+        ends = torch.nonzero(done, as_tuple=False).flatten().tolist()
+        previous = -1
+        lengths = []
+        for end in ends:
+            lengths.append(int(end - previous))
+            previous = int(end)
+        observations = {
+            name: value.detach().cpu()
+            for name, value in buffer.storage["observation"].items()
+            if name in {"state", "last_action", "privileged_state"}
+        }
+        return cls(observations, list(buffer.file_names), lengths, motion_frames)
+
+    def frame_difference_counts(self) -> dict[int, int]:
+        return dict(sorted(Counter(
+            item["length"] - item["raw_frames"]
+            for item in self.trajectories.values()
+        ).items()))
+
+    def eligible_frame_count(self, motion_key: str, future_steps: int = 1) -> int:
+        if future_steps <= 0:
+            raise ValueError("future_steps must be positive.")
+        trajectory = self.trajectories[motion_key]
+        return max(
+            min(
+                trajectory["raw_frames"],
+                trajectory["length"] - future_steps,
+            ),
+            0,
+        )
+
+    def encode(
+        self,
+        model: torch.nn.Module,
+        motion_key: str,
+        local_frame: int,
+        steps: int,
+    ) -> tuple[torch.Tensor, list[dict[str, int]]]:
+        if steps <= 0:
+            raise ValueError("steps must be positive.")
+        trajectory = self.trajectories.get(motion_key)
+        if trajectory is None:
+            raise RuntimeError(f"Reset motion has no expert trajectory: {motion_key}")
+        if not 0 <= local_frame < trajectory["raw_frames"]:
+            raise ValueError(f"Reset local frame is outside motion {motion_key}.")
+        future_start = local_frame + 1
+        if future_start >= trajectory["length"]:
+            raise RuntimeError("Reset frame has no valid next expert state.")
+
+        future_steps = min(steps, trajectory["length"] - future_start)
+        slice_end = min(
+            trajectory["length"],
+            future_start + future_steps + model.cfg.seq_length - 1,
+        )
+        start = trajectory["start"]
+        next_observation = {
+            name: value[start + future_start : start + slice_end].to(model.device)
+            for name, value in self.observations.items()
+        }
+        with torch.no_grad():
+            z = model.tracking_inference(next_observation)[:future_steps]
+        ranges = [
+            {
+                "expert_state_index": local_frame + step,
+                "future_start": local_frame + step + 1,
+                "future_end": min(
+                    local_frame + step + model.cfg.seq_length,
+                    trajectory["length"] - 1,
+                ),
+                "future_count": min(
+                    model.cfg.seq_length,
+                    trajectory["length"] - local_frame - step - 1,
+                ),
+            }
+            for step in range(future_steps)
+        ]
+        if z.shape != (future_steps, model.cfg.archi.z_dim) or not torch.isfinite(z).all():
+            raise RuntimeError("Aligned tracking z has an invalid shape or value.")
+        return z, ranges
 
 
 def encode_target(agent: Any, observations: dict[str, torch.Tensor]) -> np.ndarray:

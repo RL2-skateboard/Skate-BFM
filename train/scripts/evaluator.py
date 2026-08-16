@@ -9,6 +9,7 @@ import json
 import math
 import random
 import sys
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ sys.path.insert(0, str(SCRIPT_DIRECTORY))
 from skate_bfm.integration import HuskyBfmOnlineEnv
 from skate_husky import randomize_husky_play_physics
 from train_skate_bfm import (
+    AlignedSkateTrackingContext,
     EXPERT_DATASETS,
     OFFICIAL_BFM0_SHA256,
     checkpoint_model_path,
@@ -90,6 +92,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--horizon", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=4728)
     parser.add_argument(
+        "--latent-mode",
+        choices=("random", "aligned-expert"),
+        default="random",
+        help="Use random rollout latents or the reset motion's per-step tracking latents.",
+    )
+    parser.add_argument(
         "--latent-refresh",
         type=int,
         default=100,
@@ -149,6 +157,7 @@ class ExpertResetSampler:
         motion_file: Path,
         env: HuskyBfmOnlineEnv,
         seed: int,
+        eligible_frame_counts: Mapping[str, int] | None = None,
     ) -> None:
         loaded = joblib.load(motion_file)
         if not isinstance(loaded, dict) or not loaded:
@@ -181,7 +190,18 @@ class ExpertResetSampler:
                 "physics_seed": int(record["physics_seed"]),
             }
         del loaded, record
-        self.motion_keys = tuple(self.records)
+        if eligible_frame_counts is None:
+            self.eligible_frame_counts = None
+            self.motion_keys = tuple(self.records)
+        else:
+            if set(eligible_frame_counts) != set(self.records):
+                raise RuntimeError("Eligible-frame and reset motion-key sets do not match.")
+            self.eligible_frame_counts = dict(eligible_frame_counts)
+            self.motion_keys = tuple(
+                name for name in self.records if self.eligible_frame_counts[name] > 0
+            )
+            if not self.motion_keys:
+                raise RuntimeError("No reset motion has enough future expert states.")
         self.env = env
         self.rng = np.random.default_rng(seed)
         self.raw_cache: dict[
@@ -194,7 +214,12 @@ class ExpertResetSampler:
     ) -> tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, Any]]:
         motion_key = self.motion_keys[int(self.rng.integers(len(self.motion_keys)))]
         record = self.records[motion_key]
-        local_frame = int(self.rng.integers(record["motion_frames"]))
+        frame_count = (
+            record["motion_frames"]
+            if self.eligible_frame_counts is None
+            else self.eligible_frame_counts[motion_key]
+        )
+        local_frame = int(self.rng.integers(frame_count))
         source_frame = int(record["source_start_frame"]) + local_frame
         source_path = Path(record["source_raw_npz"]).expanduser().resolve()
         if source_path not in self.raw_cache:
@@ -212,6 +237,7 @@ class ExpertResetSampler:
             source_physics,
             {
                 "motion_key": motion_key,
+                "local_frame": local_frame,
                 "source_raw_npz": str(source_path),
                 "source_frame": source_frame,
                 "source_round": record["source_round"],
@@ -493,11 +519,30 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
     before = {
         "parameters": hash_params(agent._model),
         "buffers": hash_buffers(agent._model),
+        "normalizer": hash_buffers(agent._model._obs_normalizer),
         "components": hash_components(agent),
     }
 
     env = HuskyBfmOnlineEnv(viewer=args.viewer, realtime=args.viewer)
-    sampler = ExpertResetSampler(expert_motion, env, args.seed)
+    tracking_context = (
+        AlignedSkateTrackingContext.load(agent, expert_motion)
+        if args.latent_mode == "aligned-expert"
+        else None
+    )
+    eligible_frame_counts = (
+        {
+            name: tracking_context.eligible_frame_count(name, args.horizon)
+            for name in tracking_context.trajectories
+        }
+        if tracking_context is not None
+        else None
+    )
+    sampler = ExpertResetSampler(
+        expert_motion,
+        env,
+        args.seed,
+        eligible_frame_counts=eligible_frame_counts,
+    )
     rollouts: list[dict[str, Any]] = []
     viewer_closed = False
     try:
@@ -515,14 +560,28 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
             terminated = False
             truncated = False
             z: torch.Tensor | None = None
+            tracking_z = None
+            tracking_ranges = None
+            if tracking_context is not None:
+                tracking_z, tracking_ranges = tracking_context.encode(
+                    agent._model,
+                    reset["motion_key"],
+                    reset["local_frame"],
+                    args.horizon,
+                )
 
             for step in range(args.horizon):
                 if args.viewer and not env.env.is_running:
                     viewer_closed = True
                     break
-                if z is None or step % args.latent_refresh == 0:
+                if tracking_z is not None:
+                    z = tracking_z[step]
+                    latent_fingerprints.append(hash_data(z))
+                elif z is None or step % args.latent_refresh == 0:
                     z = agent._model.sample_z(1, device=agent.device)[0]
                     latent_fingerprints.append(hash_data(z))
+                if z is None:
+                    raise RuntimeError("Rollout latent was not initialized.")
                 model_observation = {
                     key: value.unsqueeze(0).to(agent.device)
                     for key, value in observation.items()
@@ -554,8 +613,21 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                 "episode_index": episode_index,
                 "episode_seed": args.seed + episode_index,
                 "reset": reset,
-                "latent_refresh_steps": args.latent_refresh,
+                "latent_mode": args.latent_mode,
+                "latent_refresh_steps": (
+                    args.latent_refresh if tracking_z is None else 1
+                ),
                 "latent_fingerprints": latent_fingerprints,
+                "tracking": (
+                    {
+                        "trajectory": tracking_context.trajectories[
+                            reset["motion_key"]
+                        ],
+                        "ranges": tracking_ranges,
+                    }
+                    if tracking_context is not None
+                    else None
+                ),
                 "action_mode": (
                     "stochastic" if args.stochastic_actions else "deterministic_mean"
                 ),
@@ -589,6 +661,7 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
     after = {
         "parameters": hash_params(agent._model),
         "buffers": hash_buffers(agent._model),
+        "normalizer": hash_buffers(agent._model._obs_normalizer),
         "components": hash_components(agent),
     }
     if before != after:
@@ -613,13 +686,20 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
             "dataset": args.dataset,
             "expert_motion": str(expert_motion),
             "expert_motion_sha256": hash_file(expert_motion),
-            "reset_mode": "uniform_motion_uniform_local_frame_raw_qpos_qvel",
+            "reset_mode": (
+                "uniform_motion_uniform_eligible_local_frame_raw_qpos_qvel"
+                if tracking_context is not None
+                else "uniform_motion_uniform_local_frame_raw_qpos_qvel"
+            ),
             "source_physics": "canonical_raw_metadata_exact",
             "domain_randomization": False,
             "episodes_requested": args.episodes,
             "horizon": args.horizon,
             "control_dt_s": env.env.control_dt,
-            "latent_refresh_steps": args.latent_refresh,
+            "latent_refresh_steps": (
+                1 if tracking_context is not None else args.latent_refresh
+            ),
+            "latent_mode": args.latent_mode,
             "action_mode": (
                 "stochastic" if args.stochastic_actions else "deterministic_mean"
             ),
