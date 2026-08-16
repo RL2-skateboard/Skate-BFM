@@ -313,6 +313,15 @@ class BaseSkateExpertSampler:
         return getattr(self.expert_base, name)
 
 
+def assemble_expert_replay(expert_base: Any, expert_skate: Any) -> dict[str, Any]:
+    return {
+        "expert_base": expert_base,
+        "expert_tracking": expert_skate,
+        "expert_skate": expert_skate,
+        "expert_slicer": BaseSkateExpertSampler(expert_base, expert_skate),
+    }
+
+
 def register_skate_replay(replay_buffer: dict[str, Any], train_skate: Any) -> None:
     """Keep the official BFM ``train`` key as an alias of HUSKY replay."""
 
@@ -598,18 +607,11 @@ class AlignedSkateTrackingContext:
             offset += int(length)
 
     @classmethod
-    def load(cls, agent: Any, motion_file: str | Path) -> AlignedSkateTrackingContext:
-        motion_file = Path(motion_file).expanduser().resolve()
-        records = joblib.load(motion_file)
-        if not isinstance(records, dict) or not records:
-            raise RuntimeError("Skate expert dataset must be a non-empty motion dictionary.")
-        motion_frames = {
-            str(name): int(np.asarray(record["dof"]).shape[0])
-            for name, record in records.items()
-        }
-        del records
-
-        buffer = load_expert_buffer(agent, motion_file, device="cpu")
+    def from_buffer(
+        cls,
+        buffer: Any,
+        motion_frames: Mapping[str, int],
+    ) -> AlignedSkateTrackingContext:
         done = torch.as_tensor(buffer.storage["truncated"]).flatten().cpu()
         ends = torch.nonzero(done, as_tuple=False).flatten().tolist()
         previous = -1
@@ -623,6 +625,22 @@ class AlignedSkateTrackingContext:
             if name in {"state", "last_action", "privileged_state"}
         }
         return cls(observations, list(buffer.file_names), lengths, motion_frames)
+
+    @classmethod
+    def load(cls, agent: Any, motion_file: str | Path) -> AlignedSkateTrackingContext:
+        motion_file = Path(motion_file).expanduser().resolve()
+        records = joblib.load(motion_file)
+        if not isinstance(records, dict) or not records:
+            raise RuntimeError("Skate expert dataset must be a non-empty motion dictionary.")
+        motion_frames = {
+            str(name): int(np.asarray(record["dof"]).shape[0])
+            for name, record in records.items()
+        }
+        del records
+        return cls.from_buffer(
+            load_expert_buffer(agent, motion_file, device="cpu"),
+            motion_frames,
+        )
 
     def frame_difference_counts(self) -> dict[int, int]:
         return dict(sorted(Counter(
@@ -690,6 +708,127 @@ class AlignedSkateTrackingContext:
         if z.shape != (future_steps, model.cfg.archi.z_dim) or not torch.isfinite(z).all():
             raise RuntimeError("Aligned tracking z has an invalid shape or value.")
         return z, ranges
+
+
+def select_expert_rollout_envs(
+    env_count: int,
+    percentage: float,
+    seed: int,
+) -> tuple[int, ...]:
+    selected = env_count * percentage
+    if not 0 <= percentage <= 1 or not float(selected).is_integer():
+        raise ValueError("Expert rollout percentage must select a whole number of envs.")
+    rng = np.random.default_rng(seed)
+    return tuple(sorted(
+        map(int, rng.choice(env_count, size=int(selected), replace=False))
+    ))
+
+
+class SkateRolloutContext:
+    """Per-environment background and reset-aligned tracking latents."""
+
+    def __init__(self, agent: Any, env_count: int, expert_envs: tuple[int, ...]) -> None:
+        if len(expert_envs) != len(set(expert_envs)):
+            raise ValueError("Expert rollout env indices must be unique.")
+        self.agent = agent
+        self.expert_envs = frozenset(expert_envs)
+        self.background: list[torch.Tensor | None] = [None] * env_count
+        self.tracking: list[torch.Tensor | None] = [None] * env_count
+        self.had_tracking = [False] * env_count
+        self.counters = {
+            "background_random_samples": 0,
+            "background_zbuffer_samples": 0,
+            "expert_tracking_resets": 0,
+            "tracking_unavailable_resets": 0,
+            "tracking_transitions": 0,
+            "free_transitions": 0,
+            "post_tracking_free_transitions": 0,
+        }
+        self.tracking_lengths: list[int] = []
+
+    def reset(self, env_index: int, tracking: torch.Tensor | None) -> None:
+        if env_index not in self.expert_envs and tracking is not None:
+            raise ValueError("Free rollout env cannot receive expert tracking z.")
+        self.background[env_index] = None
+        self.tracking[env_index] = tracking
+        self.had_tracking[env_index] = tracking is not None
+        if env_index in self.expert_envs:
+            if tracking is None:
+                self.counters["tracking_unavailable_resets"] += 1
+            else:
+                self.counters["expert_tracking_resets"] += 1
+                self.tracking_lengths.append(len(tracking))
+
+    def effective_z(self, episode_steps: list[int]) -> torch.Tensor:
+        refresh = [
+            index
+            for index, value in enumerate(self.background)
+            if value is None
+            or episode_steps[index] % self.agent.cfg.train.update_z_every_step == 0
+        ]
+        if refresh:
+            use_buffer = (
+                self.agent.cfg.train.use_mix_rollout
+                and not self.agent.z_buffer.empty()
+            )
+            sampled = (
+                self.agent.z_buffer.sample(len(refresh), device=self.agent.device)
+                if use_buffer
+                else self.agent._model.sample_z(len(refresh), device=self.agent.device)
+            )
+            counter = (
+                "background_zbuffer_samples"
+                if use_buffer
+                else "background_random_samples"
+            )
+            self.counters[counter] += len(refresh)
+            for offset, index in enumerate(refresh):
+                self.background[index] = sampled[offset]
+
+        effective = []
+        for index, step in enumerate(episode_steps):
+            tracking = self.tracking[index]
+            if tracking is not None and step < len(tracking):
+                effective.append(tracking[step])
+                self.counters["tracking_transitions"] += 1
+            else:
+                background = self.background[index]
+                if background is None:
+                    raise RuntimeError("Background rollout z was not initialized.")
+                effective.append(background)
+                self.counters["free_transitions"] += 1
+                if self.had_tracking[index] and tracking is not None:
+                    self.counters["post_tracking_free_transitions"] += 1
+        return torch.stack(effective)
+
+    def report(self) -> dict[str, Any]:
+        lengths = np.asarray(self.tracking_lengths, dtype=np.float64)
+        total = (
+            self.counters["tracking_transitions"]
+            + self.counters["free_transitions"]
+        )
+        return {
+            "expert_rollout_env_indices": sorted(self.expert_envs),
+            "use_mix_rollout": self.agent.cfg.train.use_mix_rollout,
+            "update_z_every_step": self.agent.cfg.train.update_z_every_step,
+            "z_buffer_size": self.agent.cfg.train.z_buffer_size,
+            "expert_percentage": (
+                self.agent.cfg.train.rollout_expert_trajectories_percentage
+            ),
+            "tracking_max_length": (
+                self.agent.cfg.train.rollout_expert_trajectories_length
+            ),
+            **self.counters,
+            "tracking_lengths": {
+                "min": int(lengths.min()) if lengths.size else None,
+                "mean": float(lengths.mean()) if lengths.size else None,
+                "median": float(np.median(lengths)) if lengths.size else None,
+                "max": int(lengths.max()) if lengths.size else None,
+            },
+            "realized_tracking_transition_ratio": (
+                self.counters["tracking_transitions"] / total if total else 0.0
+            ),
+        }
 
 
 def encode_target(agent: Any, observations: dict[str, torch.Tensor]) -> np.ndarray:
@@ -815,6 +954,22 @@ class Workspace:
         self.agent.checkpoint_source = "official_bfm0_pretrained"
         self.agent._model.eval()
         self.agent_update_calls = 0
+        expert_percentage = (
+            self.agent.cfg.train.rollout_expert_trajectories_percentage
+            if self.agent.cfg.train.rollout_expert_trajectories
+            else 0.0
+        )
+        self.expert_rollout_env_indices = select_expert_rollout_envs(
+            cfg.online_envs,
+            expert_percentage,
+            cfg.seed + 1,
+        )
+        self.rollout_context = SkateRolloutContext(
+            self.agent,
+            cfg.online_envs,
+            self.expert_rollout_env_indices,
+        )
+        self.tracking_context: AlignedSkateTrackingContext | None = None
         (self.work_dir / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
 
     def _sample_expert_reset(
@@ -848,6 +1003,7 @@ class Workspace:
         qvel = np.asarray(raw_qvel[source_frame], dtype=np.float64).copy()
         return qpos, qvel, source_physics, {
             "motion_key": motion_key,
+            "local_frame": local_frame,
             "source_raw_npz": str(source_path),
             "source_frame": source_frame,
             "source_round": record.get("source_round"),
@@ -881,12 +1037,14 @@ class Workspace:
         expert_skate = load_expert_trajectories_from_motion_lib(
             skate_env, self.cfg.agent, device=self.cfg.buffer_device
         )
-        return {
-            "expert_base": expert_base,
-            "expert_tracking": expert_base,
-            "expert_skate": expert_skate,
-            "expert_slicer": BaseSkateExpertSampler(expert_base, expert_skate),
-        }
+        self.tracking_context = AlignedSkateTrackingContext.from_buffer(
+            expert_skate,
+            {
+                str(name): int(record["motion_frames"])
+                for name, record in self.reset_records.items()
+            },
+        )
+        return assemble_expert_replay(expert_base, expert_skate)
 
     def _build_replay(self) -> dict[str, Any]:
         replay: dict[str, Any] = {}
@@ -895,6 +1053,32 @@ class Workspace:
         )
         replay.update(self._load_experts())
         return replay
+
+    def _reset_online_env(self, env_index: int) -> dict[str, torch.Tensor]:
+        qpos, qvel, source_physics, provenance = self._sample_expert_reset()
+        observation = self.train_envs[env_index].reset(
+            qpos=qpos,
+            qvel=qvel,
+            source_physics=source_physics,
+        )
+        tracking = None
+        if env_index in self.rollout_context.expert_envs:
+            if self.tracking_context is None:
+                raise RuntimeError("Skate tracking context is unavailable.")
+            trajectory = self.tracking_context.trajectories[provenance["motion_key"]]
+            available = trajectory["length"] - int(provenance["local_frame"]) - 1
+            if available > 0:
+                tracking, _ = self.tracking_context.encode(
+                    self.agent._model,
+                    str(provenance["motion_key"]),
+                    int(provenance["local_frame"]),
+                    min(
+                        available,
+                        self.agent.cfg.train.rollout_expert_trajectories_length,
+                    ),
+                )
+        self.rollout_context.reset(env_index, tracking)
+        return observation
 
     def _preflight(self, replay: dict[str, Any]) -> dict[str, int]:
         if replay["train"] is not replay["train_skate"]:
@@ -1014,6 +1198,7 @@ class Workspace:
                     f"BFM0 SHA256: {self.agent.pretrained_load_report['model_sha256']}",
                     f"Seed: {self.cfg.seed}",
                     f"Online envs: {self.cfg.online_envs}",
+                    f"Expert rollout envs: {self.expert_rollout_env_indices}",
                     f"Transitions: {self.cfg.skate_max_steps}",
                     f"Replay capacity: {self.cfg.buffer_size}",
                     f"Warmup: {self.cfg.warmup_transitions}",
@@ -1043,18 +1228,10 @@ class Workspace:
 
         model = self.agent._model
         observations: list[dict[str, torch.Tensor]] = []
-        z: list[torch.Tensor | None] = [None] * self.cfg.online_envs
         episode_steps = [0] * self.cfg.online_envs
         reset_counts = [0] * self.cfg.online_envs
-        for index, env in enumerate(self.train_envs):
-            qpos, qvel, source_physics, _ = self._sample_expert_reset()
-            observations.append(
-                env.reset(
-                    qpos=qpos,
-                    qvel=qvel,
-                    source_physics=source_physics,
-                )
-            )
+        for index in range(self.cfg.online_envs):
+            observations.append(self._reset_online_env(index))
             reset_counts[index] += 1
         transitions: list[Any] = []
         update_blocks: list[dict[str, Any]] = []
@@ -1074,21 +1251,11 @@ class Workspace:
             nonlocal episodes, falls, start
             model.eval()
             while start <= end:
-                refresh = [
-                    index
-                    for index, value in enumerate(z)
-                    if value is None
-                    or episode_steps[index] % self.agent.cfg.train.update_z_every_step == 0
-                ]
-                if refresh:
-                    sampled_z = model.sample_z(len(refresh), device=self.agent.device)
-                    for offset, index in enumerate(refresh):
-                        z[index] = sampled_z[offset]
                 obs_batch = {
                     key: torch.stack([item[key] for item in observations]).to(self.agent.device)
                     for key in observations[0]
                 }
-                z_batch = torch.stack([value for value in z if value is not None])
+                z_batch = self.rollout_context.effective_z(episode_steps)
                 with torch.no_grad():
                     actions = self.agent.act(
                         obs=obs_batch,
@@ -1108,13 +1275,7 @@ class Workspace:
                     if transition.terminated or transition.truncated:
                         episodes += 1
                         falls += int(transition.terminated)
-                        qpos, qvel, source_physics, _ = self._sample_expert_reset()
-                        observations[index] = env.reset(
-                            qpos=qpos,
-                            qvel=qvel,
-                            source_physics=source_physics,
-                        )
-                        z[index] = None
+                        observations[index] = self._reset_online_env(index)
                         episode_steps[index] = 0
                         reset_counts[index] += 1
                     else:
@@ -1240,12 +1401,16 @@ class Workspace:
                 "online_env_count": self.cfg.online_envs,
                 "warmup_source": "pretrained_actor_stochastic",
                 "domain_randomization": False,
+                "physics_mode": "canonical_source_physics",
+                "source_physics_aligned": True,
             },
             "online_reset": {
-                "mode": "expert_raw_qpos_qvel",
+                "mode": "expert_raw_qpos_qvel_source_physics",
                 "dataset": self.cfg.expert_dataset_kind,
                 "total_resets": sum(reset_counts),
+                "uniform_motion_uniform_local_frame": True,
             },
+            "rollout_latent": self.rollout_context.report(),
             "replay": {
                 "capacity": self.cfg.buffer_size,
                 "final_size": len(replay["train"]),
@@ -1256,6 +1421,7 @@ class Workspace:
             },
             "expert": {
                 "base_skate_ratio": [0.5, 0.5],
+                "tracking_source": "expert_skate",
                 "base_sequences_per_batch": expert_contract["base_sequences"],
                 "skate_sequences_per_batch": expert_contract["skate_sequences"],
                 "sequence_length": expert_contract["sequence_length"],

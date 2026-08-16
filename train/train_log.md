@@ -1900,3 +1900,46 @@ the formal Skate runtime action contract.
   observation semantics were not changed.
 - Validation passed: `ruff`, `py_compile`, and `pytest` (`22 passed`).
 - Training performed: `NO`.
+
+## M2.6-D2.2 Mixed-z / Reset-aligned Expert Rollout Semantics
+
+- Date: `2026-08-16`.
+- Formal rollout now executes the configured mixed-z lifecycle:
+  `use_mix_rollout=true`, background refresh every `100` episode steps, and
+  z-buffer sampling after the native buffer becomes non-empty. Fresh/warmup
+  background z remains random, as in upstream BFM0.
+- With four environments and expert percentage `0.5`, the independent seeded
+  role assignment selected fixed expert slots `[0, 3]`; slots `[1, 2]` remain
+  free/mixed. Every slot maintains background z throughout its episode.
+- Expert slots bind D2.1 tracking z to the same physical reset motion and local
+  frame. Tracking starts at index `0`, overrides background z for at most
+  `250` transitions, and then exposes the maintained background z.
+- Phase-tail tracking uses only remaining states in the selected segment.
+  Terminal resets with no future state keep their physical reset and explicitly
+  count an unavailable tracking reset. Episode reset discards all old tracking.
+- `expert_tracking` now aliases Skate expert data. The native update-time
+  `expert_slicer` remains the unchanged Base/Skate `50/50` mixture.
+- Replay stores the effective z actually passed to Actor, whether it came from
+  aligned tracking, random background, z-buffer background, or post-tracking
+  fallback. Formal summaries now include role, latent-source, tracking-length,
+  transition-ratio, and reset/source-physics provenance.
+- A frozen Official BFM0 preflight collected `300` transitions with no update:
+  `30` tracking and `270` free/background transitions, including `120`
+  post-tracking transitions. Tracking lengths were `1-22` for the sampled
+  resets, realized tracking ratio was `0.10`, and tracking z norm was `16`.
+- Preflight used `7` random background samples and no z-buffer samples because
+  the no-update buffer remained empty. Synthetic regression verified the
+  non-empty z-buffer branch, step `0/100/200` refresh cadence, three-step tail,
+  250-step cap, terminal fallback, and episode rebinding.
+- Replay/effective z equality, exact source physics, wrist-zero actions, and
+  model/buffer/normalizer hashes passed. No temporary script or output was
+  retained.
+- D1.3 status: `PASS WITH KNOWN UPSTREAM ASYMMETRY`. BFM0/HUSKY online
+  `base_ang_vel` remains scaled by `0.25`; Base/Skate MotionLib expert and
+  tracking observations remain at upstream scale `1.0`.
+- Evaluator semantics are unchanged. D2.3 expert history alignment remains
+  pending; reset `last_action/history_actor` is still zero initialized.
+- Native update, model, loss, optimizer, schedule, reset distribution,
+  observations, rewards, termination, and datasets were not changed.
+- Validation passed: `ruff`, `py_compile`, and `pytest` (`25 passed`).
+- Training performed: `NO`.

@@ -229,7 +229,8 @@ def test_online_transition_serializes_bfm_replay_schema() -> None:
         env.reset()
         action = torch.linspace(-0.8, 0.8, 29)
         action[list(BFM0_INACTIVE_ACTION_INDICES)] = 1.0
-        transition = env.step(action, torch.zeros(256), truncated=True)
+        z = torch.linspace(-1.0, 1.0, 256)
+        transition = env.step(action, z, truncated=True)
     finally:
         env.close()
 
@@ -240,6 +241,8 @@ def test_online_transition_serializes_bfm_replay_schema() -> None:
         transition.action_bfm[list(BFM0_INACTIVE_ACTION_INDICES)]
     ) == 0
     assert torch.equal(data["action"][0], transition.action_bfm)
+    assert torch.equal(data["z"][0], transition.z)
+    assert torch.equal(transition.z, z)
     assert torch.count_nonzero(
         transition.next_observation["last_action"][
             list(BFM0_INACTIVE_ACTION_INDICES)
@@ -427,6 +430,108 @@ def test_aligned_tracking_context_uses_checkpoint_specific_model() -> None:
     first, _ = context.encode(_TrackingModel(offset=0.0), "motion", 0, 2)
     second, _ = context.encode(_TrackingModel(offset=10.0), "motion", 0, 2)
     assert not torch.equal(first, second)
+
+
+class _MarkerZBuffer:
+    def __init__(self, marker: float | None = None) -> None:
+        self.marker = marker
+        self.sample_calls = 0
+
+    def empty(self) -> bool:
+        return self.marker is None
+
+    def sample(self, count: int, device: torch.device) -> torch.Tensor:
+        self.sample_calls += 1
+        return torch.full((count, 2), float(self.marker), device=device)
+
+
+class _RolloutAgent:
+    def __init__(self, z_buffer_marker: float | None = None) -> None:
+        self.device = torch.device("cpu")
+        self.sample_calls = 0
+        self.z_buffer = _MarkerZBuffer(z_buffer_marker)
+        self.cfg = SimpleNamespace(train=SimpleNamespace(
+            use_mix_rollout=True,
+            update_z_every_step=100,
+            z_buffer_size=8192,
+            rollout_expert_trajectories_percentage=0.5,
+            rollout_expert_trajectories_length=250,
+        ))
+        self._model = SimpleNamespace(sample_z=self.sample_z)
+
+    def sample_z(self, count: int, device: torch.device) -> torch.Tensor:
+        self.sample_calls += 1
+        return torch.full((count, 2), float(self.sample_calls), device=device)
+
+
+def test_rollout_latent_roles_and_background_lifecycle() -> None:
+    module = _training_module()
+    first = module.select_expert_rollout_envs(4, 0.5, 4729)
+    second = module.select_expert_rollout_envs(4, 0.5, 4729)
+    assert first == second
+    assert len(first) == len(set(first)) == 2
+
+    agent = _RolloutAgent()
+    context = module.SkateRolloutContext(agent, 1, ())
+    context.reset(0, None)
+    z0 = context.effective_z([0])
+    z1 = context.effective_z([1])
+    z100 = context.effective_z([100])
+    z200 = context.effective_z([200])
+    assert torch.equal(z0, z1)
+    assert [z0[0, 0], z100[0, 0], z200[0, 0]] == [1, 2, 3]
+    assert context.counters["background_random_samples"] == 3
+
+    buffered_agent = _RolloutAgent(z_buffer_marker=9.0)
+    buffered = module.SkateRolloutContext(buffered_agent, 1, ())
+    buffered.reset(0, None)
+    assert torch.equal(buffered.effective_z([0]), torch.full((1, 2), 9.0))
+    assert buffered_agent.sample_calls == 0
+    assert buffered_agent.z_buffer.sample_calls == 1
+    assert buffered.counters["background_zbuffer_samples"] == 1
+
+
+def test_rollout_tracking_override_tail_cap_and_episode_reset() -> None:
+    module = _training_module()
+    agent = _RolloutAgent()
+    context = module.SkateRolloutContext(agent, 2, (0,))
+    tracking = torch.tensor([[10.0, 10.0], [11.0, 11.0], [12.0, 12.0]])
+    context.reset(0, tracking)
+    context.reset(1, None)
+
+    first = context.effective_z([0, 0])
+    assert torch.equal(first[0], tracking[0])
+    assert torch.equal(first[1], context.background[1])
+    assert context.background[0] is not None
+    context.effective_z([1, 1])
+    context.effective_z([2, 2])
+    tail = context.effective_z([3, 3])
+    assert torch.equal(tail[0], context.background[0])
+    assert context.counters["tracking_transitions"] == 3
+    assert context.counters["post_tracking_free_transitions"] == 1
+
+    capped = torch.arange(500, dtype=torch.float32).reshape(250, 2)
+    context.reset(0, capped)
+    assert torch.equal(context.effective_z([249, 4])[0], capped[249])
+    assert torch.equal(context.effective_z([250, 5])[0], context.background[0])
+    context.reset(0, torch.full((1, 2), 77.0))
+    assert torch.equal(context.effective_z([0, 6])[0], torch.full((2,), 77.0))
+    context.reset(0, None)
+    assert context.counters["tracking_unavailable_resets"] == 1
+
+
+def test_expert_tracking_uses_skate_without_changing_update_mixture() -> None:
+    module = _training_module()
+
+    class Expert:
+        seq_length = 8
+
+    base = Expert()
+    skate = Expert()
+    replay = module.assemble_expert_replay(base, skate)
+    assert replay["expert_tracking"] is skate
+    assert replay["expert_slicer"].expert_base is base
+    assert replay["expert_slicer"].expert_skate is skate
 
 
 def test_parallel_online_environments_reset_independently() -> None:
@@ -763,6 +868,12 @@ def test_m26_configuration_and_schedule_are_parameterized(
     assert cfg.buffer_size == 100_000
     assert cfg.online_envs == 4
     assert cfg.skate_expert_ratio == 0.5
+    assert cfg.agent.train.use_mix_rollout is True
+    assert cfg.agent.train.update_z_every_step == 100
+    assert cfg.agent.train.z_buffer_size == 8192
+    assert cfg.agent.train.rollout_expert_trajectories is True
+    assert cfg.agent.train.rollout_expert_trajectories_length == 250
+    assert cfg.agent.train.rollout_expert_trajectories_percentage == 0.5
     assert schedule[0] == 1500
     assert schedule[-1] == 100_000
     assert len(schedule) == 198
