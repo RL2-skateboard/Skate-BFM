@@ -52,7 +52,7 @@ from humanoidverse.agents.envs.humanoidverse_isaac import (
 from humanoidverse.agents.envs.utils.gym_spaces import json_to_space
 from humanoidverse.agents.fb_cpr_aux.agent import FBcprAuxAgentConfig
 from humanoidverse.agents.utils import set_seed_everywhere
-from skate_bfm.integration import HuskyBfmOnlineEnv
+from skate_bfm.integration import HuskyBfmOnlineEnv, install_husky_action_projection
 from skate_husky import AUX_REWARD_KEYS
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -571,6 +571,7 @@ def load_frozen_agent(checkpoint: Path) -> tuple[Any, dict[str, Any]]:
     })
     agent = cfg.agent.build(obs_space=obs_space, action_dim=29)
     report = load_bfm_checkpoint(agent, checkpoint)
+    install_husky_action_projection(agent._model)
     agent._model.eval()
     agent._model.requires_grad_(False)
     return agent, report
@@ -659,6 +660,7 @@ class Workspace:
         self.agent.pretrained_load_report = load_bfm_checkpoint(
             self.agent, Path(cfg.pretrained_checkpoint)
         )
+        install_husky_action_projection(self.agent._model)
         if self.agent.pretrained_load_report["model_sha256"] != OFFICIAL_BFM0_SHA256:
             raise RuntimeError("Formal Skate-BFM requires the verified official BFM0 checkpoint.")
         self.agent.checkpoint_source = "official_bfm0_pretrained"

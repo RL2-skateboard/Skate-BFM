@@ -133,6 +133,73 @@ HUSKY_JOINTS = (
     "right_ankle_roll_joint",
 )
 
+BFM0_INACTIVE_JOINTS = tuple(
+    name for name in BFM0_JOINTS if name not in set(HUSKY_JOINTS)
+)
+BFM0_INACTIVE_ACTION_INDICES = tuple(
+    BFM0_JOINTS.index(name) for name in BFM0_INACTIVE_JOINTS
+)
+BFM0_ACTION_CONSUMERS = (
+    "_forward_map",
+    "_target_forward_map",
+    "_critic",
+    "_target_critic",
+    "_aux_critic",
+    "_target_aux_critic",
+)
+
+
+def project_husky_bfm_action(
+    action: np.ndarray | torch.Tensor,
+) -> np.ndarray | torch.Tensor:
+    """Project a 29D BFM action onto HUSKY's effective 23D subspace."""
+
+    if action.ndim == 0 or action.shape[-1] != len(BFM0_JOINTS):
+        actual = None if action.ndim == 0 else action.shape[-1]
+        raise ValueError(f"Expected 29 BFM0 actions, got {actual}")
+    projected = action.clone() if torch.is_tensor(action) else np.array(action, copy=True)
+    projected[..., BFM0_INACTIVE_ACTION_INDICES] = 0
+    return projected
+
+
+def _project_action_input(
+    _module: torch.nn.Module,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> tuple[tuple[object, ...], dict[str, object]]:
+    if len(args) > 2:
+        if "action" in kwargs:
+            raise TypeError("Action was provided as both a positional and keyword argument.")
+        updated = list(args)
+        updated[2] = project_husky_bfm_action(updated[2])
+        return tuple(updated), kwargs
+    if "action" in kwargs:
+        return args, {
+            **kwargs,
+            "action": project_husky_bfm_action(kwargs["action"]),
+        }
+    raise TypeError("Action consumer requires a third positional or 'action' argument.")
+
+
+def install_husky_action_projection(model: torch.nn.Module) -> bool:
+    """Install the HUSKY action projection on every native action consumer."""
+
+    marker = "_skate_husky_action_projection_handles"
+    if hasattr(model, marker):
+        return False
+    consumers = []
+    for name in BFM0_ACTION_CONSUMERS:
+        module = getattr(model, name, None)
+        if not isinstance(module, torch.nn.Module):
+            raise RuntimeError(f"Required BFM action consumer is unavailable: {name}")
+        consumers.append(module)
+    handles = tuple(
+        module.register_forward_pre_hook(_project_action_input, with_kwargs=True)
+        for module in consumers
+    )
+    setattr(model, marker, handles)
+    return True
+
 
 @dataclass(frozen=True)
 class JointMapping:

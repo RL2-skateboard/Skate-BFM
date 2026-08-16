@@ -19,7 +19,16 @@ from skate_husky.lite_env import (
     world_horizontal_orientation_penalty,
 )
 
-from skate_bfm.integration.actions import BFM0_JOINTS, HUSKY_JOINTS, Bfm0ToHusky23
+from skate_bfm.integration.actions import (
+    BFM0_ACTION_CONSUMERS,
+    BFM0_INACTIVE_ACTION_INDICES,
+    BFM0_INACTIVE_JOINTS,
+    BFM0_JOINTS,
+    HUSKY_JOINTS,
+    Bfm0ToHusky23,
+    install_husky_action_projection,
+    project_husky_bfm_action,
+)
 from skate_bfm.integration.online import HuskyBfmOnlineEnv
 
 
@@ -106,6 +115,64 @@ def test_bfm_actions_are_mapped_by_joint_name() -> None:
     )
 
 
+def test_husky_action_projection_contract() -> None:
+    expected_inactive = (
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+    )
+    active_indices = tuple(
+        index for index in range(len(BFM0_JOINTS))
+        if index not in BFM0_INACTIVE_ACTION_INDICES
+    )
+    assert BFM0_INACTIVE_JOINTS == expected_inactive
+    assert BFM0_INACTIVE_ACTION_INDICES == (19, 20, 21, 26, 27, 28)
+    assert {BFM0_JOINTS[index] for index in active_indices} == set(HUSKY_JOINTS)
+    assert set(active_indices) | set(BFM0_INACTIVE_ACTION_INDICES) == set(range(29))
+
+    tensor = torch.randn(2, 3, 29, dtype=torch.float64)
+    projected_tensor = project_husky_bfm_action(tensor)
+    assert projected_tensor.shape == tensor.shape
+    assert projected_tensor.dtype == tensor.dtype
+    assert projected_tensor.device == tensor.device
+    assert torch.equal(projected_tensor[..., active_indices], tensor[..., active_indices])
+    assert torch.count_nonzero(
+        projected_tensor[..., BFM0_INACTIVE_ACTION_INDICES]
+    ) == 0
+
+    array = np.arange(58, dtype=np.float32).reshape(2, 29)
+    projected_array = project_husky_bfm_action(array)
+    assert projected_array.shape == array.shape
+    assert projected_array.dtype == array.dtype
+    assert np.array_equal(projected_array[..., active_indices], array[..., active_indices])
+    assert np.count_nonzero(
+        projected_array[..., BFM0_INACTIVE_ACTION_INDICES]
+    ) == 0
+    with pytest.raises(ValueError, match="Expected 29"):
+        project_husky_bfm_action(torch.zeros(28))
+
+
+def test_husky_action_projection_preserves_physical_action_and_autograd() -> None:
+    adapter = Bfm0ToHusky23(action_clip=None)
+    raw = torch.randn(4, 29, requires_grad=True)
+    projected = project_husky_bfm_action(raw)
+    assert torch.equal(adapter(raw), adapter(projected))
+
+    projected.sum().backward()
+    active_indices = tuple(
+        index for index in range(29)
+        if index not in BFM0_INACTIVE_ACTION_INDICES
+    )
+    assert torch.equal(
+        raw.grad[..., active_indices],
+        torch.ones_like(raw.grad[..., active_indices]),
+    )
+    assert torch.count_nonzero(raw.grad[..., BFM0_INACTIVE_ACTION_INDICES]) == 0
+
+
 def test_husky_runtime_and_auxiliary_contract() -> None:
     env = HuskyLiteEnv()
     try:
@@ -159,8 +226,8 @@ def test_online_transition_serializes_bfm_replay_schema() -> None:
     env = HuskyBfmOnlineEnv()
     try:
         env.reset()
-        action = torch.zeros(29)
-        action[19:22] = 1.0
+        action = torch.linspace(-0.8, 0.8, 29)
+        action[list(BFM0_INACTIVE_ACTION_INDICES)] = 1.0
         transition = env.step(action, torch.zeros(256), truncated=True)
     finally:
         env.close()
@@ -168,10 +235,116 @@ def test_online_transition_serializes_bfm_replay_schema() -> None:
     data = transition.as_buffer_data()
     assert transition.action_bfm.shape == (29,)
     assert transition.action_husky.shape == (23,)
-    assert torch.equal(transition.action_husky, torch.zeros(23))
+    assert torch.count_nonzero(
+        transition.action_bfm[list(BFM0_INACTIVE_ACTION_INDICES)]
+    ) == 0
+    assert torch.equal(data["action"][0], transition.action_bfm)
+    assert torch.count_nonzero(
+        transition.next_observation["last_action"][
+            list(BFM0_INACTIVE_ACTION_INDICES)
+        ]
+    ) == 0
+    assert torch.equal(
+        transition.action_husky,
+        env.action_adapter(project_husky_bfm_action(action)),
+    )
     assert transition.truncated and not transition.terminated
     assert tuple(data["aux_rewards"]) == AUX_REWARD_KEYS
     assert all(value.shape == (1, 1) for value in data["aux_rewards"].values())
+
+
+def test_online_history_contains_only_effective_husky_actions() -> None:
+    env = HuskyBfmOnlineEnv()
+    try:
+        env.reset()
+        first = torch.linspace(-0.5, 0.5, 29)
+        first[list(BFM0_INACTIVE_ACTION_INDICES)] = 0.9
+        env.step(first, torch.zeros(256))
+        second = torch.linspace(0.5, -0.5, 29)
+        second[list(BFM0_INACTIVE_ACTION_INDICES)] = -0.9
+        transition = env.step(second, torch.zeros(256))
+
+        history = env.observation_adapter._history
+        widths = {
+            key: int(values[0].size)
+            for key, values in history.items()
+        }
+        action_offset = sum(
+            env.observation_adapter.history_length * widths[key]
+            for key in sorted(history)
+            if key < "actions"
+        )
+        action_width = env.observation_adapter.history_length * widths["actions"]
+        action_history = transition.next_observation["history_actor"][
+            action_offset : action_offset + action_width
+        ].reshape(env.observation_adapter.history_length, widths["actions"])
+    finally:
+        env.close()
+
+    active_indices = tuple(
+        index for index in range(29)
+        if index not in BFM0_INACTIVE_ACTION_INDICES
+    )
+    assert torch.count_nonzero(
+        action_history[..., BFM0_INACTIVE_ACTION_INDICES]
+    ) == 0
+    assert torch.equal(
+        action_history[0, list(active_indices)],
+        first[list(active_indices)] * 5.0,
+    )
+
+
+class _RecordingActionConsumer(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.ones(()))
+        self.received: torch.Tensor | None = None
+
+    def forward(
+        self,
+        observation: torch.Tensor,
+        z: torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        self.received = action
+        return action * self.scale
+
+
+class _ActionConsumerModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        for name in BFM0_ACTION_CONSUMERS:
+            setattr(self, name, _RecordingActionConsumer())
+
+
+def test_native_action_consumers_project_positional_and_keyword_actions() -> None:
+    model = _ActionConsumerModel()
+    state_before = tuple(model.state_dict())
+    assert install_husky_action_projection(model)
+    assert not install_husky_action_projection(model)
+    assert tuple(model.state_dict()) == state_before
+
+    action = torch.ones(2, 29)
+    for name in BFM0_ACTION_CONSUMERS:
+        consumer = getattr(model, name)
+        if name == "_target_aux_critic":
+            consumer(
+                observation=torch.zeros(2, 1),
+                z=torch.zeros(2, 1),
+                action=action,
+            )
+        else:
+            consumer(torch.zeros(2, 1), torch.zeros(2, 1), action)
+        assert consumer.received is not None
+        assert torch.count_nonzero(
+            consumer.received[..., BFM0_INACTIVE_ACTION_INDICES]
+        ) == 0
+
+    incomplete = _ActionConsumerModel()
+    del incomplete._target_aux_critic
+    with pytest.raises(RuntimeError, match="_target_aux_critic"):
+        install_husky_action_projection(incomplete)
+    assert not hasattr(incomplete, "_skate_husky_action_projection_handles")
 
 
 def test_parallel_online_environments_reset_independently() -> None:
@@ -427,6 +600,23 @@ def test_trainer_and_evaluator_share_source_physics_provenance(
     finally:
         env.close()
         source.close()
+
+
+def test_official_checkpoint_stays_strictly_loadable_with_29d_actions() -> None:
+    checkpoint = Path(__file__).parents[1] / "model/bfm-zero-official"
+    if not checkpoint.is_dir():
+        pytest.skip("Official BFM0 checkpoint is not available.")
+    module = _training_module()
+    agent, report = module.load_frozen_agent(checkpoint)
+
+    assert agent.action_dim == 29
+    assert report["model_sha256"] == module.OFFICIAL_BFM0_SHA256
+    assert len(agent._model.state_dict()) == 537
+    assert all(
+        "skate_husky_action_projection" not in name
+        for name in agent._model.state_dict()
+    )
+    assert hasattr(agent._model, "_skate_husky_action_projection_handles")
 
 
 def test_m26_configuration_and_schedule_are_parameterized(

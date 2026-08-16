@@ -1805,3 +1805,26 @@ the formal Skate runtime action contract.
 - Latent, history, action mapping, observation, reward, termination, replay,
   model, loss, optimizer, and training schedule were not modified.
 - Training performed: `NO`.
+
+## M2.6-D1.2 Action Subspace Alignment
+
+- Date: `2026-08-16`.
+- BFM architecture and checkpoint action dimension remain `29`; the effective
+  HUSKY physical subspace is the `23` shared joints. The six inactive
+  dimensions are the left/right wrist roll, pitch, and yaw joints at BFM
+  indices `19, 20, 21, 26, 27, 28`.
+- One name-derived projection preserves all shared actions exactly and zeros
+  the six wrists. Online physical action, replay action, `last_action`, and
+  action history now use this same effective action.
+- Project-owned hooks apply the projection at current/target F, critic, and
+  auxiliary critic inputs, covering replay, target-policy, and Actor-loss
+  actions without changing official update logic or autograd on active joints.
+- No-update audits of official BFM0 and the historical Phase 100k checkpoint
+  produced exact wrist zeros after projection, zero shared-action error, and
+  zero raw/projected 23D physical-action difference.
+- Official BFM0 still loads strictly with `action_dim=29` and `537` state-dict
+  keys. Vendored BFM, checkpoint architecture, D1.1 source physics, latent,
+  history initialization, datasets, rewards, optimizer, and schedule are
+  unchanged.
+- Validation passed: `ruff`, `py_compile`, and `pytest` (`20 passed`).
+- Training performed: `NO`.

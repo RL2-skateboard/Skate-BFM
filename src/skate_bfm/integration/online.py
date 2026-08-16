@@ -10,6 +10,7 @@ from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv
 from skate_bfm.integration.actions import (
     Bfm0ToHusky23,
     official_husky_control_parameters,
+    project_husky_bfm_action,
 )
 from skate_bfm.integration.observations import HuskyToBfm0OnlineObservation
 
@@ -113,6 +114,7 @@ class HuskyBfmOnlineEnv:
         if not torch.isfinite(action_bfm).all() or not torch.isfinite(z).all():
             raise ValueError("BFM action and z must be finite.")
 
+        action_bfm = project_husky_bfm_action(action_bfm)
         action_husky = self.action_adapter(action_bfm)
         raw_next = self.env.step(action_husky.numpy())
         next_observation = self.observation_adapter(raw_next, action_bfm)
