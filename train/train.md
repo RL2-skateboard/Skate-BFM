@@ -1,197 +1,262 @@
 # Skate-BFM Training Experiments
 
-This document explains the experiment design. Numerical results and retained
-artifacts are listed in [`train_res.md`](train_res.md); dated work is listed
-in [`train_log.md`](train_log.md).
+This document contains exactly three project experiments. Every audit,
+preflight, smoke run, and diagnostic belongs to one of these experiments; it
+is not a separate experiment.
 
-## 1. Objective and Current State
+Numerical results are in [`train_res.md`](train_res.md), and dated work is in
+[`train_log.md`](train_log.md).
 
-Skate-BFM adapts the frozen official BFM-Zero initialization to HUSKY
-skateboard dynamics. The training path must:
+## Experiment 1: Training Workspace and BFM-HUSKY Integration
 
-1. collect synchronized robot-board expert rollouts;
-2. convert HUSKY 23DoF motion into the BFM 29DoF MotionLib contract;
-3. mix Base/LAFAN and Skate expert sequences;
-4. collect HUSKY online replay with the BFM Actor;
-5. run the vendored BFM-Zero `FBcprAuxAgent.update()` unchanged;
-6. evaluate frozen checkpoints under matched resets.
+### Experiment Goal
 
-Current conclusion:
+Create the `train` branch and a self-contained training workspace that connects
+the official BFM-Zero model/runtime to the HUSKY skateboard MuJoCo
+environment. This experiment establishes the software and tensor contracts
+needed by later data collection and training; it does not train a Skate model.
 
-- [x] Data collection, conversion, replay, rewards, termination, native update,
-  checkpoint save/reload, and frozen evaluation execute correctly.
-- [x] Source physics, robot-board reset, and active 23DoF action mapping are
-  explicitly validated.
-- [x] The Phase 100k run completed numerically.
-- Stable Skate behavior is **not established**: every 100k checkpoint was less
-  stable than official BFM0 under the matched 32-episode evaluation.
-- Short retraining is **not yet justified**: the post-alignment P0 audit still
-  shows large waist saturation and no meaningful tracking-z advantage.
+### Environment and Inputs
 
-All reported adaptation runs start from the official BFM0
-`model.safetensors` SHA256:
+| Item | Setting |
+|---|---|
+| Project environment | Conda `skatebfm`, Python 3.12 |
+| BFM runtime | vendored under `train/scripts/isaac_env/` |
+| HUSKY runtime | `husky_sim/src/skate_husky/` |
+| HUSKY scene | `husky_sim/upstream/test_scene/mjlab_scene.xml` |
+| Official BFM0 checkpoint | `model/bfm-zero-official/` |
+| BFM0 checkpoint SHA256 | `33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361` |
+| BFM action width | 29 |
+| HUSKY physical action width | 23 |
+| BFM latent width | 256 |
+
+The training runtime is project-owned but keeps the official BFM-Zero agent,
+MotionLib, model, and configuration structure. Formal code does not depend on
+`model/bfm-zero-source/`.
+
+### Experiment Process and Method
+
+The integration boundary was built in four steps:
+
+1. vendor the complete BFM-Zero HumanoidVerse/Isaac runtime under
+   `train/scripts/isaac_env/`;
+2. expose the HUSKY MuJoCo state and controller through `HuskyLiteEnv`;
+3. map BFM observations/actions to HUSKY by joint name;
+4. verify headless stepping, the MuJoCo viewer, MotionLib loading, and native
+   BFM forward/backward/update interfaces.
+
+Relevant implementation:
+
+- [`../src/skate_bfm/integration/`](../src/skate_bfm/integration/)
+- [`scripts/isaac_env/`](scripts/isaac_env/)
+- [`../husky_sim/src/skate_husky/`](../husky_sim/src/skate_husky/)
+
+The action-space relation is:
 
 ```text
-33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361
+a_bfm in R^29
+    -> zero six unavailable wrist coordinates
+    -> select 23 shared joints by name
+    -> a_husky in R^23
 ```
 
-## 2. Environment Matrix
+The shared coordinates are copied exactly:
 
-| Use | Simulator / model | Rate and execution | Policy / model | Physics |
-|---|---|---|---|---|
-| Expert collection | HUSKY official MuJoCo scene `husky_sim/upstream/test_scene/mjlab_scene.xml` | 50 Hz policy; 3000 frames = 60 s maximum | `husky_sim/upstream/ckpts/test.onnx`, CPU | Official HUSKY play-time randomization sampled once per rollout |
-| Formal online training | `HuskyLiteEnv`, same HUSKY XML | `control_dt=0.02 s`; four independent MuJoCo envs stepped sequentially; batched Actor on GPU | fresh official BFM0, then updated Actor | Current contract restores the exact source rollout physics; no newly sampled online randomization |
-| Expert MotionLib | vendored BFM-Zero runtime in `train/scripts/isaac_env/` | 50 Hz Skate MotionLib; sequence length 8 | official MotionLib and expert loader | Kinematic expert loading, no HUSKY rollout |
-| Frozen evaluation | `HuskyBfmOnlineEnv`, same HUSKY XML | deterministic mean Actor unless explicitly stochastic | selected checkpoint | same reset and physics contract as training |
+```text
+a_husky[j] = a_bfm[index_of_same_joint_name(j)]
+```
 
-The formal Phase 100k run predates the source-physics fix: it injected source
-`qpos/qvel` into nominal physics. D1.1 corrected this for the next run and for
-the current evaluator; the old 100k result is not retroactively relabeled.
+The six unavailable joints are left/right wrist roll, pitch, and yaw. They are
+zero in replay, online history, physical execution, and model-side action
+projection.
 
-## 3. Data Collection
+The base online observation contract is:
 
-### 3.1 Command Grid and Rollout Plan
+```text
+state              [64]
+privileged_state   [463]
+last_action        [29]
+history_actor      [372]
+latent z           [256]
+stored action      [29]
+executed action    [23]
+```
 
-The authoritative configuration is
-[`scripts/data_collection/rollout_config.json`](scripts/data_collection/rollout_config.json).
+The 64D state is:
+
+```text
+s_t = [
+    q_29(t) - q_default,       # 29
+    qdot_29(t),                # 29
+    gravity_body(t),           # 3
+    0.25 * omega_body(t)       # 3
+]
+```
+
+The 372D Actor history contains four frames of action, angular velocity,
+joint position, joint velocity, and projected gravity:
+
+```text
+4 * (29 + 3 + 29 + 29 + 3) = 372
+```
+
+The 463D privileged state uses the robot heading frame:
+
+```text
+privileged_state = [
+    root_height,                       # 1
+    relative body positions,           # 30 * 3
+    body tangent and normal vectors,   # 31 * 6
+    local body linear velocities,      # 31 * 3
+    local body angular velocities      # 31 * 3
+]
+```
+
+### Problems and Solutions
+
+| Problem | Method used |
+|---|---|
+| BFM0 has 29 actions but HUSKY has 23 actuators | Use one name-based mapping and force the six absent wrists to zero. |
+| The original BFM source directory will not remain a runtime dependency | Vendor the complete required BFM runtime under `train/scripts/isaac_env/`. |
+| HUSKY and BFM use different observation structures | Construct the official 64/463/29/372 observation dictionary from HUSKY state. |
+| Viewer and headless execution need the same state/action boundary | Wrap both modes with `HuskyLiteEnv` and one integration adapter. |
+
+### Verified and Unverified Conclusions
+
+Verified:
+
+- [x] The `train` branch and independent training workspace were created.
+- [x] Official BFM0 loads strictly with 537 model tensors.
+- [x] BFM29-to-HUSKY23 name mapping preserves all shared actions exactly.
+- [x] Headless MuJoCo stepping and the interactive viewer work.
+- [x] Base and Skate MotionLib sources load through the official expert loader.
+- [x] Native BFM forward/backward and update interfaces accept the integrated
+  tensor schema.
+
+Unverified:
+
+- [ ] This integration alone produces stable Skate behavior.
+- [ ] The six fixed wrists and current HUSKY controller preserve every
+  physical behavior represented by the original BFM0 model.
+
+## Experiment 2: HUSKY Expert Dataset Collection and Construction
+
+### Experiment Goal
+
+Collect synchronized HUSKY robot-skateboard expert trajectories, then build
+two BFM-compatible datasets from the same raw source:
+
+- **Phase:** one motion per phase-pure contiguous segment;
+- **Continuous:** non-overlapping 10-second clips that retain normal phase
+  transitions.
+
+This experiment produces data only. It does not optimize BFM0.
+
+### Environment and Inputs
+
+| Item | Setting |
+|---|---|
+| Simulator | official HUSKY MuJoCo test scene |
+| Source policy | `husky_sim/upstream/ckpts/test.onnx` |
+| Source policy device | CPU |
+| Record frequency | 50 Hz |
+| Maximum episode length | 3,000 frames = 60 s |
+| Parallel workers | 2 |
+| Dataset split | `train` |
+| Plan seed | `20260804` |
+| Target raw duration | 150 min |
+| Output | Hugging Face `Yak9Ce3teeh/skate-sim-dataset` |
+
+The collection command grid is:
 
 ```text
 v = {0.50, 0.75, 1.00, 1.25, 1.50}
 h = {-0.7, -0.6, ..., 0.0, ..., +0.6, +0.7}
-command cells = 5 * 15 = 75
-baseline rollouts = 10 rounds * 15 rollouts = 150
-baseline repetitions per command cell = 2
-parallel workers = 2
-target raw duration = 150 min
-extra capacity = 4 rounds * 15 = 60 rollouts
-maximum nominal capacity = 210 min
-plan seed = 20260804
-dataset split = train
-overwrite = false
 ```
 
-`v` is the HUSKY forward command. During steer, `h>0` is labeled left,
-`h=0` forward, and `h<0` right. The command list is permuted inside each round
-using the plan seed; it does not change the command values.
+This gives 75 `(v,h)` cells. Ten rounds with 15 episodes produce 150 baseline
+episodes, so every cell is sampled twice. Four extra rounds provide at most
+60 fall replacements and 210 nominal minutes of total capacity.
 
-Collection stops when cumulative raw time reaches 150 minutes. A confirmed
-fall ends one rollout but is not a worker failure; replacement jobs use the
-extra rounds until the raw-duration target is reached.
+For **collection only**, HUSKY's play-time physics realization is sampled once
+per source episode:
 
-### 3.2 HUSKY Phase Rule
-
-The labels follow the official HUSKY six-second cycle:
-
-```text
-phase_value = (frame mod 300) / 300
-
-push:        [0.00, 0.40) = 120 frames = 2.4 s
-push2steer:  [0.40, 0.50) =  30 frames = 0.6 s
-steer:       [0.50, 0.95) = 135 frames = 2.7 s
-steer2push:  [0.95, 1.00) =  15 frames = 0.3 s
-```
-
-`steer` is split into `steer_left`, `steer_forward`, or `steer_right` from
-the command sign. Board yaw is recorded as a diagnostic but does not decide
-the steer class.
-
-Fall detection is shared by collection and online training:
-
-```text
-fall_candidate =
-    (root_tilt > 70 deg)
-    OR (root_height < 0.45 m AND illegal_body_contact)
-
-fall = fall_candidate persists for 0.2 s = 10 frames at 50 Hz
-```
-
-Temporary feet-off-board and board separation alone are not falls. When a
-fall is confirmed, the confirmation frames are relabeled `fall` and the
-rollout stops.
-
-### 3.3 Per-rollout Physics Randomization
-
-One seed is derived for each rollout and the following values are sampled once:
-
-| Quantity | Sampling range |
+| Quantity | Range |
 |---|---|
-| Robot torso COM offset `(x,y,z)` | `[-0.025,0.025]`, `[-0.025,0.025]`, `[-0.03,0.03]` m |
-| Skateboard COM offset `(x,y,z)` | `[-0.02,0.02]`, `[-0.02,0.02]`, `[-0.01,0.01]` m |
-| Robot sliding-friction scale | `[0.3,1.6]` per robot geom |
-| Deck sliding-friction scale | `[0.8,2.0]` |
+| Robot torso COM `(x,y,z)` | `+/-0.025`, `+/-0.025`, `+/-0.03` m |
+| Skateboard COM `(x,y,z)` | `+/-0.02`, `+/-0.02`, `+/-0.01` m |
+| Robot friction scale | `[0.3,1.6]` per geom |
+| Deck friction scale | `[0.8,2.0]` |
 | Foot sliding friction | `[0.3,1.8]` per foot geom |
-| Wheel rolling-friction scale | `[0.8,1.6]` per wheel geom |
-| Initial robot joint offset | `[-0.01,0.01]` rad per joint |
+| Wheel rolling-friction scale | `[0.8,1.6]` per wheel |
+| Initial joint offset | `[-0.01,0.01]` rad per joint |
 
-No external push or observation corruption is added. The sampled values and
-seed are stored in each rollout metadata file.
+The seed and every sampled value are stored with the episode. No external push
+or observation corruption is added.
 
-### 3.4 Recorded Raw State
+### Experiment Process and Method
 
-Every 50 Hz row contains full `qpos/qvel`, 23D source action, robot root,
-23D joint pose/velocity, robot body pose/velocity, skateboard root and joint
-state, command `(v,h)`, `phase_id`, `phase_value`, fall/reset flags, and board
-heading delta. Arrays must be frame-aligned, finite, and consistent with
-metadata `nq/nv`, joint order, quaternion order, XML, and physics seed.
+#### Raw recording
 
-The source timing contract is:
+Every row stores synchronized robot and skateboard `qpos/qvel`, source action,
+robot root/joints/bodies, skateboard root/joints, command `(v,h)`, phase,
+fall/reset flags, and board heading. All arrays must have the same first
+dimension and contain no NaN/Inf.
+
+The source action timing is:
 
 ```text
-state[t] contains the effect of action[t]
-the policy output recorded next is action[t+1]
+action[t] is the policy output already applied before state[t]
 action[t+1] produces state[t+1]
 ```
 
-This alignment is required when a source transition action is compared with a
-BFM action.
+#### Phase labeling
 
-## 4. Dataset Construction
-
-### 4.1 Phase Dataset
-
-[`convert_phase.py`](scripts/data_collection/convert_phase.py) scans each
-rollout in order:
-
-1. locate maximal contiguous runs with one `phase_id`;
-2. discard every `fall` run;
-3. remove `0.15 s` (8 frames at 50 Hz) before the first fall;
-4. split at reset frames and discard the reset row;
-5. reject segments shorter than `seq_length + 1 = 9` frames;
-6. require every retained row to have the same non-fall phase;
-7. preserve the exact source start/end frame and physics provenance.
-
-Motion duration follows the MotionLib transition convention:
+The official six-second HUSKY cycle has 300 frames:
 
 ```text
-duration(segment with T frames) = (T - 1) / 50
+push:        [0.00, 0.40) = 120 frames
+push2steer:  [0.40, 0.50) =  30 frames
+steer:       [0.50, 0.95) = 135 frames
+steer2push:  [0.95, 1.00) =  15 frames
 ```
 
-Actual Phase result:
+During steer, `h>0` is left, `h=0` is forward, and `h<0` is right. Board yaw
+is recorded for analysis but does not override the command label.
 
-| Phase | Motions | Frames | Duration (s) | Min / median / max frames |
-|---|---:|---:|---:|---:|
-| push | 1,522 | 182,296 | 3,615.48 | 29 / 120 / 120 |
-| push2steer | 1,516 | 45,471 | 879.10 | 21 / 30 / 30 |
-| steer_left | 685 | 91,205 | 1,810.40 | 11 / 135 / 135 |
-| steer_forward | 109 | 14,670 | 291.22 | 90 / 135 / 135 |
-| steer_right | 717 | 96,314 | 1,911.94 | 23 / 135 / 135 |
-| steer2push | 1,489 | 22,335 | 416.92 | 15 / 15 / 15 |
+Fall is:
 
-The converter discarded 330 fall frames, 240 pre-fall margin frames, and six
-too-short segments. No rollout, alignment, conversion, or finite-value error
-was rejected.
+```text
+candidate =
+    root_tilt > 70 deg
+    OR (root_height < 0.45 m AND illegal_body_contact)
 
-### 4.2 Continuous Dataset
+fall = candidate persists for 0.2 s = 10 frames
+```
 
-[`convert_continuous.py`](scripts/data_collection/convert_continuous.py) uses
-the same 158 raw rollouts. It:
+Feet temporarily leaving the board or the board separating from the robot is
+not sufficient to label a fall.
 
-1. removes fall rows and the same `0.15 s` pre-fall margin;
-2. splits valid intervals at reset rows;
-3. partitions each interval into non-overlapping 500-frame windows;
-4. drops the remainder shorter than 500 frames;
-5. allows normal phase transitions inside a window;
-6. rejects any window crossing fall or reset.
+#### Phase splitting
+
+`convert_phase.py`:
+
+1. finds maximal runs with one phase ID;
+2. removes every fall run and 0.15 s (8 frames) before the first fall;
+3. splits at reset rows and discards the reset row;
+4. rejects segments shorter than 9 frames (`Seq8 + one next frame`);
+5. preserves source episode/frame/command/physics provenance.
+
+For a segment with `T` frames:
+
+```text
+MotionLib duration = (T - 1) / 50
+```
+
+#### Continuous splitting
+
+`convert_continuous.py` removes the same fall/reset boundaries, then divides
+each valid interval into:
 
 ```text
 clip length = 500 frames = 10.0 s
@@ -199,25 +264,18 @@ stride = 500 frames
 overlap = 0
 ```
 
-The result is 890 clips, 445,000 frames, and 148.333 minutes. All 890 clips
-contain normal phase transitions; the mean is 7.317 phase runs per clip.
-Discarded rows are 7,310 tail, 245 pre-fall margin, and 330 fall frames.
+The remainder shorter than 500 frames is discarded. A clip may cross ordinary
+phase transitions but cannot cross fall or reset.
 
-### 4.3 HUSKY Pose to BFM MotionLib
+#### HUSKY23 pose to BFM29 MotionLib
 
-For each shared joint `j`, name mapping is exact:
-
-```text
-q_bfm[j,t] = q_husky[index(j),t]
-```
-
-The six BFM wrist joints absent from HUSKY are:
+For each shared joint:
 
 ```text
-q_bfm[wrist,t] = 0
+q_bfm[j,t] = q_husky[index_of_same_joint_name(j),t]
 ```
 
-For root quaternion `q_root` recorded as `wxyz`:
+The six missing wrists are zero. For root quaternion recorded as `wxyz`:
 
 ```text
 q_xyzw = reorder(normalize(q_root))
@@ -228,7 +286,7 @@ pose_aa[t,j+1] = q_bfm[j,t] * axis_bfm[j]
 root_trans_offset[t] = root_position[t]
 ```
 
-The output follows the official record fields:
+The official BFM record contains:
 
 ```text
 root_trans_offset [T,3]
@@ -239,72 +297,110 @@ smpl_joints       [T,24,3] = 0 placeholder
 fps               = 50
 ```
 
-Raw 23D action, board state, phase, command, source frame range, and physics
-seed are retained as extra aligned fields; they are not silently converted
-into BFM normalized actions.
+Raw source action, board state, phase, command, source frame range, and physics
+seed remain aligned extra fields.
 
-### 4.4 Dataset Validation
+Relevant implementation and data:
 
-- [x] Phase and Continuous records load through official `MotionLibRobot`.
-- [x] Official expert loader produces finite current/next `state [16,64]`.
-- [x] Seq8 sampling passes for both datasets.
-- [x] Every retained motion resolves to its original raw rollout and frame
-  range.
-- [x] Phase QC renders 10 random examples for each of six phases; Continuous
-  QC renders 10 random clips, seed `20260813`.
-- A held-out validation/test collection is pending; `dataset_split=train` is
-  the only formal raw split collected so far.
+- [`scripts/data_collection/`](scripts/data_collection/)
+- [Hugging Face raw/Phase/Continuous dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset)
 
-## 5. BFM Observation, Action, and Expert Mapping
+### Problems and Solutions
 
-### 5.1 Online Observation
+| Problem | Method used |
+|---|---|
+| One episode contains push, transitions, and steer | Use official phase clock and contiguous phase-run segmentation. |
+| Falls contaminate the preceding motion tail | Remove the confirmed fall and a 0.15 s pre-fall margin. |
+| Short phase fragments cannot provide Seq8 next-state samples | Require at least 9 frames. |
+| Phase-only records lose longer temporal transitions | Build Continuous 500-frame clips from the same raw data. |
+| HUSKY has 23 joints but MotionLib expects 29 | Map shared joints by name and set six wrists to zero. |
+| Processed data could lose source identity | Store source NPZ, frame range, command, physics seed, phase, board state, and action. |
 
-HUSKY 23D joint arrays are expanded by name to 29D with zero wrists. The
-official online BFM state is:
+### Verified and Unverified Conclusions
+
+Verified:
+
+- [x] 158 source episodes produced 452,885 raw frames and 150.962 minutes.
+- [x] Phase conversion produced 6,038 motions, 452,291 frames, and 148.751
+  minutes.
+- [x] Continuous conversion produced 890 clips, 445,000 frames, and 148.333
+  minutes.
+- [x] No complete source episode was rejected.
+- [x] Both datasets load through official `MotionLibRobot` and pass Seq8
+  expert sampling.
+- [x] Phase QC rendered 10 samples per phase; Continuous QC rendered 10 clips.
+- [x] Raw, Phase, Continuous, manifests, and QC are published on Hugging Face.
+
+Unverified:
+
+- [ ] A held-out validation/test split; only `dataset_split=train` was
+  formally collected.
+- [ ] Equal physical quality across every command cell and phase.
+- [ ] Dynamic Skate skill quality; data validity does not prove that every
+  expert segment is equally useful for BFM training.
+
+## Experiment 3: BFM + Skate Expert Training and Semantics Alignment
+
+### Experiment Goal
+
+Train BFM0 with Base/LAFAN and Skate expert data, evaluate the resulting
+closed-loop policy, then diagnose and resolve the semantics mismatch exposed
+by the failed training result. Reward audits, rollout preflights, reset/latent
+audits, action audits, and frozen evaluations are all internal steps of this
+single experiment.
+
+### Environment and Inputs
+
+| Item | Formal setting |
+|---|---|
+| Initialization | fresh official BFM0 checkpoint |
+| Base expert | 862 LAFAN motions |
+| Skate expert | Phase: 6,038 motions; Continuous option: 890 clips |
+| Completed formal run | Phase dataset |
+| Online simulator | four independent `HuskyBfmOnlineEnv` instances |
+| Control step | 0.02 s |
+| Actor/model device | CUDA |
+| Replay | CPU `DictBuffer`, capacity 100,000 |
+| Episode horizon | 1,024 transitions |
+| Stored/executed action | BFM29 / HUSKY23 |
+| Expert batch | 64 Base Seq8 + 64 Skate Seq8 = 1,024 rows |
+| Online reset | uniform motion, then uniform local frame |
+
+The **current intended online rollout setting** restores the exact source
+physics realization associated with the selected expert frame. It does not
+sample an additional random physics realization online. This differs from:
+
+- Experiment 2, where random physics is sampled to collect diverse source
+  episodes;
+- the historical Phase 100k run, which injected source `qpos/qvel` into
+  nominal physics before the mismatch was found.
+
+Formal schedule:
 
 ```text
-s_t = [
-    q_29(t) - q_default,       # 29
-    qdot_29(t),                # 29
-    gravity_body(t),           # 3
-    0.25 * omega_body(t)       # 3
-] in R^64
+transitions = 100,000
+warmup = 1,024 stochastic pretrained-Actor transitions
+first update = 1,500
+update interval = 500 transitions
+updates per block = 50
+update blocks = 198
+total native updates = 9,900
+checkpoints = 20k, 50k, 100k
+seed = 4728
 ```
 
-The Actor also receives:
+### Experiment Process and Method
+
+#### Expert sequence and latent
+
+One native batch contains 128 complete eight-frame sequences:
 
 ```text
-last_action = 5 * a_bfm(t-1) in R^29
-history_actor in R^372
+64 Base sequences + 64 Skate sequences
+128 * 8 = 1024 rows
 ```
 
-History contains four frames of action (29), angular velocity (3), joint
-position (29), joint velocity (29), and projected gravity (3):
-
-```text
-4 * (29 + 3 + 29 + 29 + 3) = 372
-```
-
-Formal reset uses zero `last_action` and zero history. After each step, only
-the current online state/action enters history; source expert actions are not
-injected.
-
-The 463D privileged state is built in the robot heading frame:
-
-```text
-p = [
-    root_height,                       # 1
-    relative body positions,           # 30 * 3
-    body tangent and normal vectors,   # 31 * 6
-    local body linear velocities,      # 31 * 3
-    local body angular velocities      # 31 * 3
-] in R^463
-```
-
-### 5.2 MotionLib Expert Latent
-
-For one eight-frame expert sequence, the official backward map is evaluated
-on normalized next observations:
+For each sequence:
 
 ```text
 b_t = B(N(o_expert,t+1))
@@ -312,97 +408,36 @@ z_expert = project_z((1/8) * sum_{t=0}^{7} b_t)
 ||z_expert||_2 = sqrt(256) = 16
 ```
 
-The same `z_expert` is repeated over the eight sequence rows. Each native
-update samples 64 complete Base/LAFAN sequences and 64 complete Skate
-sequences, giving:
+The expert latent is repeated over the eight rows.
+
+#### Online reset and observation history
 
 ```text
-128 sequences * 8 rows = batch size 1024
+motion m ~ Uniform(all selected Skate motions)
+frame t  ~ Uniform({0, ..., frames(m)-1})
 ```
 
-The Base source contains 862 LAFAN motions. The formal Skate source is selected
-as either 6,038 Phase motions or 890 Continuous clips; the completed 100k run
-used Phase.
+Robot and skateboard `qpos/qvel` are restored from the same raw frame. Source
+XML, joint order, quaternion convention, frame range, physics seed, and
+physics fields must match or reset fails closed.
 
-Known upstream asymmetry: MotionLib expert `last_action` is zero, and expert
-root angular velocity is not multiplied by the online `0.25` scale. This was
-measured in D1.3 and remains a documented compatibility issue.
-
-### 5.3 Online BFM Action to HUSKY Control
-
-The Actor emits normalized `a_bfm in [-1,1]^29`. Six wrist dimensions are
-forced to zero, then the 23 shared joints are selected by name. The physical
-target used by the online HUSKY controller is:
+Reset observation uses:
 
 ```text
-q_target_bfm[j] =
-    q_default_bfm[j] + 5 * scale_bfm[j] * a_bfm[j]
+last_action = 0
+history_actor = 0
 ```
 
-Replay stores the projected 29D BFM action; MuJoCo executes the mapped 23D
-action. Shared joint values are not reordered by numeric index assumptions.
+After stepping, history contains only the current Actor's online data. Expert
+source actions are not inserted into Actor history.
 
-### 5.4 Source Expert Action to BFM Action
+#### Current online latent setting
 
-The collected ONNX source policy uses:
+With four environments, expert-role slots are `[0,3]`; free slots are `[1,2]`.
+All slots keep a background latent, refreshed every 100 episode steps from the
+z-buffer when available and otherwise from `model.sample_z()`.
 
-```text
-q_target_src[j] =
-    q_default_src[j] + scale_src[j] * a_src[j]
-```
-
-Equating physical targets gives the exact diagnostic bridge:
-
-```text
-a_bfm_eq[j] =
-    (q_default_src[j] + scale_src[j] * a_src[j]
-     - q_default_bfm[j])
-    / (5 * scale_bfm[j])
-```
-
-```text
-EXACT:     |a_bfm_eq[j]| <= 1
-PROJECTED: a_bfm_bridge[j] = clip(a_bfm_eq[j], -1, 1)
-```
-
-The bridge reconstructs representable physical targets with RMSE
-`1.97e-17 rad` and maximum error `4.44e-16 rad`. Across 452,885 source frames,
-component coverage is `99.600839%`, but full-frame exact coverage is only
-`92.1503%`; the remaining tail is almost entirely left/right hip pitch.
-
-This bridge is used for diagnostics and expert-action translation only. It is
-not fed into the formal Actor rollout or history.
-
-## 6. Online Reset and Latent Lifecycle
-
-### 6.1 Physical Reset
-
-The reset sampler first chooses a MotionLib record uniformly, then a local
-frame uniformly within that record:
-
-```text
-m ~ Uniform(motions)
-t ~ Uniform({0, ..., frames(m)-1})
-```
-
-It loads `qpos[t]`, `qvel[t]`, robot and skateboard together, validates source
-XML/joint/quaternion metadata, restores the recorded physics realization, runs
-`mj_setConst`, and injects the exact state. Missing or ambiguous provenance
-fails closed.
-
-### 6.2 Current Formal Latent Rule
-
-With four environments and seed 4728, expert rollout slots are `[0,3]`;
-slots `[1,2]` are free. Every slot owns a background latent refreshed every
-100 episode steps:
-
-```text
-z_background =
-    z_buffer.sample(), if the buffer is non-empty
-    model.sample_z(),  otherwise
-```
-
-For an expert slot reset at motion frame `t`, tracking latent step `k` is:
+For an expert-role reset at source frame `t`:
 
 ```text
 z_track[k] =
@@ -412,36 +447,27 @@ z_track[k] =
   )
 ```
 
-Tracking lasts at most 250 steps and never crosses a Phase segment. After it
-ends, the slot returns to its maintained background latent. Replay stores the
-effective latent actually passed to Actor.
+Tracking lasts at most 250 steps and cannot cross the selected Phase segment.
+After tracking ends, the slot returns to its background latent. The historical
+100k run used unrelated random z; this aligned rule was added after failure
+and has not yet been used in a retraining run.
 
-The historical Phase 100k run used random background z only. The mixed,
-reset-aligned rule was added after that failed run and has only been tested in
-frozen preflight, not retrained.
+#### Native FB-CPR-Aux optimization
 
-## 7. Native BFM-Zero Optimization
+The project calls the vendored `FBcprAuxAgent.update()` rather than
+reimplementing it.
 
-The project calls the vendored
-[`FBcprAuxAgent.update()`](scripts/isaac_env/humanoidverse/agents/fb_cpr_aux/agent.py);
-it does not reimplement component optimizers.
-
-### 7.1 Latent Mixture
-
-Each update samples:
+Update-time latent mixture:
 
 ```text
 20% z_goal   = project_z(B(next online goal))
-60% z_expert = encoded Base/Skate expert sequence
-20% z_random = uniform model latent
+60% z_expert = Base/Skate expert encoding
+20% z_random = model.sample_z()
 ```
 
-With probability `0.8`, a replay transition latent is relabeled by this
-mixture before the update. The z-buffer capacity is 8,192.
+With probability 0.8, online replay z is relabeled by this mixture.
 
-### 7.2 FB Objective
-
-For batch embedding matrices:
+Forward-backward objective:
 
 ```text
 M = F(s,a,z) B(g)^T
@@ -458,13 +484,9 @@ L_ortho(B) =
     - mean_diag(B B^T)
 ```
 
-`E=2` is the number of parallel F maps and `gamma=0.98`; the optional Q term
-is disabled (`q_loss_coef=0`). F/B target networks use Polyak coefficient
-`tau_FB=0.01`.
+`E=2`, `gamma=0.98`, `q_loss_coef=0`, and F/B target `tau=0.01`.
 
-### 7.3 Discriminator, Critics, and Actor
-
-The discriminator separates expert `(o,z_expert)` from online `(o,z)`:
+Discriminator:
 
 ```text
 L_D = -log(sigmoid(D_expert))
@@ -472,14 +494,14 @@ L_D = -log(sigmoid(D_expert))
       + 10 * gradient_penalty
 ```
 
-The main and auxiliary critic targets are:
+Critic targets:
 
 ```text
 y_D   = r_discriminator + gamma * (Qbar_mean - 0.5 * Qbar_uncertainty)
 y_aux = r_aux_normalized + gamma * (Qaux_mean - 0.5 * Qaux_uncertainty)
 ```
 
-The Actor objective is:
+Actor:
 
 ```text
 Q_FB = <F(s, pi(s,z), z), z>
@@ -491,237 +513,178 @@ L_actor =
     -0.02 * w * mean(Q_aux)
 ```
 
-### 7.4 Optimizer and Model Parameters
-
-| Module | Architecture and inputs |
-|---|---|
-| Forward F | residual MLP, 6 hidden layers of 2,048, two parallel maps; state, privileged state, last action, history |
-| Backward B | one hidden layer of 256; state and privileged state |
-| Actor | residual MLP, 6 hidden layers of 2,048; state, last action, history |
-| Main / auxiliary critic | residual MLP, 6 hidden layers of 2,048, two parallel maps; same inputs as F |
-| Discriminator | 3 hidden layers of 1,024; state and privileged state |
+Optimizer settings:
 
 | Component | Learning rate |
 |---|---:|
-| Forward map F | `3e-4` |
-| Backward map B | `1e-5` |
+| F | `3e-4` |
+| B | `1e-5` |
 | Actor | `3e-4` |
 | Discriminator | `1e-5` |
 | Main critic | `3e-4` |
 | Auxiliary critic | `3e-4` |
 
-Other fixed parameters:
+Actor standard deviation is `0.05`, action-noise clip is `0.3`, critic target
+`tau=0.005`, weight decay is zero, AMP/compile/cudagraphs are disabled, and
+the z-buffer capacity is 8,192.
 
-```text
-latent dimension = 256; latent norm = 16
-sequence length = 8; batch size = 1024
-actor std = 0.05; sampled std clip = 0.3
-critic target tau = 0.005
-FB target tau = 0.01
-weight decay = 0
-AMP = false; compile = false; cudagraphs = false
-```
-
-### 7.5 Auxiliary Reward
-
-The environment records positive raw penalties; the agent forms:
+Auxiliary penalty:
 
 ```text
 r_aux = sum_i weight_i * penalty_i
 ```
 
-| Penalty | Definition | Weight |
-|---|---|---:|
-| action rate | `sum((a_t-a_{t-1})^2)` on executed 23D action | `-0.1` |
-| feet orientation | contact-gated world-horizontal foot-normal error | `-0.4` |
-| ankle roll | left/right ankle-roll square | `-4.0` |
-| DoF position limit | distance outside 95% HUSKY joint range | `-10.0` |
-| slippage | foot tangential velocity relative to contacted ground/board | `-2.0` |
-| undesired contact | illegal body-ground/board contact above 1 N | `-1.0` |
-| torque square | `sum(qfrc_actuator^2)` | `0.0` |
-| torque limit | excess above 95% runtime HUSKY torque limit | `0.0` |
+| Penalty | Weight |
+|---|---:|
+| action rate | `-0.1` |
+| feet orientation | `-0.4` |
+| ankle roll | `-4.0` |
+| DoF position limit | `-10.0` |
+| surface-relative slippage | `-2.0` |
+| undesired contact | `-1.0` |
+| torque square | `0.0` |
+| torque limit | `0.0` |
 
-Position/torque authority is the actual HUSKY `MjModel`; reward semantics come
-from vendored BFM-Zero. No forward-speed, command, balance, or skateboard
-displacement reward has been added.
+No forward-speed, command, balance, steering, or board-displacement reward was
+added. Fall termination uses the same persistent 70-degree/0.45 m detector as
+Experiment 2.
 
-### 7.6 Formal Schedule
+#### Training and failure
+
+The native update path was first checked on one fixed 1,024-transition replay
+for 1, 10, and 100 updates. A 20k closed-loop baseline then verified growing
+replay and checkpoints. The formal Phase run completed 100k transitions and
+9,900 native updates, but:
 
 ```text
-online transitions = 100,000
-parallel HUSKY envs = 4
-replay capacity = 100,000 on CPU
-warmup = 1,024 stochastic pretrained-Actor transitions
-first update = transition 1,500
-update interval = 500 transitions
-native updates per block = 50
-blocks = 198
-total native updates = 9,900
-checkpoints = 20k, 50k, 100k
-episode horizon = 1,024 transitions
+completed training episodes = 3,109
+fall terminations = 3,109
+horizon completions = 0
 ```
 
-## 8. Experiment Sequence and Conclusions
+Frozen matched evaluation:
 
-### E1. Expert Integration and Sampling
+```text
+official BFM0 mean survival = 1.264 s
+20k checkpoint             = 0.604 s
+50k checkpoint             = 0.519 s
+100k checkpoint            = 0.643 s
+```
 
-Environment: official MotionLib loader plus one HUSKY sample, no optimizer.
+This established a behavioral failure despite finite optimization and valid
+checkpoint reloads.
 
-- [x] Base-only and Skate-only MotionLib loading passed.
-- [x] Complete Seq8 Base/Skate 50/50 sampling passed.
-- [x] Frozen B produced finite `[1024,256]` expert latent rows with norm 16.
-- Conclusion: the data schema can enter BFM training; this does not validate
-  physical Skate behavior.
+#### Semantics mismatch diagnosis and methods
 
-### E2. B/F-only Boundary
+The following are process steps inside Experiment 3:
 
-Environment: 1,024 seen-dynamics HUSKY transitions and independent
-1/10/100-update runs from official BFM0. Evaluation used protocol seed
-`20260810`, keyframe-0 robot/board reset, `dt=0.02 s`, and a 128-step horizon:
+| Observed mismatch | Method and result |
+|---|---|
+| Source expert state used randomized physics, while training reset used nominal physics | Restore the recorded COM/friction/joint-offset realization before exact robot-board `qpos/qvel`; reset error and physics mismatch became zero. |
+| BFM gradients/replay included six nonphysical wrists | Project all model-side and online actions to the shared 23DoF subspace; wrists remain exactly zero. |
+| MotionLib and online observation scales differ | Distribution audit found expert root angular velocity scale 1.0 versus online 0.25 and 20-27 sigma waist drift; documented but not yet resolved. |
+| Random z was unrelated to the selected expert reset | Build same-reset tracking z from future expert observations and use it only in expert-role rollout slots. |
+| Source ONNX action and BFM normalized action have different physical target semantics | Derive an exact per-joint physical-target bridge and explicitly mark out-of-range components as projected. |
+| Phase boundaries can remove required previous-action context | Measure current/history/five-action representability; Phase strict coverage is 64.8366%, with `steer2push=12.1379%`. |
 
-| Split | Dynamics seed | Command `(v,h)` |
+Source action target:
+
+```text
+q_target_src[j] =
+    q_default_src[j] + scale_src[j] * a_src[j]
+```
+
+BFM target:
+
+```text
+q_target_bfm[j] =
+    q_default_bfm[j] + 5 * scale_bfm[j] * a_bfm[j]
+```
+
+Exact translation:
+
+```text
+a_bfm_eq[j] =
+    (q_default_src[j] + scale_src[j] * a_src[j]
+     - q_default_bfm[j])
+    / (5 * scale_bfm[j])
+
+EXACT:     |a_bfm_eq[j]| <= 1
+PROJECTED: clip(a_bfm_eq[j], -1, 1)
+```
+
+Across 452,885 frames, exact component coverage is `99.600839%`, exact
+full-frame coverage is `92.1503%`, and remaining failures are concentrated in
+hip pitch. A diagnostic 4,096-transition correction changed normalized
+next-state RMSE from `0.4689` to `0.4482`, but held-out ratio `0.9610` and
+one-sided hip results were insufficient, so no learned correction was adopted.
+
+#### Post-alignment frozen preflight
+
+The final current-stack check used fresh official BFM0, 512 matched Phase
+resets, exact source physics, seed 4728, and a 51-step horizon. It compared:
+
+```text
+formal setting: expert slots use aligned tracking z; free slots use background z
+control:        all slots use background random z
+```
+
+| Metric | Formal aligned/mixed | Pure random |
 |---|---:|---:|
-| seen-1 | 22001 | `(0.75,-0.35)` |
-| seen-2 | 22002 | `(1.25,+0.35)` |
-| unseen-1 | 23001 | `(0.75,+0.35)` |
-| unseen-2 | 23002 | `(1.25,-0.35)` |
+| Mean survival | 49.816 | 49.705 |
+| Failure by step 20 | 0.00% | 0.00% |
+| Failure by step 50 | 26.17% | 26.76% |
+| Root tilt p95 | 66.71 deg | 66.93 deg |
+| Waist action saturation | 82.33% | 82.69% |
 
-- Base-only and correctly configured Base+Skate 50/50 treatments were
-  compared while Actor, discriminator, QD, and Qaux were frozen.
-- Training consumed only seen-dynamics replay; unseen and evaluation
-  transitions in training were both zero.
-- At 100 updates, Base+Skate Top-5 changed `0.6875 -> 0.8281` and mean rank
-  `5.2813 -> 3.8125`.
-- Conclusion: promising representation adaptation under this evaluator, but
-  no Base retention or physical task-success claim.
+The reset population contained 421 fully exact and 91 projected source-action
+contexts. Formal Actor/expert first-action cosine was `0.435` for exact
+contexts and `0.185` for projected contexts. No board-relative reset variable
+strongly predicted failure; the largest absolute survival Spearman
+coefficient was `0.136`.
 
-### E3. Reward, Termination, and Native-update Readiness
+### Problems and Solutions
 
-Environment: fixed 1,024-transition HUSKY replay, one Phase-limited Skate
-expert, official BFM0 initialization.
+| Problem | Current treatment |
+|---|---|
+| Formal 100k training is numerically valid but behavior is worse | Freeze further long training and use matched frozen evaluation. |
+| Physical reset did not reproduce source dynamics | Restore exact source physics and exact robot-board state. |
+| Nonphysical wrist actions contaminated the BFM action interface | Apply one 29D active-subspace projection everywhere. |
+| Expert reset and random latent represented unrelated motion | Add same-reset future-expert tracking z for expert rollout slots. |
+| Source and BFM action coordinates differed | Use exact affine target translation plus explicit `PROJECTED` fallback. |
+| Hip-pitch tails exceed BFM action range | Record representability and projection; do not silently enlarge range or adopt weak learned correction. |
+| Observation scale and history semantics are still asymmetric | Keep as explicit unresolved items; do not claim successful retraining. |
 
-- [x] Eight auxiliary reward fields were finite `[1024,1]`.
-- [x] Fall termination produced 14 terminal, one horizon-truncated, and 1,009
-  normal transitions with zero overlap.
-- [x] Full native updates at 1, 10, and 100 iterations remained finite; all
-  six Adam optimizers reached the expected step.
-- Conclusion: the native update dependencies are executable, but fixed-replay
-  numerical stability is not policy-quality evidence.
-
-### E4. 20k Closed-loop Baseline
-
-Environment: one nominal HUSKY env, random model latents, 20,000 transitions,
-1,900 native updates, no domain randomization.
-
-- [x] 19,592 normal, 389 falls, and 19 horizon truncations were recorded.
-- [x] 10k/20k checkpoints reloaded with complete optimizer state.
-- All 60 fixed target-conditioned evaluation episodes fell before 128 steps.
-- Conclusion: training executed, but physical performance was inconclusive.
-
-### E5. Phase 100k Formal Run
-
-Environment: four nominal HUSKY envs, Phase expert resets, random latent
-refresh every 100 transitions, source `qpos/qvel` but pre-D1 nominal physics.
-
-- [x] 100,000 transitions, 198 blocks, and 9,900 updates completed.
-- [x] All 537 model tensors and 846,227,305 values were finite.
-- Block-final FB loss changed from `325,215.56` at step 1,500 to
-  `-10,048.30` at 100k, while critic and auxiliary-critic losses remained
-  finite; the negative value is allowed by the FB diagonal objective.
-- Every 3,109 completed training episode ended in fall; no episode reached the
-  1,024-step horizon.
-- Frozen mean survival was `1.264 s` for official BFM0 versus
-  `0.604/0.519/0.643 s` for 20k/50k/100k.
-- Conclusion: numerical integrity passed; behavioral adaptation failed.
-
-### E6. Post-failure Alignment Audits
-
-Environment: no training unless explicitly stated; official checkpoint and
-historical 100k checkpoint evaluated separately.
-
-- D1.1 restored exact recorded source physics with exact raw qpos/qvel.
-- D1.2 enforced the shared 23DoF action subspace and zero wrists throughout
-  Actor, replay, F, critics, and history.
-- D1.3 found waist position/velocity drift of approximately 20-27 normalized
-  standard deviations within 20 steps and the expert/online angular-velocity
-  scale asymmetry.
-- D2.1 constructed same-reset tracking z. On the old 100k checkpoint,
-  step-20 root tilt improved `47.8 -> 25.2 deg` and saturation
-  `17.1% -> 0.29%`; official BFM0 waist divergence remained.
-- D2.3/D2.4 identified hip-pitch control-range mismatch and moderate temporal
-  context loss; Phase strict five-action context coverage was `64.8366%`,
-  with `steer2push=12.1379%`.
-- D2.5 retained exact affine translation plus explicit projection. A
-  diagnostic 4,096-transition hip-tail refinement changed normalized
-  next-state RMSE `0.4689 -> 0.4482`, but held-out ratio `0.9610` was too weak
-  and inconsistent to adopt a learned correction.
-- Conclusion: source physics and interfaces are now explicit; hip control
-  range, temporal context, upstream observation asymmetry, and frozen policy
-  takeover remain unresolved behavioral factors.
-
-### E7. M2.6-P0 Frozen Closed-loop Preflight
-
-Environment: fresh official BFM0, Phase dataset, 512 matched resets, seed
-4728, 51-step horizon, exact source physics, no update/backward/optimizer.
-
-```text
-FORMAL_D2.2:
-  expert slots [0,3] use aligned tracking z
-  free slots [1,2] use background z
-
-PURE_RANDOM_Z:
-  all slots use background random z
-```
-
-- [x] qpos/qvel reset errors were zero; physics mismatch count was zero.
-- [x] Model, normalizer, and buffer hashes were unchanged.
-- [x] No failures occurred by step 20 in either condition.
-- `FORMAL_D2.2` versus random mean survival was `49.816` versus `49.705`
-  steps; failure by step 50 was `26.17%` versus `26.76%`.
-- Waist action saturation `|a|>=0.95` was `82.33%` versus `82.69%`.
-- The reset population contained 421 fully exact and 91 projected source
-  action contexts. Under `FORMAL_D2.2`, Actor/expert first-action cosine was
-  `0.435` for exact contexts and `0.185` for projected contexts; first
-  physical-target jump mean/p95 was `2.129/3.080`.
-- Board/robot-relative reset variables had weak survival association; the
-  largest absolute reported Spearman coefficient was `0.136`.
-- Conclusion: structural contract passed, but aligned tracking-z did not
-  materially improve frozen behavior. The source-to-BFM takeover action is
-  less aligned in projected contexts, but no single board variable explains
-  failure. Classification is `BEHAVIORAL_DIAGNOSTIC_REQUIRED`.
-
-## 9. Verified and Pending Conclusions
+### Verified and Unverified Conclusions
 
 Verified:
 
-- [x] Formal raw data is synchronized and reproducible from recorded seeds.
-- [x] Phase and Continuous split rules are deterministic and provenance-safe.
-- [x] HUSKY pose can be represented in the BFM29 MotionLib schema with six
-  fixed wrists.
-- [x] Most source actions have an exact BFM physical-target equivalent, with
-  explicit projection for the hip-pitch tail.
-- [x] Native FB-CPR-Aux optimization and checkpointing run without numerical
-  corruption.
-- [x] The existing Phase 100k checkpoint is behaviorally worse than official
-  BFM0 under the matched frozen evaluation.
+- [x] Base/Skate 50/50 complete-sequence sampling enters the native BFM update.
+- [x] Rewards, termination, replay, six optimizers, model state, and checkpoint
+  reload are finite and structurally valid.
+- [x] The Phase 100k run completed 100,000 transitions and 9,900 updates.
+- [x] The Phase 100k trained checkpoints are less stable than official BFM0
+  under the matched frozen evaluation.
+- [x] Source-physics restoration and robot-board qpos/qvel reset are exact.
+- [x] Shared 23DoF action mapping is exact and six wrists remain zero.
+- [x] Exact source-to-BFM action translation is valid for 99.600839% of
+  components; the remaining projected tail is mainly hip pitch.
+- [x] The current post-alignment structural preflight passes without changing
+  model or normalizer hashes.
 
-Pending:
+Unverified:
 
-- a separate validation/test raw collection;
-- a resolved expert/online angular-velocity observation contract;
-- a decision for hip-pitch range and low-level controller mismatch;
-- periodic frozen-policy curves and parameter/gradient norm tracking;
-- a successful short retrain under the post-D1/D2 contracts;
-- evidence that the learned model is a stable, diverse Skate motion library.
+- [ ] The expert/online angular-velocity scale asymmetry has been resolved.
+- [ ] Hip-pitch range and low-level controller semantics have been fully
+  aligned.
+- [ ] Aligned tracking z materially improves frozen official BFM0 behavior.
+- [ ] A post-alignment short retraining improves survival or Skate behavior.
+- [ ] The trained model is a stable and diverse Skate motion library.
+- [ ] Held-out validation/test generalization.
 
-## 10. Source Index
+Relevant implementation:
 
-- Collection: [`scripts/data_collection/rollout_split.py`](scripts/data_collection/rollout_split.py)
-- Phase conversion: [`scripts/data_collection/convert_phase.py`](scripts/data_collection/convert_phase.py)
-- Continuous conversion: [`scripts/data_collection/convert_continuous.py`](scripts/data_collection/convert_continuous.py)
-- Formal trainer: [`scripts/train_skate_bfm.py`](scripts/train_skate_bfm.py)
-- Frozen evaluator: [`scripts/evaluator.py`](scripts/evaluator.py)
-- Observation/action bridge: [`../src/skate_bfm/integration/`](../src/skate_bfm/integration/)
-- HUSKY runtime: [`../husky_sim/src/skate_husky/`](../husky_sim/src/skate_husky/)
-- Formal Skate datasets:
-  [Hugging Face](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset)
+- [`scripts/train_skate_bfm.py`](scripts/train_skate_bfm.py)
+- [`scripts/evaluator.py`](scripts/evaluator.py)
+- [`../src/skate_bfm/integration/actions.py`](../src/skate_bfm/integration/actions.py)
+- [`../src/skate_bfm/integration/online.py`](../src/skate_bfm/integration/online.py)
