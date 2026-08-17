@@ -2018,3 +2018,29 @@ the formal Skate runtime action contract.
   exactly covers the current representable region; hip-pitch reachable range
   and low-level integration differences block the remainder.
 - Code changed: `NO`. Training performed: `NO`.
+
+## M2.6-D2.5 Skate Expert Action Translation
+
+- Date: `2026-08-17`.
+- Proved the collector transition contract: captured `state[t]` uses the
+  previous action, while the newly inferred policy output is `action[t+1]`
+  and produces `state[t+1]`.
+- Added a name-based source-policy 23D to HUSKY/BFM translation contract.
+  Representable components use the exact affine target-space inverse; tail
+  components are explicitly marked `PROJECTED` and clipped to `[-1, 1]`.
+  BFM29 output always zeros the six wrist dimensions.
+- Audited `452885` frames: exact component coverage was `99.600839%`, exact
+  frame coverage was `92.1503%`, and `35550` frames contained a hip-tail
+  component.
+- A deterministic `4096`-transition hip-tail MuJoCo refinement audit reduced
+  normalized next-state RMSE from `0.4689` to `0.4482`; held-out source RMSE
+  ratio was `0.9610`. Gains were concentrated in both-hip tails, while
+  left-only and right-only tails showed no consistent improvement.
+- Dynamics-aware search and learned/piecewise correction were rejected. The
+  final rule is exact affine translation plus an explicit approximate
+  projection fallback. Canonical raw actions and formal online semantics are
+  unchanged.
+- Validation passed: `pytest` (`27 passed`), project-owned `ruff`,
+  `py_compile`, and `git diff --check`. Full-tree ruff still reports
+  pre-existing vendored BFM/Isaac issues.
+- Training performed: `NO`.
