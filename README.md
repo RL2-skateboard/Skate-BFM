@@ -40,26 +40,52 @@ Continuous 100k training is therefore paused pending diagnosis.
 
 ## Setup
 
-Create the project environment and install the project plus its MotionLib
+Clone the training branch with submodules:
+
+```bash
+git clone --branch train --recurse-submodules \
+  https://github.com/RL2-skateboard/Skate-BFM.git
+cd Skate-BFM
+```
+
+For an existing clone:
+
+```bash
+git checkout train
+git pull --ff-only origin train
+git submodule update --init --recursive
+```
+
+Create the supported environment and install the project plus its MotionLib
 dependencies:
 
 ```bash
-conda create -n skatebfm python=3.12 -y
+conda env create -f environment.yml
 conda activate skatebfm
 pip install -e '.[dev,motionlib]'
 ```
 
-The following local artifacts must exist before training:
+The official BFM0 checkpoint must be restored separately at:
 
 ```text
 model/bfm-zero-official/
-train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl
-dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl
 ```
 
-`train/scripts/isaac_env/` is the vendored BFM-Zero runtime used for the
-official agent and MotionLib interfaces. `husky_sim/` is the project-owned
-HUSKY runtime boundary.
+The formal Skate datasets are not read from the checked-in
+`train/dataset/` directory. Download them from the
+[Skate-BFM Hugging Face dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset):
+
+```bash
+hf download Yak9Ce3teeh/skate-sim-dataset \
+  --repo-type dataset \
+  --include "phase/**" \
+  --local-dir dataset/sim_collected
+```
+
+Use `continuous/**` for the Continuous MotionLib or `raw/**` for the
+original collection. `train/scripts/isaac_env/` is the vendored BFM-Zero
+runtime used by the official agent and MotionLib interfaces;
+`husky_sim/` is the project-owned HUSKY runtime boundary.
 
 ## Build Phase Expert Data
 
