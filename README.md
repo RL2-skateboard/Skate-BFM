@@ -308,6 +308,8 @@ flowchart LR
 ## Experiment Records
 
 - [`docs/exp_logs.md`](docs/exp_logs.md): brief dated development log.
+- [`docs/exp.md`](docs/exp.md): H1 objective, methods, limitations, and
+  verification status.
 - [`docs/exp_res.md`](docs/exp_res.md): formal experiment parameters and
   results, plots, and videos.
 

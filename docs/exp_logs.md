@@ -1,23 +1,19 @@
 # Experiment Log
 
-## 2026-08-01
-
-- Evaluated frozen BFM0 with time-aligned expert latent trajectories and trajectory-local CEM.
-
-## 2026-07-31
-
-- Evaluated frozen BFM0 with a global latent scan and broad CEM, without expert latent priors.
+Each entry records only the main task completed on that date.
 
 ## 2026-07-30
 
-- Wrapped the HUSKY simulator under `husky_sim/`.
-- Connected the basic BFM0 interface to the HUSKY 23DoF runtime.
-- Configured the `skatebfm` Conda environment.
-- Organized the repository structure and documentation.
+Wrapped HUSKY Sim, connected the basic BFM0 interface, configured `skatebfm`, and organized the repository.
+
+## 2026-07-31
+
+Completed H1 `without_prior` frozen-BFM0 global latent retrieval and broad CEM search.
+
+## 2026-08-01
+
+Completed H1 `with_prior` frozen-BFM0 backward-map latent reconstruction and trajectory-local CEM search.
 
 ## 2026-08-14
 
-- Organized the published simulation dataset into peer-level `raw/`, `phase/`,
-  and `continuous/` directories on Hugging Face.
-- Updated the main project README with the raw, Phase, and Continuous layout
-  and restore commands.
+Reorganized the published simulation dataset into peer-level `raw`, `phase`, and `continuous` directories and updated restore documentation.
