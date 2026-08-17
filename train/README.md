@@ -20,8 +20,8 @@ scripts/isaac_env/                          vendored BFM-Zero runtime
 
 ## Data Source
 
-Do not use the checked-in `train/dataset/` files for formal Skate-BFM
-training. The formal datasets are published on Hugging Face:
+Do not use the checked-in `train/dataset/skate-expert-pose/` files as the
+formal Skate expert source. Formal Skate data is published on Hugging Face:
 
 - [raw collection](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/raw)
 - [phase MotionLib](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase)
@@ -37,7 +37,10 @@ hf download Yak9Ce3teeh/skate-sim-dataset \
 ```
 
 Replace `phase/**` with `continuous/**` or `raw/**` when needed. The official
-BFM0 checkpoint is a separate local artifact at `model/bfm-zero-official/`.
+Base/LAFAN training file remains the BFM-Zero dependency at
+`train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl`; it is not a Skate
+dataset. The official BFM0 checkpoint is a separate local artifact at
+`model/bfm-zero-official/`.
 
 ## Commands
 
