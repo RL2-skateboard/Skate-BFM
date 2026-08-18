@@ -587,37 +587,128 @@ The following are process steps inside Experiment 3:
 | Source ONNX action and BFM normalized action have different physical target semantics | Derive an exact per-joint physical-target bridge and explicitly mark out-of-range components as projected. |
 | Phase boundaries can remove required previous-action context | Measure current/history/five-action representability; Phase strict coverage is 64.8366%, with `steer2push=12.1379%`. |
 
-Source action target:
+#### Skate expert action matching research
+
+This is the central action-semantics study inside Experiment 3. The question
+was not whether a 23D vector can be copied into a 29D vector; that part is
+already solved by joint names. The question was whether the source HUSKY
+policy action and the BFM normalized action produce the same physical PD
+target in the same HUSKY controller.
+
+The source ONNX policy uses the HUSKY control convention:
 
 ```text
-q_target_src[j] =
-    q_default_src[j] + scale_src[j] * a_src[j]
+q_target_src[j] = q0_src[j] + s_src[j] * a_src[j]
 ```
 
-BFM target:
+The BFM Actor uses the BFM-Zero convention:
 
 ```text
-q_target_bfm[j] =
-    q_default_bfm[j] + 5 * scale_bfm[j] * a_bfm[j]
+q_target_bfm[j] = q0_bfm[j] + 5 * s_bfm[j] * a_bfm[j]
 ```
 
-Exact translation:
+Therefore the only exact per-joint physical-target bridge is:
 
 ```text
 a_bfm_eq[j] =
-    (q_default_src[j] + scale_src[j] * a_src[j]
-     - q_default_bfm[j])
-    / (5 * scale_bfm[j])
+    (q0_src[j] + s_src[j] * a_src[j] - q0_bfm[j])
+    / (5 * s_bfm[j])
 
-EXACT:     |a_bfm_eq[j]| <= 1
-PROJECTED: clip(a_bfm_eq[j], -1, 1)
+               = b[j] + k[j] * a_src[j]
 ```
 
-Across 452,885 frames, exact component coverage is `99.600839%`, exact
-full-frame coverage is `92.1503%`, and remaining failures are concentrated in
-hip pitch. A diagnostic 4,096-transition correction changed normalized
-next-state RMSE from `0.4689` to `0.4482`, but held-out ratio `0.9610` and
-one-sided hip results were insufficient, so no learned correction was adopted.
+The matching procedure was:
+
+1. compare raw source action, raw source action divided by 5, and the affine
+   physical-target inverse;
+2. reconstruct the source target with `q0_src + s_src*a_src` and the BFM target
+   with `q0_bfm + 5*s_bfm*a_bfm`;
+3. classify each component as `EXACT` when `|a_bfm_eq| <= 1`, otherwise use an
+   explicit diagnostic `PROJECTED = clip(a_bfm_eq,-1,1)`;
+4. audit all 452,885 collected frames and every joint;
+5. compare source and BFM target transitions in MuJoCo;
+6. test whether a learned/piecewise hip-tail correction generalizes to held-out
+   transitions;
+7. compare the translated source action with the fresh Actor's first action at
+   the same reset, without executing the translated action.
+
+The source and current controllers share position-actuator semantics, PD gains,
+damping, force limits, 50 Hz policy rate, and no delay/filter. They still
+differ in target parameterization, clipping, MuJoCo integration
+(`0.005*4` source versus `0.002*10` current), and solver settings. Thus an
+exact target bridge does not imply identical low-level next-state dynamics.
+
+Measured mapping results:
+
+```text
+raw source action range       = [-4.933043, 6.152792]
+raw components outside [-1,1] = 32.1595%
+affine BFM-equivalent range   = [-2.343024, 1.716985]
+exact component coverage      = 99.600839%
+exact full-frame coverage     = 92.1503%
+```
+
+Naive mappings were rejected:
+
+| Mapping | Physical target RMSE |
+|---|---:|
+| raw source action copied as BFM action | 1.330264 rad |
+| raw source action divided by 5 | 0.530560 rad |
+| affine bridge with projection | 0.021775 rad |
+
+The remaining full-frame failures are concentrated in hip pitch. The exact
+bridge reconstructs representable targets with RMSE `1.97e-17 rad` and maximum
+error `4.44e-16 rad`; projected hip-tail errors reach `1.490767 rad`. Fixed
+center coverage would require left/right hip range multipliers of `1.510x` and
+`1.860x` for 99.9% coverage, or `2.156x` and `2.343x` for all observed
+targets. This is a control-parameterization mismatch, not a small numerical
+noise issue.
+
+The two dominant affine rows are:
+
+```text
+left hip pitch:  a_bfm_eq = +0.090089 + 0.493240 * a_src
+right hip pitch: a_bfm_eq = -0.540537 + 0.493240 * a_src
+```
+
+Removing the default-position offset would recover only `3.76%` of left-hip
+violations and `79.41%` of right-hip violations. The remaining tail therefore
+cannot be solved by recentering alone; reachable range is also insufficient.
+
+The temporal part was audited separately because
+`action[t]` is the action already applied before `state[t]`, while the source
+transition to `state[t+1]` is `action[t+1]`. Under the formal reset
+distribution, current-action/history/five-action context coverage was:
+
+| Dataset | Current valid | History valid | Strict five-action context |
+|---|---:|---:|---:|
+| Phase | 79.9611% | 66.6396% | 64.8366% |
+| Continuous | 92.2596% | 87.1721% | 85.8434% |
+
+Hip pitch explained `99.9612%` of Phase strict-context failures and `99.9810%`
+of Continuous failures. In `steer2push`, current hip violation was `60.15%`
+and strict five-context failure was `87.86%`; violation runs averaged 4.32
+frames, p95 9, maximum 14. This shows temporal persistence rather than a
+single corrupted frame.
+
+A 4,096-transition MuJoCo refinement reduced normalized next-state RMSE from
+`0.4689` to `0.4482`, but the held-out RMSE ratio was only `0.9610` and
+left-only/right-only hip tails did not improve consistently. Learned,
+piecewise, and dynamics-aware correction was therefore rejected. The retained
+production rule is exact affine translation plus explicit `PROJECTED` fallback;
+canonical source actions and formal online semantics remain unchanged.
+
+At the final P0 matched reset, 421 contexts were fully exact and 91 contained a
+projected component. The translated source action was diagnostic only:
+
+| Context | Actor/expert cosine | Actor/expert L2 |
+|---|---:|---:|
+| Fully exact | 0.4351 | 1.0477 |
+| Contains projected component | 0.1853 | 1.6058 |
+
+This is why the source action cannot currently be treated as a universally
+exact BFM expert action, even though most individual components are
+representable.
 
 #### Post-alignment frozen preflight
 

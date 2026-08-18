@@ -212,6 +212,67 @@ These rows are diagnostic steps within Experiment 3:
 | Diagnostic hip-tail refinement | next-state RMSE 0.4689 -> 0.4482; held-out ratio 0.9610 | improvement too weak/inconsistent; not adopted |
 | Same-reset tracking z on old 100k | step-20 root tilt 47.8 -> 25.2 deg; saturation 17.1% -> 0.29% | short old-checkpoint improvement only |
 
+**Skate expert action matching process**
+
+The source policy and BFM Actor do not share the same normalized action
+coordinates. The tested physical-target equations were:
+
+```text
+q_target_src[j] = q0_src[j] + s_src[j] * a_src[j]
+q_target_bfm[j] = q0_bfm[j] + 5 * s_bfm[j] * a_bfm[j]
+
+a_bfm_eq[j] =
+    (q0_src[j] + s_src[j] * a_src[j] - q0_bfm[j])
+    / (5 * s_bfm[j])
+```
+
+Dominant hip rows:
+
+```text
+left hip pitch:  a_bfm_eq = +0.090089 + 0.493240 * a_src
+right hip pitch: a_bfm_eq = -0.540537 + 0.493240 * a_src
+```
+
+| Source-to-BFM method | Physical target RMSE | Decision |
+|---|---:|---|
+| Copy raw source action | 1.330264 rad | Rejected |
+| Divide raw source action by 5 | 0.530560 rad | Rejected |
+| Affine inverse, no projection where valid | `1.97e-17 rad` on valid components | Retained |
+| Clip out-of-range components to `[-1,1]` | 0.021775 rad global target RMSE | Retained as explicit `PROJECTED` fallback |
+
+Coverage and mismatch:
+
+| Quantity | Result |
+|---|---:|
+| Raw source action range | `[-4.933043, 6.152792]` |
+| Raw components outside `[-1,1]` | 32.1595% |
+| Affine BFM-equivalent range | `[-2.343024,1.716985]` |
+| Exact component coverage | 99.600839% |
+| Exact full-frame coverage | 92.1503% |
+| Projected frames | 35,550 |
+| Maximum projected hip-tail error | 1.490767 rad |
+| Violations recovered by removing default offset | left 3.76% / right 79.41% |
+| Range multiplier for 99.9% target coverage | left 1.510x / right 1.860x |
+| Range multiplier for full observed coverage | left 2.156x / right 2.343x |
+
+Temporal alignment and controller comparison:
+
+| Check | Result |
+|---|---:|
+| Phase current/history/strict-five context | 79.9611% / 66.6396% / 64.8366% |
+| Continuous current/history/strict-five context | 92.2596% / 87.1721% / 85.8434% |
+| Phase `steer2push` current hip violation | 60.15% |
+| Phase `steer2push` strict-five failure | 87.86% |
+| Hip violation run length | mean 4.32 frames, p95 9, max 14 |
+| 4,096-transition refinement RMSE | 0.4689 -> 0.4482 |
+| Held-out refinement RMSE ratio | 0.9610 |
+
+**Caption.** The bridge exactly matches physical PD targets only when the BFM
+equivalent lies inside `[-1,1]`; clipping preserves the BFM contract but
+cannot reproduce the source target outside that range. Hip pitch is the main
+limitation. The refinement was not adopted because the held-out improvement
+was weak and one-sided tails were inconsistent.
+
 **Post-alignment frozen preflight**
 
 Fresh official BFM0, 512 matched Phase resets, 51 steps:
@@ -248,6 +309,10 @@ Verified:
   matched frozen evaluation.
 - [x] Source physics, robot-board state, active action subspace, and current
   P0 structural contracts pass.
+- [x] Source action timing, HUSKY target reconstruction, BFM target
+  reconstruction, and exact/projected coverage were experimentally checked.
+- [x] The final production action rule is recorded as exact affine translation
+  plus explicit projected fallback.
 - [x] The P0 check made zero training/update/backward/optimizer calls and did
   not change model, normalizer, or buffer hashes.
 
@@ -255,6 +320,8 @@ Unverified:
 
 - [ ] Tracking z materially improves frozen official BFM0.
 - [ ] Hip-pitch and observation semantics are fully resolved.
+- [ ] A single action translation reproduces every source physical target.
+- [ ] The projected source action is a valid universal BFM expert action.
 - [ ] A post-alignment retraining improves policy survival.
 - [ ] The current checkpoint is a usable Skate motion library.
 - [ ] Held-out validation/test generalization.
