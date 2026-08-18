@@ -1,8 +1,8 @@
 # Skate-BFM Training Experiments
 
-This document contains exactly three project experiments. Every audit,
-preflight, smoke run, and diagnostic belongs to one of these experiments; it
-is not a separate experiment.
+This document contains three conducted/current project experiments and one
+planned next experiment. Every audit, preflight, smoke run, and diagnostic
+belongs to its parent experiment; it is not a separate experiment.
 
 Numerical results are in [`train_res.md`](train_res.md), and dated work is in
 [`train_log.md`](train_log.md).
@@ -877,3 +877,213 @@ Relevant implementation:
 - [Published `m2.6-phase-100k-seed4728` checkpoint](https://huggingface.co/Yak9Ce3teeh/skate-bfm/tree/main/motion_library/m2.6-phase-100k-seed4728)
 - [`../src/skate_bfm/integration/actions.py`](../src/skate_bfm/integration/actions.py)
 - [`../src/skate_bfm/integration/online.py`](../src/skate_bfm/integration/online.py)
+
+## Experiment 4 (Planned): BFB/RFB Dynamics-Conditioned Training
+
+### Experiment Goal
+
+After the Experiment 3 state, action, reset, and controller semantics are
+controlled, integrate **Belief-FB (BFB)** and **Rotation-FB (RFB)** into
+Skate-BFM. The experiment will test whether conditioning the FB policy on
+recent transition dynamics improves adaptation across HUSKY physics
+realizations, and whether dynamics-centered latent sampling improves useful
+Skate behavior coverage.
+
+This is a planned experiment. No BFB/RFB implementation, training result, or
+behavioral conclusion is claimed here.
+
+### Environment and Inputs
+
+| Item | Planned setting |
+|---|---|
+| Algorithm source | [`maxsbob/BeliefConditionedFB`](https://github.com/maxsbob/BeliefConditionedFB), revision `30e7487` |
+| Source files | `agents/dynamics_fb.py`, `agents/dynamics_rfb.py`, `utils/networks.py` |
+| Training base | current Skate-BFM FB-CPR-Aux implementation |
+| Initialization | fresh official BFM0 checkpoint for every comparison arm |
+| Expert data | Base/LAFAN plus Skate Phase and Continuous datasets |
+| Online simulator | HUSKY MuJoCo with source-matched reset physics |
+| Dynamics context | a fixed-length sequence of `(s_t, a_t, s_{t+1})` |
+| Train/evaluation split | disjoint physics signatures and rollout IDs |
+| Action contract | BFM29 storage, 23 physical HUSKY DoFs, six wrists zero |
+
+**Caption.** A physics signature is the recorded set of randomized mass/COM,
+friction, joint-offset, damping, and actuator fields for one rollout. A
+dynamics context is a recent transition window used to infer the active
+physics. Disjoint signatures and rollout IDs prevent frames from the same
+physical rollout entering both training and held-out evaluation. The exact
+context length, BFB/RFB mixing ratio, vMF concentration, training budget, and
+seed set will be frozen before the first run rather than inferred from the
+current BFM0 configuration.
+
+Experiment 4 may start only after these Experiment 3 preconditions pass:
+
+- source-matched robot, skateboard, and physics reset;
+- one consistent expert/online observation scale;
+- the 23DoF physical action contract at every model boundary;
+- explicit handling of non-representable hip-pitch targets;
+- a frozen evaluator that reproduces the official BFM0 and Experiment 3
+  baselines.
+
+### Experiment Process and Method
+
+#### Dynamics context
+
+For a context window
+
+```text
+C_t = {(s_i, a_i, s_{i+1})}_{i=t-L+1}^{t}
+```
+
+the dynamics transformer produces a Gaussian belief:
+
+```text
+(mu_h, log_sigma_h) = T_phi(C_t)
+h = mu_h + epsilon * exp(log_sigma_h),  epsilon ~ N(0, I)
+```
+
+The context encoder is trained through next-state prediction:
+
+```text
+s_hat_{i+1} = P_psi(s_i, a_i, h)
+L_ctx = mean_i ||s_hat_{i+1} - s_{i+1}||_2^2
+```
+
+`h` is the inferred dynamics embedding. `L` is context length in control
+steps, and `L_ctx` is normalized next-state mean squared error, where lower is
+better. Context windows must not cross rollout, fall, or Phase boundaries.
+At episode start, evaluation must report the warm-up interval separately from
+the interval with a complete context.
+
+#### BFB integration
+
+BFB keeps one dynamics-independent backward representation and conditions the
+forward representation on dynamics:
+
+```text
+B = B(s')
+F_h = F(s, a, z, stop_gradient(h))
+Q_z(s, a | h) = F_h^T z
+```
+
+The existing FB residual is changed only at the forward term:
+
+```text
+M_h        = F(s,  a,  z, stop_gradient(h))^T B(g)
+M_h_target = F_target(s', a', z, stop_gradient(h))^T B_target(g)
+D_h        = M_h - gamma * M_h_target
+```
+
+The current FB diagonal, off-diagonal, and `B` orthogonality losses then
+operate on `D_h`. `B` remains shared across dynamics and receives no `h`.
+During FB/Actor updates, `h` is stop-gradient; `T_phi` and `P_psi` are updated
+through `L_ctx` in a separate update path. The Actor receives the same `h`
+used by the forward value when required by the source method.
+
+#### RFB integration
+
+RFB uses the inferred dynamics direction as the center of latent exploration.
+For latent dimension `d`:
+
+```text
+h_hat = h / ||h||_2
+u ~ vMF(e_1, kappa)
+v = (e_1 - h_hat) / ||e_1 - h_hat||_2
+H(h_hat) = I - 2 v v^T
+z_rfb = sqrt(d) * H(h_hat) u
+```
+
+The Householder transform `H` maps the north-pole-centered von
+Mises-Fisher sample to the dynamics direction. `kappa` is the unitless vMF
+concentration: larger values concentrate samples more tightly around `h_hat`.
+The source mixed sampler is retained:
+
+```text
+z_goal = project_z(B(g))
+z = z_rfb with probability beta
+    z_goal otherwise
+||z||_2 = sqrt(d)
+```
+
+`beta` is the RFB sampling probability. RFB will not be implemented as a
+simple replacement of BFM0's random latent branch. The vMF draw,
+Householder alignment, dynamics-conditioned forward value, and goal-latent
+mixture form one contract. If `dim(h) != d`, integration stops until an
+explicit learned projection is defined and validated; truncation or zero
+padding is not allowed.
+
+#### Controlled training comparison
+
+All arms use the same data split, reset population, online transition budget,
+expert ratio, evaluator, checkpoint schedule, and seeds:
+
+| Arm | Method |
+|---|---|
+| A | current post-alignment FB-CPR-Aux baseline |
+| B | baseline plus BFB dynamics context |
+| C | baseline plus BFB context and RFB latent sampling |
+
+**Caption.** Arm A isolates the effect of the existing Skate data and semantic
+alignment. Arm B measures dynamics conditioning. Arm C measures the additional
+effect of dynamics-centered latent exploration. Higher behavioral success and
+lower held-out prediction error are preferred; an arm is not accepted from
+training loss alone.
+
+The first comparison uses only exact action contexts. Projected hip-pitch
+contexts are then introduced as a separate ablation, so controller-range error
+cannot be mistaken for a BFB/RFB effect. Phase and Continuous data are reported
+separately before any pooled result.
+
+Evaluation will include:
+
+| Metric | Meaning |
+|---|---|
+| `L_ctx` | held-out normalized next-state prediction MSE; lower is better |
+| mean survival | control steps before persistent fall; higher is better |
+| fall rate | fraction of rollouts ending in persistent fall; lower is better |
+| horizon completion | fraction reaching the fixed horizon; higher is better |
+| root tilt p95 | 95th percentile torso inclination in degrees; lower is better |
+| board retention | fraction of non-fall steps with valid robot-board relation; higher is better |
+| phase-conditioned success | survival/completion grouped by push, transitions, and steer |
+| latent coverage | distinct successful behaviors retained across evaluated latent targets |
+| action saturation | fraction of physical normalized actions at range limits; lower is generally better |
+
+**Caption.** Metrics are computed on identical held-out reset manifests and
+reported by physics signature, motion phase, and seed. `p95` is a tail
+statistic rather than a mean. Latent coverage counts only behaviorally
+successful rollouts and must not be inferred from embedding distance alone.
+
+### Problems and Solutions
+
+| Planning-stage risk | Required control |
+|---|---|
+| BFB/RFB source is a JAX benchmark implementation, while Skate-BFM is a PyTorch continuous humanoid controller | Port equations and update boundaries, not framework-specific code; verify tensor-by-tensor parity on fixed batches. |
+| Dynamics context may encode phase or pose instead of physics | split by physics signature, evaluate unseen signatures, and compare contexts at matched motion phase |
+| Incomplete context at reset may bias evaluation | report warm-up separately and use one fixed context initialization rule in every arm |
+| RFB may collapse exploration around an inaccurate `h` | monitor `L_ctx`, angular spread of sampled `z`, and successful latent coverage |
+| Existing hip-pitch projection may dominate outcomes | run exact-context comparison first and projected-context ablation second |
+| Added losses may destabilize pretrained BFM0 | require finite gradients, bounded parameter drift, frozen-policy checkpoints, and early stop on behavioral regression |
+
+**Caption.** These are controls for a future experiment, not observed
+BFB/RFB results. A fixed-batch numerical pass is necessary but insufficient;
+the final decision is based on held-out closed-loop behavior.
+
+### Verified and Unverified Conclusions
+
+Verified:
+
+- [x] The authoritative source defines BFB with dynamics context conditioning
+  `F`, a shared unconditioned `B`, transition-prediction context learning, and
+  stop-gradient context during FB learning.
+- [x] The authoritative source defines RFB with vMF sampling, Householder
+  alignment to the dynamics embedding, and mixing with a `B(goal)` latent.
+
+Unverified:
+
+- [ ] BFB has been integrated into Skate-BFM.
+- [ ] RFB has been integrated into Skate-BFM.
+- [ ] Context prediction identifies HUSKY physics rather than motion phase.
+- [ ] BFB improves held-out dynamics adaptation over the post-alignment
+  FB-CPR-Aux baseline.
+- [ ] RFB improves Skate latent coverage without reducing stability.
+- [ ] BFB/RFB training resolves any Experiment 3 semantics mismatch.
+- [ ] BFB/RFB produces a stable and diverse Skate motion library.
