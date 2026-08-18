@@ -30,6 +30,12 @@ needed by later data collection and training; it does not train a Skate model.
 | HUSKY physical action width | 23 |
 | BFM latent width | 256 |
 
+**Caption.** Action width is the number of commanded joint coordinates: BFM
+uses 29 degrees of freedom (DoFs), while HUSKY has 23 physical actuators.
+Latent width is the dimension of the unitless skill vector. `SHA256` is the
+checkpoint-content hash used to verify that the same model file is loaded.
+The runtime and scene rows identify the code and MuJoCo XML actually executed.
+
 The training runtime is project-owned but keeps the official BFM-Zero agent,
 MotionLib, model, and configuration structure. Formal code does not depend on
 `model/bfm-zero-source/`.
@@ -121,6 +127,10 @@ privileged_state = [
 | HUSKY and BFM use different observation structures | Construct the official 64/463/29/372 observation dictionary from HUSKY state. |
 | Viewer and headless execution need the same state/action boundary | Wrap both modes with `HuskyLiteEnv` and one integration adapter. |
 
+**Caption.** The numbers 64/463/29/372 are unitless tensor widths for state,
+privileged state, last action, and Actor history. `29D` and `23D` below mean
+29- and 23-coordinate action vectors, respectively.
+
 ### Verified and Unverified Conclusions
 
 Verified:
@@ -167,6 +177,13 @@ This experiment produces data only. It does not optimize BFM0.
 | Target raw duration | 150 min |
 | Output | Hugging Face `Yak9Ce3teeh/skate-sim-dataset` |
 
+**Caption.** `Hz` means recorded control frames per second; at 50 Hz one frame
+spans 0.02 s. An episode is one uninterrupted rollout, capped at 3,000 frames
+(60 s). The seed fixes command scheduling and randomization for
+reproducibility; `workers` are parallel collection processes, `split=train`
+is the dataset partition label, and `min` denotes accumulated simulation
+minutes.
+
 The collection command grid is:
 
 ```text
@@ -190,6 +207,14 @@ per source episode:
 | Foot sliding friction | `[0.3,1.8]` per foot geom |
 | Wheel rolling-friction scale | `[0.8,1.6]` per wheel |
 | Initial joint offset | `[-0.01,0.01]` rad per joint |
+
+**Caption.** `COM` is center of mass; `(x,y,z)` offsets are sampled in meters
+around the nominal model. Friction scales are unitless multipliers of nominal
+MuJoCo coefficients: robot/foot rows affect body-ground sliding, deck friction
+affects foot-deck contact, and wheel rolling friction affects wheel-ground
+motion. Joint offsets are in radians, with positive/negative values applied
+relative to the nominal pose. Each interval is the uniform per-episode sample
+range, not an observed confidence interval.
 
 The seed and every sampled value are stored with the episode. No external push
 or observation corruption is added.
@@ -305,6 +330,10 @@ Relevant implementation and data:
 - [`scripts/data_collection/`](scripts/data_collection/)
 - [Hugging Face raw/Phase/Continuous dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset)
 
+The linked Phase QC videos replay the robot and skateboard for 10 samples per
+phase; Continuous QC shows 10 fixed 500-frame clips. They verify dataset
+conversion and visual integrity, not trained-policy performance.
+
 ### Problems and Solutions
 
 | Problem | Method used |
@@ -315,6 +344,10 @@ Relevant implementation and data:
 | Phase-only records lose longer temporal transitions | Build Continuous 500-frame clips from the same raw data. |
 | HUSKY has 23 joints but MotionLib expects 29 | Map shared joints by name and set six wrists to zero. |
 | Processed data could lose source identity | Store source NPZ, frame range, command, physics seed, phase, board state, and action. |
+
+**Caption.** `Seq8` is an eight-transition expert sequence and therefore needs
+nine state frames. `NPZ` is the raw synchronized NumPy archive; frame ranges
+and seeds identify the exact source interval and physics realization.
 
 ### Verified and Unverified Conclusions
 
@@ -365,6 +398,16 @@ single experiment.
 | Stored/executed action | BFM29 / HUSKY23 |
 | Expert batch | 64 Base Seq8 + 64 Skate Seq8 = 1,024 rows |
 | Online reset | uniform motion, then uniform local frame |
+
+**Caption.** A transition is one `(state, action, next state)` sample at the
+0.02 s control step. Episode horizon is the maximum transitions before
+time-limit truncation. `Seq8` contains eight consecutive transitions; the
+1,024 expert rows are 128 complete sequences times eight. BFM29 is the stored
+29-DoF action, while only its 23 physical HUSKY coordinates are executed.
+`Motions` count MotionLib trajectories, `clips` count fixed continuous
+segments, replay capacity is the maximum stored online transitions, and the
+uniform reset gives each selected motion and then each local frame equal
+sampling probability.
 
 The **current intended online rollout setting** restores the exact source
 physics realization associated with the selected expert frame. It does not
@@ -524,6 +567,13 @@ Optimizer settings:
 | Main critic | `3e-4` |
 | Auxiliary critic | `3e-4` |
 
+**Caption.** Learning rate is the unitless optimizer step-size coefficient.
+`F` and `B` are the forward and backward representation networks; `Actor` is
+the action policy; `Discriminator` separates expert and online samples; the
+main and auxiliary critics estimate discriminator and auxiliary returns.
+Smaller rates make more conservative parameter updates, but neither smaller
+nor larger is intrinsically better without stability and behavioral evidence.
+
 Actor standard deviation is `0.05`, action-noise clip is `0.3`, critic target
 `tau=0.005`, weight decay is zero, AMP/compile/cudagraphs are disabled, and
 the z-buffer capacity is 8,192.
@@ -544,6 +594,14 @@ r_aux = sum_i weight_i * penalty_i
 | undesired contact | `-1.0` |
 | torque square | `0.0` |
 | torque limit | `0.0` |
+
+**Caption.** Each unitless weight multiplies its penalty before summation into
+`r_aux`; a more negative value penalizes that violation more strongly. Action
+rate is step-to-step action change; feet orientation and ankle roll measure
+pose deviation; DoF-limit penalty measures joint-limit excess; slippage is
+foot velocity relative to the board; undesired contact flags disallowed body
+contact; torque square measures effort; torque limit measures actuator-limit
+excess. Zero disables the two torque terms.
 
 No forward-speed, command, balance, steering, or board-displacement reward was
 added. Fall termination uses the same persistent 70-degree/0.45 m detector as
@@ -586,6 +644,14 @@ The following are process steps inside Experiment 3:
 | Random z was unrelated to the selected expert reset | Build same-reset tracking z from future expert observations and use it only in expert-role rollout slots. |
 | Source ONNX action and BFM normalized action have different physical target semantics | Derive an exact per-joint physical-target bridge and explicitly mark out-of-range components as projected. |
 | Phase boundaries can remove required previous-action context | Measure current/history/five-action representability; Phase strict coverage is 64.8366%, with `steer2push=12.1379%`. |
+
+**Caption.** `qpos` and `qvel` are MuJoCo generalized position and velocity;
+their reset errors should be zero. `sigma` is standard deviations from the
+reference observation distribution, so 20-27 sigma is severe drift. Coverage
+is the percentage of samples representable without clipping; higher is
+better. `Tracking z` is a latent encoded from future states of the same reset
+motion, while wrist projection restricts learning/execution to the 23 physical
+HUSKY DoFs.
 
 #### Skate expert action matching research
 
@@ -656,6 +722,11 @@ Naive mappings were rejected:
 | raw source action divided by 5 | 0.530560 rad |
 | affine bridge with projection | 0.021775 rad |
 
+**Caption.** `RMSE` is root-mean-square error between reconstructed source and
+BFM joint targets, measured in radians across shared joints and frames; lower
+is better and zero is exact. Projection clips normalized BFM actions to the
+allowed `[-1,1]` range.
+
 The remaining full-frame failures are concentrated in hip pitch. The exact
 bridge reconstructs representable targets with RMSE `1.97e-17 rad` and maximum
 error `4.44e-16 rad`; projected hip-tail errors reach `1.490767 rad`. Fixed
@@ -685,6 +756,11 @@ distribution, current-action/history/five-action context coverage was:
 | Phase | 79.9611% | 66.6396% | 64.8366% |
 | Continuous | 92.2596% | 87.1721% | 85.8434% |
 
+**Caption.** `Current valid` means the source action for the reset frame maps
+inside BFM range. `History valid` also requires the available previous action;
+`strict five-action context` requires the current plus four preceding actions
+needed by Actor history. Values are sample percentages, and higher is better.
+
 Hip pitch explained `99.9612%` of Phase strict-context failures and `99.9810%`
 of Continuous failures. In `steer2push`, current hip violation was `60.15%`
 and strict five-context failure was `87.86%`; violation runs averaged 4.32
@@ -705,6 +781,11 @@ projected component. The translated source action was diagnostic only:
 |---|---:|---:|
 | Fully exact | 0.4351 | 1.0477 |
 | Contains projected component | 0.1853 | 1.6058 |
+
+**Caption.** Cosine similarity measures action-vector direction on `[-1,1]`;
+higher is more aligned. `L2` is the Euclidean distance between normalized
+23-DoF Actor and translated expert actions; lower is closer. These compare
+first actions only and do not measure rollout success.
 
 This is why the source action cannot currently be treated as a universally
 exact BFM expert action, even though most individual components are
@@ -728,6 +809,13 @@ control:        all slots use background random z
 | Root tilt p95 | 66.71 deg | 66.93 deg |
 | Waist action saturation | 82.33% | 82.69% |
 
+**Caption.** Survival is measured in control steps out of a 51-step horizon,
+so higher is better. Failure rates are the percentages terminated by the
+named step, so lower is better. Root tilt is torso inclination in degrees;
+`p95` is the 95th percentile. Saturation is the percentage of normalized waist
+actions at the range boundary, where lower generally leaves more control
+margin.
+
 The reset population contained 421 fully exact and 91 projected source-action
 contexts. Formal Actor/expert first-action cosine was `0.435` for exact
 contexts and `0.185` for projected contexts. No board-relative reset variable
@@ -745,6 +833,12 @@ coefficient was `0.136`.
 | Source and BFM action coordinates differed | Use exact affine target translation plus explicit `PROJECTED` fallback. |
 | Hip-pitch tails exceed BFM action range | Record representability and projection; do not silently enlarge range or adopt weak learned correction. |
 | Observation scale and history semantics are still asymmetric | Keep as explicit unresolved items; do not claim successful retraining. |
+
+**Caption.** `100k` denotes 100,000 online transitions. A projected action has
+at least one coordinate clipped to `[-1,1]`; this preserves the BFM action
+contract but no longer exactly reproduces the source physical target. The
+table pairs each diagnosed failure mode with the currently retained treatment;
+it is not a new experiment or a claim that every mismatch is resolved.
 
 ### Verified and Unverified Conclusions
 
