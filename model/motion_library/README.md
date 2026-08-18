@@ -3,22 +3,30 @@
 This directory stores generated motion-library checkpoints and related model
 outputs from the `train` branch.
 
-Each completed training run is grouped by its completion timestamp:
+Each completed training run is grouped by a stable model name:
 
 ```text
-YYYY-MM-DD_HHMMSS/
+<model_name>/
 ├── checkpoint_20000/
 ├── checkpoint_50000/
 └── checkpoint_100000/
 ```
 
-Current local run:
+Published model:
 
 ```text
-2026-08-15_143013/
-├── checkpoint_20000/
-├── checkpoint_50000/
+m2.6-phase-100k-seed4728/
 └── checkpoint_100000/
+```
+
+The complete 100k checkpoint is hosted at
+[`Yak9Ce3teeh/skate-bfm`](https://huggingface.co/Yak9Ce3teeh/skate-bfm/tree/main/motion_library/m2.6-phase-100k-seed4728).
+Restore it from the repository root:
+
+```bash
+hf download Yak9Ce3teeh/skate-bfm \
+  --include "motion_library/m2.6-phase-100k-seed4728/**" \
+  --local-dir model
 ```
 
 The checkpoints reload correctly and contain finite model weights. Frozen

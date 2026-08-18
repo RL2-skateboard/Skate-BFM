@@ -239,6 +239,10 @@ Checkpoint integrity:
 that the checkpoint can reconstruct the model state. These establish artifact
 integrity, not behavior.
 
+The complete 100k artifact, frozen evaluations, and training summary are
+published as
+[`m2.6-phase-100k-seed4728`](https://huggingface.co/Yak9Ce3teeh/skate-bfm/tree/main/motion_library/m2.6-phase-100k-seed4728).
+
 Optimization endpoints:
 
 | Step | FB loss | Disc. loss | Critic loss | Aux critic loss | Actor loss |

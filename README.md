@@ -30,6 +30,8 @@ and MuJoCo visual inspection.
   randomization.
 - Checkpoints: `20k`, `50k`, and `100k`, stored under
   `model/motion_library/2026-08-15_143013/`.
+- Published checkpoint:
+  [`m2.6-phase-100k-seed4728`](https://huggingface.co/Yak9Ce3teeh/skate-bfm/tree/main/motion_library/m2.6-phase-100k-seed4728).
 
 Training and checkpoint integrity passed: replay size, optimizer state,
 normalizers, model finiteness, and checkpoint reloads are valid. Behavioral
@@ -175,16 +177,25 @@ python train/scripts/train_skate_bfm.py \
   --online-envs 4 \
   --seed 4728 \
   --work-dir results/m2.6-phase-100k-seed4728-v2 \
+  --checkpoint-dir model/motion_library/m2.6-phase-100k-seed4728-v2 \
   --pretrained-checkpoint model/bfm-zero-official
 ```
 
 The formal entrypoint uses the 100k schedule and 50/50 expert mixture. Each
-new run gets a timestamped checkpoint directory under
-`model/motion_library/`; `--checkpoint-dir` can select an explicit output.
-The entrypoint fails closed when the checkpoint, data, replay schema, optimizer
-state, or checkpoint reload contract is invalid.
+run must use a unique `<model_name>` under `model/motion_library/`, selected
+with `--checkpoint-dir`. The entrypoint fails closed when the output already
+exists or when the checkpoint, data, replay schema, optimizer state, or reload
+contract is invalid.
 
 ## Evaluate
+
+Restore the published diagnostic checkpoint:
+
+```bash
+hf download Yak9Ce3teeh/skate-bfm \
+  --include "motion_library/m2.6-phase-100k-seed4728/**" \
+  --local-dir model
+```
 
 Evaluate one frozen formal checkpoint with the same expert-reset and latent
 lifecycle used by online training. Add `--viewer` for the realtime MuJoCo
@@ -192,7 +203,7 @@ window:
 
 ```bash
 python train/scripts/evaluator.py \
-  --checkpoint model/motion_library/2026-08-15_143013/checkpoint_100000 \
+  --checkpoint model/motion_library/m2.6-phase-100k-seed4728/checkpoint_100000 \
   --dataset phase \
   --episodes 4 \
   --viewer

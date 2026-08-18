@@ -874,5 +874,6 @@ Relevant implementation:
 
 - [`scripts/train_skate_bfm.py`](scripts/train_skate_bfm.py)
 - [`scripts/evaluator.py`](scripts/evaluator.py)
+- [Published `m2.6-phase-100k-seed4728` checkpoint](https://huggingface.co/Yak9Ce3teeh/skate-bfm/tree/main/motion_library/m2.6-phase-100k-seed4728)
 - [`../src/skate_bfm/integration/actions.py`](../src/skate_bfm/integration/actions.py)
 - [`../src/skate_bfm/integration/online.py`](../src/skate_bfm/integration/online.py)

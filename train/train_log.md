@@ -67,4 +67,4 @@ Finalized exact/projected expert-action translation and completed the post-align
 
 ### 2026-08-18
 
-Unified Base, raw, Phase, and Continuous data under `train/dataset/` and updated all runtime paths and commands.
+Unified data and runtime paths under `train/dataset/` and published the named 100k checkpoint with reproducible download/evaluation commands.

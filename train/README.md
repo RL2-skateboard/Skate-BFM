@@ -101,14 +101,24 @@ python train/scripts/train_skate_bfm.py \
   --online-envs 4 \
   --seed 4728 \
   --work-dir results/m2.6-phase-100k-seed4728-v2 \
+  --checkpoint-dir model/motion_library/m2.6-phase-100k-seed4728-v2 \
   --pretrained-checkpoint model/bfm-zero-official
+```
+
+Use a new `model/motion_library/<model_name>` for every run. Restore the
+published diagnostic checkpoint:
+
+```bash
+hf download Yak9Ce3teeh/skate-bfm \
+  --include "motion_library/m2.6-phase-100k-seed4728/**" \
+  --local-dir model
 ```
 
 Run a frozen checkpoint with the MuJoCo viewer:
 
 ```bash
 python train/scripts/evaluator.py \
-  --checkpoint model/motion_library/2026-08-15_143013/checkpoint_100000 \
+  --checkpoint model/motion_library/m2.6-phase-100k-seed4728/checkpoint_100000 \
   --dataset phase \
   --episodes 4 \
   --horizon 1024 \
