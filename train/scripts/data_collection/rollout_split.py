@@ -1208,7 +1208,8 @@ def parse_args() -> argparse.Namespace:
         args.live = args.record = args.headless = args.randomize_physics = True
         repo_root = Path(__file__).resolve().parents[3]
         args.output_dir = (
-            args.output_dir or repo_root / "dataset" / "sim_collected" / "phase" / "raw"
+            args.output_dir
+            or repo_root / "train" / "dataset" / "sim_collected" / "raw"
         )
         args.robot_xml = (
             args.robot_xml or repo_root / "husky_sim/upstream/test_scene/mjlab_scene.xml"

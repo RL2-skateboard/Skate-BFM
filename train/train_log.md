@@ -64,3 +64,7 @@ Audited and corrected source physics, action subspace, reset/latent alignment, o
 ### 2026-08-17
 
 Finalized exact/projected expert-action translation and completed the post-alignment frozen closed-loop preflight.
+
+### 2026-08-18
+
+Unified Base, raw, Phase, and Continuous data under `train/dataset/` and updated all runtime paths and commands.

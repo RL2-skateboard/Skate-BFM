@@ -5,7 +5,7 @@ dataset-conversion entrypoints. The official BFM-Zero implementation remains
 vendored under `scripts/isaac_env/`; it is not copied into a second training
 implementation.
 
-## Code Map
+## Code Layout
 
 ```text
 scripts/train_skate_bfm.py                 formal BFM0 + HUSKY training
@@ -16,35 +16,44 @@ scripts/data_collection/convert_continuous.py
                                             continuous MotionLib conversion and QC
 scripts/data_collection/rollout_config.json collection parameters
 scripts/isaac_env/                          vendored BFM-Zero runtime
+dataset/base/                               official Base/LAFAN motion
+dataset/sim_collected/                      raw, Phase, and Continuous Skate data
 ```
 
 ## Data Source
 
-Do not use the checked-in `train/dataset/skate-expert-pose/` files as the
-formal Skate expert source. Formal Skate data is published on Hugging Face:
+Formal Skate data is published on Hugging Face:
 
 - [raw collection](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/raw)
 - [phase MotionLib](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase)
 - [continuous MotionLib](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous)
 
-Restore the selected dataset into the repository-level `dataset/` directory:
+Restore the selected dataset under `train/dataset/`:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --include "phase/**" \
-  --local-dir dataset/sim_collected
+  --include "raw/**" "phase/**" \
+  --local-dir train/dataset/sim_collected
 ```
 
-Replace `phase/**` with `continuous/**` or `raw/**` when needed. The official
-Base/LAFAN training file remains the BFM-Zero dependency at
-`train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl`; it is not a Skate
-dataset. The official BFM0 checkpoint is a separate local artifact at
+Replace `phase/**` with `continuous/**` when needed, but retain `raw/**`
+because training resets use the source robot-board state. The official
+Base/LAFAN training file is a separate BFM-Zero dependency. Restore it with:
+
+```bash
+mkdir -p train/dataset/base
+curl -L \
+  https://media.githubusercontent.com/media/LeCAR-Lab/BFM-Zero/main/humanoidverse/data/lafan_29dof_10s-clipped.pkl \
+  -o train/dataset/base/lafan_29dof_10s-clipped.pkl
+```
+
+The official BFM0 checkpoint is a separate local artifact at
 `model/bfm-zero-official/`.
 
 ## Commands
 
-Collect raw HUSKY data:
+Collect raw HUSKY data if not downloading from Huggingface:
 
 ```bash
 python train/scripts/data_collection/rollout_split.py \
@@ -54,25 +63,52 @@ python train/scripts/data_collection/rollout_split.py \
 Convert an existing raw collection:
 
 ```bash
-python train/scripts/data_collection/convert_phase.py --help
-python train/scripts/data_collection/convert_continuous.py --help
+python train/scripts/data_collection/convert_phase.py \
+  --aggregate-phase \
+  --dataset-root train/dataset/sim_collected/raw \
+  --bfm-repo train/scripts/isaac_env \
+  --bfm-reference train/dataset/base/lafan_29dof_10s-clipped.pkl \
+  --robot-xml train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
+  --husky-xml husky_sim/upstream/test_scene/mjlab_scene.xml \
+  --output train/dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl \
+  --manifest train/dataset/sim_collected/phase/motion_library/manifest.json \
+  --qc-root train/dataset/sim_collected/phase/qc \
+  --validate-motionlib
+```
+
+Build Continuous from the same raw collection:
+
+```bash
+python train/scripts/data_collection/convert_continuous.py \
+  --aggregate-continuous \
+  --dataset-root train/dataset/sim_collected/raw \
+  --bfm-repo train/scripts/isaac_env \
+  --bfm-reference train/dataset/base/lafan_29dof_10s-clipped.pkl \
+  --robot-xml train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
+  --husky-xml husky_sim/upstream/test_scene/mjlab_scene.xml \
+  --output train/dataset/sim_collected/continuous/motion_library/skate_expert_continuous.pkl \
+  --manifest train/dataset/sim_collected/continuous/motion_library/manifest.json \
+  --qc-root train/dataset/sim_collected/continuous/qc \
+  --validate-motionlib
 ```
 
 Run formal training:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-SKATE_EXPERT_DATASET=phase \
-SKATE_MAX_STEPS=100000 \
-SKATE_WORK_DIR=$PWD/results/m2.6-phase-100k \
-python train/scripts/train_skate_bfm.py
+python train/scripts/train_skate_bfm.py \
+  --dataset phase \
+  --max-steps 100000 \
+  --online-envs 4 \
+  --seed 4728 \
+  --work-dir results/m2.6-phase-100k-seed4728-v2 \
+  --pretrained-checkpoint model/bfm-zero-official
 ```
 
 Run a frozen checkpoint with the MuJoCo viewer:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluator.py \
-  --checkpoint model/motion_library/YYYY-MM-DD_HHMMSS/checkpoint_100000 \
+python train/scripts/evaluator.py \
+  --checkpoint model/motion_library/2026-08-15_143013/checkpoint_100000 \
   --dataset phase \
   --episodes 4 \
   --horizon 1024 \

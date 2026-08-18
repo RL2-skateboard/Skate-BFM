@@ -35,7 +35,7 @@
   "physics_seed_start": null,
   "device": "cpu",
   "dataset_split": "train",
-  "output_dir": "../../../dataset/sim_collected/phase/raw",
+  "output_dir": "../../dataset/sim_collected/raw",
   "robot_xml": "../../../husky_sim/upstream/test_scene/mjlab_scene.xml",
   "policy": "../../../husky_sim/upstream/ckpts/test.onnx",
   "overwrite": false

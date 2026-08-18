@@ -41,19 +41,12 @@ from train_skate_bfm import (
     load_expert,
     load_frozen_agent,
     load_source_rollout,
+    resolve_source_rollout_path,
 )
 
 
-DEFAULT_TARGET_BANK = (
-    REPOSITORY_ROOT
-    / "train/dataset/skate-expert-pose/target_bank/target_bank.json"
-)
 DEFAULT_PROTOCOL = REPOSITORY_ROOT / "train/evaluation_protocol.json"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "results/m2.5b-target-conditioned"
-DEFAULT_TARGET_EXPERT = (
-    REPOSITORY_ROOT
-    / "train/dataset/skate-expert-pose/motion_library/skate_expert.pkl"
-)
 DEFAULT_RANDOM_SEEDS = (2026081101, 2026081102, 2026081103, 2026081104)
 
 METRIC_NAMES = (
@@ -118,7 +111,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Frozen rollout JSON path; defaults beside the checkpoint result directory.",
     )
-    parser.add_argument("--target-bank", type=Path, default=DEFAULT_TARGET_BANK)
+    parser.add_argument("--target-bank", type=Path)
     parser.add_argument("--protocol", type=Path, default=DEFAULT_PROTOCOL)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
@@ -221,7 +214,7 @@ class ExpertResetSampler:
         )
         local_frame = int(self.rng.integers(frame_count))
         source_frame = int(record["source_start_frame"]) + local_frame
-        source_path = Path(record["source_raw_npz"]).expanduser().resolve()
+        source_path = resolve_source_rollout_path(record)
         if source_path not in self.raw_cache:
             self.raw_cache[source_path] = load_source_rollout(
                 source_path,
@@ -1023,17 +1016,19 @@ def eval_checkpoint(
 def run_fixed_target_evaluation(args: argparse.Namespace) -> int:
     """Run the historical M2.5b fixed target-conditioned protocol."""
 
-    if args.checkpoint_10k is None or args.checkpoint_20k is None:
+    if (
+        args.checkpoint_10k is None
+        or args.checkpoint_20k is None
+        or args.target_bank is None
+        or args.expert_motion is None
+    ):
         raise ValueError(
-            "--checkpoint-10k and --checkpoint-20k are required for mode=fixed-target."
+            "--checkpoint-10k, --checkpoint-20k, --target-bank, and "
+            "--expert-motion are required for mode=fixed-target."
         )
     target_bank_path = args.target_bank.expanduser().resolve()
     protocol_path = args.protocol.expanduser().resolve()
-    expert_motion = (
-        args.expert_motion.expanduser().resolve()
-        if args.expert_motion is not None
-        else DEFAULT_TARGET_EXPERT.resolve()
-    )
+    expert_motion = args.expert_motion.expanduser().resolve()
     target_bank, target_bank_sha = load_and_validate_target_bank(
         target_bank_path
     )

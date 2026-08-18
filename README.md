@@ -71,21 +71,33 @@ The official BFM0 checkpoint must be restored separately at:
 model/bfm-zero-official/
 ```
 
-The formal Skate datasets are not read from the checked-in
-`train/dataset/` directory. Download them from the
+All training data is read from `train/dataset/`. Download the formal Skate
+datasets from the
 [Skate-BFM Hugging Face dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset):
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --include "phase/**" \
-  --local-dir dataset/sim_collected
+  --include "raw/**" "phase/**" \
+  --local-dir train/dataset/sim_collected
 ```
 
-Use `continuous/**` for the Continuous MotionLib or `raw/**` for the
-original collection. `train/scripts/isaac_env/` is the vendored BFM-Zero
-runtime used by the official agent and MotionLib interfaces;
-`husky_sim/` is the project-owned HUSKY runtime boundary.
+Replace `phase/**` with `continuous/**` to use the Continuous MotionLib; keep
+`raw/**` because training resets require the source robot-board states.
+Restore the official BFM-Zero Base/LAFAN training file:
+
+```bash
+mkdir -p train/dataset/base
+curl -L \
+  https://media.githubusercontent.com/media/LeCAR-Lab/BFM-Zero/main/humanoidverse/data/lafan_29dof_10s-clipped.pkl \
+  -o train/dataset/base/lafan_29dof_10s-clipped.pkl
+```
+
+The expected Base/LAFAN SHA256 is
+`7f5aa36957808ee2e972472b18add8510533742710ba312d8b8c6e6014f1c010`.
+`train/scripts/isaac_env/` is the vendored BFM-Zero runtime used by the
+official agent and MotionLib interfaces; `husky_sim/` is the project-owned
+HUSKY runtime boundary.
 
 ## Build Phase Expert Data
 
@@ -106,7 +118,7 @@ Restore the raw collection with:
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
   --include "raw/**" \
-  --local-dir dataset/sim_collected
+  --local-dir train/dataset/sim_collected
 ```
 
 Restore the Phase artifacts with:
@@ -115,20 +127,20 @@ Restore the Phase artifacts with:
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
   --include "phase/**" \
-  --local-dir dataset/sim_collected
+  --local-dir train/dataset/sim_collected
 ```
 
 ```bash
 python train/scripts/data_collection/convert_phase.py \
   --aggregate-phase \
-  --dataset-root dataset/sim_collected/phase/raw \
-  --bfm-repo $PWD/train/scripts/isaac_env \
-  --bfm-reference $PWD/train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl \
-  --robot-xml $PWD/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
-  --husky-xml $PWD/husky_sim/upstream/test_scene/mjlab_scene.xml \
-  --output dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl \
-  --manifest dataset/sim_collected/phase/motion_library/manifest.json \
-  --qc-root dataset/sim_collected/phase/qc \
+  --dataset-root train/dataset/sim_collected/raw \
+  --bfm-repo train/scripts/isaac_env \
+  --bfm-reference train/dataset/base/lafan_29dof_10s-clipped.pkl \
+  --robot-xml train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
+  --husky-xml husky_sim/upstream/test_scene/mjlab_scene.xml \
+  --output train/dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl \
+  --manifest train/dataset/sim_collected/phase/motion_library/manifest.json \
+  --qc-root train/dataset/sim_collected/phase/qc \
   --validate-motionlib
 ```
 
@@ -144,7 +156,7 @@ Restore it with:
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
   --include "continuous/**" \
-  --local-dir dataset/sim_collected
+  --local-dir train/dataset/sim_collected
 ```
 
 The six absent HUSKY wrist joints are explicitly fixed to zero. Each accepted
@@ -157,18 +169,20 @@ sequences, and invalid BFM schemas.
 Use a new work directory for each run:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-SKATE_EXPERT_DATASET=phase \
-SKATE_MAX_STEPS=100000 \
-SKATE_WORK_DIR=$PWD/results/m2.6-phase-100k-seed4728 \
-python train/scripts/train_skate_bfm.py
+python train/scripts/train_skate_bfm.py \
+  --dataset phase \
+  --max-steps 100000 \
+  --online-envs 4 \
+  --seed 4728 \
+  --work-dir results/m2.6-phase-100k-seed4728-v2 \
+  --pretrained-checkpoint model/bfm-zero-official
 ```
 
 The formal entrypoint uses the 100k schedule and 50/50 expert mixture. Each
 new run gets a timestamped checkpoint directory under
-`model/motion_library/`; `SKATE_CHECKPOINT_DIR` can override it. The entrypoint
-fails closed when the checkpoint, data, replay schema, optimizer state, or
-checkpoint reload contract is invalid.
+`model/motion_library/`; `--checkpoint-dir` can select an explicit output.
+The entrypoint fails closed when the checkpoint, data, replay schema, optimizer
+state, or checkpoint reload contract is invalid.
 
 ## Evaluate
 
@@ -177,7 +191,7 @@ lifecycle used by online training. Add `--viewer` for the realtime MuJoCo
 window:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train/scripts/evaluator.py \
+python train/scripts/evaluator.py \
   --checkpoint model/motion_library/2026-08-15_143013/checkpoint_100000 \
   --dataset phase \
   --episodes 4 \
@@ -194,7 +208,8 @@ train/scripts/train_skate_bfm.py  M2.5b training entrypoint
 train/scripts/evaluator.py        frozen rollout and fixed-target evaluator
 train/scripts/data_collection/    HUSKY expert-motion conversion
 train/scripts/isaac_env/          vendored BFM-Zero runtime
-train/dataset/                    Base LAFAN and Skate MotionLib data
+train/dataset/base/               official Base/LAFAN training motion
+train/dataset/sim_collected/      raw, Phase, and Continuous Skate data
 husky_sim/src/skate_husky/        HUSKY MuJoCo runtime and physical contracts
 src/skate_bfm/integration/        BFM action/observation/replay adapters
 ```

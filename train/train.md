@@ -175,6 +175,7 @@ This experiment produces data only. It does not optimize BFM0.
 | Dataset split | `train` |
 | Plan seed | `20260804` |
 | Target raw duration | 150 min |
+| Local dataset root | `train/dataset/sim_collected/` |
 | Output | Hugging Face `Yak9Ce3teeh/skate-sim-dataset` |
 
 **Caption.** `Hz` means recorded control frames per second; at 50 Hz one frame
@@ -182,7 +183,8 @@ spans 0.02 s. An episode is one uninterrupted rollout, capped at 3,000 frames
 (60 s). The seed fixes command scheduling and randomization for
 reproducibility; `workers` are parallel collection processes, `split=train`
 is the dataset partition label, and `min` denotes accumulated simulation
-minutes.
+minutes. The local root stores `raw`, `phase`, and `continuous` as sibling
+directories; Hugging Face is the authoritative published copy.
 
 The collection command grid is:
 
@@ -328,6 +330,7 @@ seed remain aligned extra fields.
 Relevant implementation and data:
 
 - [`scripts/data_collection/`](scripts/data_collection/)
+- [`dataset/`](dataset/)
 - [Hugging Face raw/Phase/Continuous dataset](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset)
 
 The linked Phase QC videos replay the robot and skateboard for 10 samples per
@@ -387,8 +390,8 @@ single experiment.
 | Item | Formal setting |
 |---|---|
 | Initialization | fresh official BFM0 checkpoint |
-| Base expert | 862 LAFAN motions |
-| Skate expert | Phase: 6,038 motions; Continuous option: 890 clips |
+| Base expert | `train/dataset/base/`: 862 LAFAN motions |
+| Skate expert | `train/dataset/sim_collected/`: Phase 6,038 motions; Continuous 890 clips |
 | Completed formal run | Phase dataset |
 | Online simulator | four independent `HuskyBfmOnlineEnv` instances |
 | Control step | 0.02 s |

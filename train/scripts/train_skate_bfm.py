@@ -9,6 +9,7 @@ this file only connects their agent and MotionLib data to HUSKY MuJoCo.
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import json
@@ -70,11 +71,16 @@ DEFAULT_WARMUP_TRANSITIONS = 1024
 DEFAULT_FIRST_UPDATE = 1500
 DEFAULT_UPDATE_INTERVAL = 500
 DEFAULT_UPDATES_PER_BLOCK = 50
+DATASET_ROOT = REPOSITORY_ROOT / "train/dataset"
+BASE_MOTION_FILE = DATASET_ROOT / "base/lafan_29dof_10s-clipped.pkl"
+SKATE_DATASET_ROOT = DATASET_ROOT / "sim_collected"
+RAW_DATASET_ROOT = SKATE_DATASET_ROOT / "raw"
 EXPERT_DATASETS = {
-    "phase": REPOSITORY_ROOT
-    / "dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl",
-    "continuous": REPOSITORY_ROOT
-    / "dataset/sim_collected/continuous/motion_library/skate_expert_continuous.pkl",
+    "phase": SKATE_DATASET_ROOT / "phase/motion_library/skate_expert_phase.pkl",
+    "continuous": (
+        SKATE_DATASET_ROOT
+        / "continuous/motion_library/skate_expert_continuous.pkl"
+    ),
 }
 
 
@@ -88,8 +94,11 @@ def training_checkpoint_steps(max_steps: int) -> tuple[int, ...]:
     return tuple(sorted({step for step in (20_000, 50_000, 100_000, max_steps) if step <= max_steps}))
 
 
-def resolve_expert_dataset() -> tuple[str, Path, Path]:
-    override = os.environ.get("SKATE_EXPERT_MOTION_FILE")
+def resolve_expert_dataset(
+    dataset: str | None = None,
+    expert_motion: str | Path | None = None,
+) -> tuple[str, Path, Path]:
+    override = expert_motion or os.environ.get("SKATE_EXPERT_MOTION_FILE")
     if override:
         expert_path = Path(override).expanduser().resolve()
         dataset_kind = next(
@@ -101,11 +110,44 @@ def resolve_expert_dataset() -> tuple[str, Path, Path]:
             "custom",
         )
     else:
-        dataset_kind = os.environ.get("SKATE_EXPERT_DATASET", "phase").strip().lower()
+        dataset_kind = (
+            dataset or os.environ.get("SKATE_EXPERT_DATASET", "phase")
+        ).strip().lower()
         if dataset_kind not in EXPERT_DATASETS:
             raise ValueError("SKATE_EXPERT_DATASET must be 'phase' or 'continuous'.")
         expert_path = EXPERT_DATASETS[dataset_kind].resolve()
     return dataset_kind, expert_path, expert_path.with_name("manifest.json")
+
+
+def resolve_source_rollout_path(record: Mapping[str, Any]) -> Path:
+    """Resolve raw provenance after moving or downloading a MotionLib."""
+
+    recorded = Path(str(record["source_raw_npz"])).expanduser()
+    if recorded.is_file():
+        return recorded.resolve()
+
+    parts = recorded.parts
+    if "raw" in parts:
+        suffix = parts[parts.index("raw") + 1 :]
+        relocated = RAW_DATASET_ROOT.joinpath(*suffix)
+        if relocated.is_file():
+            return relocated.resolve()
+
+    round_id = str(record.get("source_round", "")).zfill(3)
+    rollout_id = str(record.get("source_rollout", "")).zfill(3)
+    rollout_root = (
+        RAW_DATASET_ROOT
+        / f"round_{round_id}"
+        / f"rollout_{rollout_id}"
+        / "raw_rollout"
+    )
+    matches = sorted(rollout_root.glob("*.npz"))
+    if len(matches) == 1:
+        return matches[0].resolve()
+    raise FileNotFoundError(
+        "Cannot uniquely resolve source rollout "
+        f"{recorded} under {RAW_DATASET_ROOT}: {len(matches)} candidates"
+    )
 
 
 def validate_raw_layout(
@@ -989,7 +1031,7 @@ class Workspace:
             raise RuntimeError(f"Expert motion {motion_key} has an invalid frame range.")
         local_frame = int(self.reset_rng.integers(motion_frames))
         source_frame = source_start + local_frame
-        source_path = Path(record["source_raw_npz"]).expanduser().resolve()
+        source_path = resolve_source_rollout_path(record)
         if source_path not in self.reset_raw_cache:
             self.reset_raw_cache[source_path] = load_source_rollout(
                 source_path,
@@ -1446,8 +1488,8 @@ class Workspace:
         return summary
 
 
-def build_train_config() -> TrainConfig:
-    """Build formal Skate-BFM configuration from environment variables."""
+def build_train_config(args: argparse.Namespace | None = None) -> TrainConfig:
+    """Build the formal Skate-BFM configuration."""
 
     from humanoidverse.agents.fb_cpr_aux.agent import FBcprAuxAgentTrainConfig
     from humanoidverse.agents.fb_cpr_aux.model import FBcprAuxModelArchiConfig, FBcprAuxModelConfig
@@ -1458,9 +1500,20 @@ def build_train_config() -> TrainConfig:
     )
     from humanoidverse.agents.normalizers import BatchNormNormalizerConfig, ObsNormalizerConfig
 
-    dataset_kind, expert_path, manifest_path = resolve_expert_dataset()
-    max_steps = int(os.environ.get("SKATE_MAX_STEPS", str(DEFAULT_MAX_STEPS)))
-    seed = int(os.environ.get("SKATE_SEED", "4728"))
+    def value(name: str, environment_name: str, default: Any) -> Any:
+        explicit = getattr(args, name, None) if args is not None else None
+        return (
+            explicit
+            if explicit is not None
+            else os.environ.get(environment_name, default)
+        )
+
+    dataset_kind, expert_path, manifest_path = resolve_expert_dataset(
+        value("dataset", "SKATE_EXPERT_DATASET", "phase"),
+        value("expert_motion", "SKATE_EXPERT_MOTION_FILE", None),
+    )
+    max_steps = int(value("max_steps", "SKATE_MAX_STEPS", DEFAULT_MAX_STEPS))
+    seed = int(value("seed", "SKATE_SEED", 4728))
     budget = f"{max_steps // 1000}k" if max_steps % 1000 == 0 else str(max_steps)
     TrainConfig.model_rebuild(
         _types_namespace={
@@ -1514,7 +1567,7 @@ def build_train_config() -> TrainConfig:
         ),
         env=HumanoidVerseIsaacConfig(
             name="humanoidverse_isaac", device="cuda:0",
-            lafan_tail_path=str(REPOSITORY_ROOT / "train/dataset/BFM-Zero/train/lafan_29dof_10s-clipped.pkl"),
+            lafan_tail_path=str(BASE_MOTION_FILE),
             enable_cameras=False, camera_render_save_dir="isaac_videos", max_episode_length_s=None,
             disable_obs_noise=False, disable_domain_randomization=False,
             relative_config_path="exp/bfm_zero/bfm_zero", include_last_action=True,
@@ -1526,41 +1579,90 @@ def build_train_config() -> TrainConfig:
         expert_dataset_kind=dataset_kind,
         skate_expert_motion_file=str(expert_path),
         expert_manifest_file=str(manifest_path),
-        pretrained_checkpoint=os.environ.get("BFM0_PRETRAINED_CHECKPOINT", str(REPOSITORY_ROOT / "model/bfm-zero-official")),
-        work_dir=os.environ.get(
-            "SKATE_WORK_DIR",
-            str(REPOSITORY_ROOT / f"results/m2.6-{dataset_kind}-{budget}-seed{seed}"),
+        pretrained_checkpoint=str(
+            value(
+                "pretrained_checkpoint",
+                "BFM0_PRETRAINED_CHECKPOINT",
+                REPOSITORY_ROOT / "model/bfm-zero-official",
+            )
         ),
-        checkpoint_dir=os.environ.get(
-            "SKATE_CHECKPOINT_DIR",
-            str(
+        work_dir=str(
+            value(
+                "work_dir",
+                "SKATE_WORK_DIR",
+                REPOSITORY_ROOT / f"results/m2.6-{dataset_kind}-{budget}-seed{seed}",
+            )
+        ),
+        checkpoint_dir=str(
+            value(
+                "checkpoint_dir",
+                "SKATE_CHECKPOINT_DIR",
                 REPOSITORY_ROOT
                 / "model/motion_library"
-                / datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            ),
+                / datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+            )
         ),
         seed=seed,
         skate_max_steps=max_steps,
         warmup_transitions=int(
-            os.environ.get("SKATE_WARMUP_TRANSITIONS", str(DEFAULT_WARMUP_TRANSITIONS))
+            value(
+                "warmup_transitions",
+                "SKATE_WARMUP_TRANSITIONS",
+                DEFAULT_WARMUP_TRANSITIONS,
+            )
         ),
         first_update_transition=int(
-            os.environ.get("SKATE_FIRST_UPDATE", str(DEFAULT_FIRST_UPDATE))
+            value(
+                "first_update",
+                "SKATE_FIRST_UPDATE",
+                DEFAULT_FIRST_UPDATE,
+            )
         ),
         update_interval=int(
-            os.environ.get("SKATE_UPDATE_INTERVAL", str(DEFAULT_UPDATE_INTERVAL))
+            value(
+                "update_interval",
+                "SKATE_UPDATE_INTERVAL",
+                DEFAULT_UPDATE_INTERVAL,
+            )
         ),
         updates_per_block=int(
-            os.environ.get("SKATE_UPDATES_PER_BLOCK", str(DEFAULT_UPDATES_PER_BLOCK))
+            value(
+                "updates_per_block",
+                "SKATE_UPDATES_PER_BLOCK",
+                DEFAULT_UPDATES_PER_BLOCK,
+            )
         ),
-        online_envs=int(os.environ.get("SKATE_ONLINE_ENVS", "4")),
-        skate_expert_ratio=float(os.environ.get("SKATE_EXPERT_RATIO", "0.5")),
-        buffer_size=int(os.environ.get("SKATE_BUFFER_SIZE", str(max_steps))),
+        online_envs=int(value("online_envs", "SKATE_ONLINE_ENVS", 4)),
+        skate_expert_ratio=float(
+            value("expert_ratio", "SKATE_EXPERT_RATIO", 0.5)
+        ),
+        buffer_size=int(
+            value("buffer_size", "SKATE_BUFFER_SIZE", max_steps)
+        ),
     )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", choices=tuple(EXPERT_DATASETS), default="phase")
+    parser.add_argument("--expert-motion", type=Path)
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
+    parser.add_argument("--seed", type=int, default=4728)
+    parser.add_argument("--work-dir", type=Path)
+    parser.add_argument("--checkpoint-dir", type=Path)
+    parser.add_argument("--pretrained-checkpoint", type=Path)
+    parser.add_argument("--warmup-transitions", type=int)
+    parser.add_argument("--first-update", type=int)
+    parser.add_argument("--update-interval", type=int)
+    parser.add_argument("--updates-per-block", type=int)
+    parser.add_argument("--online-envs", type=int)
+    parser.add_argument("--expert-ratio", type=float)
+    parser.add_argument("--buffer-size", type=int)
+    return parser.parse_args()
+
+
 def main() -> int:
-    build_train_config().build().train()
+    build_train_config(parse_args()).build().train()
     return 0
 
 
