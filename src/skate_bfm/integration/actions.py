@@ -6,39 +6,37 @@ import numpy as np
 import torch
 
 BFM0_ACTION_RESCALE = 5.0
-BFM0_ACTION_SCALES = np.asarray(
+BFM0_ACTION_SCALE = 0.25
+BFM0_ACTION_CLIP = 5.0
+BFM0_KP = np.asarray(
     (
-        0.222001498914,
-        0.22200157,
-        0.54754699,
-        0.35066156,
-        0.43857802,
-        0.43857802,
-        0.222001498914,
-        0.22200157,
-        0.54754699,
-        0.35066156,
-        0.43857802,
-        0.43857802,
-        0.54754699,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.07450086,
-        0.07466888,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.43857802,
-        0.07450086,
-        0.07450086,
+        99.09843, 99.09843, 40.17924, 99.09843, 28.50125, 28.50125,
+        99.09843, 99.09843, 40.17924, 99.09843, 28.50125, 28.50125,
+        300.0, 300.0, 300.0,
+        14.25062, 14.25062, 14.25062, 14.25062, 14.25062, 16.77833, 16.77833,
+        14.25062, 14.25062, 14.25062, 14.25062, 14.25062, 16.77833, 16.77833,
     ),
-    dtype=np.float32,
+    dtype=np.float64,
+)
+BFM0_KD = np.asarray(
+    (
+        6.3088, 6.3088, 2.55789, 6.3088, 1.81445, 1.81445,
+        6.3088, 6.3088, 2.55789, 6.3088, 1.81445, 1.81445,
+        5.0, 5.0, 5.0,
+        0.90722, 0.90722, 0.90722, 0.90722, 0.90722, 1.06814, 1.06814,
+        0.90722, 0.90722, 0.90722, 0.90722, 0.90722, 1.06814, 1.06814,
+    ),
+    dtype=np.float64,
+)
+BFM0_EFFORT_LIMITS = np.asarray(
+    (
+        139.0, 139.0, 88.0, 139.0, 50.0, 50.0,
+        139.0, 139.0, 88.0, 139.0, 50.0, 50.0,
+        88.0, 50.0, 50.0,
+        25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0,
+        25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0,
+    ),
+    dtype=np.float64,
 )
 BFM0_DEFAULT_JOINT_POSITION = np.asarray(
     (
@@ -73,6 +71,9 @@ BFM0_DEFAULT_JOINT_POSITION = np.asarray(
         0.0,
     ),
     dtype=np.float32,
+)
+BFM0_ACTION_TARGET_GAINS = (
+    BFM0_ACTION_RESCALE * BFM0_ACTION_SCALE * BFM0_EFFORT_LIMITS / BFM0_KP
 )
 
 BFM0_JOINTS = (
@@ -154,9 +155,25 @@ def project_husky_bfm_action(
 ) -> np.ndarray | torch.Tensor:
     """Project a 29D BFM action onto HUSKY's effective 23D subspace."""
 
+    if not isinstance(action, (np.ndarray, torch.Tensor)):
+        raise TypeError("BFM action must be a NumPy array or Torch tensor.")
     if action.ndim == 0 or action.shape[-1] != len(BFM0_JOINTS):
         actual = None if action.ndim == 0 else action.shape[-1]
         raise ValueError(f"Expected 29 BFM0 actions, got {actual}")
+    floating = (
+        torch.is_floating_point(action)
+        if torch.is_tensor(action)
+        else np.issubdtype(action.dtype, np.floating)
+    )
+    finite = (
+        torch.isfinite(action).all().item()
+        if torch.is_tensor(action)
+        else np.isfinite(action).all()
+    )
+    if not floating:
+        raise TypeError("BFM actions must use a floating dtype.")
+    if not finite:
+        raise ValueError("BFM actions must be finite.")
     projected = action.clone() if torch.is_tensor(action) else np.array(action, copy=True)
     projected[..., BFM0_INACTIVE_ACTION_INDICES] = 0
     return projected
@@ -333,9 +350,7 @@ def translate_skate_action(
         ..., SKATE_SOURCE_TO_HUSKY_INDICES
     ]
     bfm_default = BFM0_DEFAULT_JOINT_POSITION[SKATE_BFM_INDICES].astype(dtype)
-    bfm_scale = (BFM0_ACTION_RESCALE * BFM0_ACTION_SCALES[SKATE_BFM_INDICES]).astype(
-        dtype
-    )
+    bfm_scale = BFM0_ACTION_TARGET_GAINS[SKATE_BFM_INDICES].astype(dtype)
     equivalent = (
         source_neutral.astype(dtype)
         + source_scale.astype(dtype) * source_husky
@@ -385,12 +400,31 @@ class Bfm0ToHusky23:
 def official_husky_control_parameters(
     action_gain: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Map normalized BFM actions to the HUSKY joint-control convention."""
+    """Return the official hard-waist BFM target contract in HUSKY order."""
+
+    action_gain = float(action_gain)
+    if not np.isfinite(action_gain):
+        raise ValueError("Action gain must be finite.")
 
     indices = np.asarray(
         [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS],
         dtype=np.int64,
     )
     neutral = BFM0_DEFAULT_JOINT_POSITION[indices].copy()
-    scale = BFM0_ACTION_SCALES[indices] * BFM0_ACTION_RESCALE * float(action_gain)
+    scale = BFM0_ACTION_TARGET_GAINS[indices] * action_gain
     return neutral, scale
+
+
+def official_husky_actuator_parameters(
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return hard-waist Kp, Kd, and effort limits in HUSKY order."""
+
+    indices = np.asarray(
+        [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS],
+        dtype=np.int64,
+    )
+    return (
+        BFM0_KP[indices].copy(),
+        BFM0_KD[indices].copy(),
+        BFM0_EFFORT_LIMITS[indices].copy(),
+    )

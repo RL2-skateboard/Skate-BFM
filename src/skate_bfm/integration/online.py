@@ -8,7 +8,9 @@ import torch
 from skate_husky import AUX_REWARD_KEYS, HuskyLiteEnv
 
 from skate_bfm.integration.actions import (
+    HUSKY_JOINTS,
     Bfm0ToHusky23,
+    official_husky_actuator_parameters,
     official_husky_control_parameters,
     project_husky_bfm_action,
 )
@@ -70,6 +72,10 @@ class HuskyBfmOnlineEnv:
         )
         neutral, scale = official_husky_control_parameters(action_gain)
         self.env.set_control_mapping(neutral, scale)
+        kp, kd, effort_limits = official_husky_actuator_parameters()
+        self.env.set_actuator_control_parameters(
+            HUSKY_JOINTS, kp, kd, effort_limits
+        )
         self.action_adapter = Bfm0ToHusky23(action_gain=1.0, action_clip=1.0)
         self.observation_adapter = HuskyToBfm0OnlineObservation()
         self._observation: dict[str, torch.Tensor] | None = None

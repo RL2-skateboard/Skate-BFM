@@ -343,8 +343,66 @@ class HuskyLiteEnv:
                 "Control mapping must contain one value per HUSKY actuator, "
                 f"got neutral={neutral_control.shape}, scale={action_scale.shape}."
             )
+        if not np.isfinite(neutral_control).all() or not np.isfinite(action_scale).all():
+            raise ValueError("Control mapping values must be finite.")
         self._neutral_control = neutral_control.copy()
         self.action_scale = action_scale.copy()
+
+    def set_actuator_control_parameters(
+        self,
+        joint_names: tuple[str, ...],
+        kp: np.ndarray,
+        kd: np.ndarray,
+        effort_limits: np.ndarray,
+    ) -> None:
+        """Apply a validated PD and effort contract to robot actuators."""
+
+        names = tuple(str(name).removeprefix("robot/") for name in joint_names)
+        raw_values = tuple(np.asarray(value) for value in (kp, kd, effort_limits))
+        if not all(np.issubdtype(value.dtype, np.floating) for value in raw_values):
+            raise TypeError("Actuator contract must use floating arrays.")
+        values = tuple(value.astype(np.float64) for value in raw_values)
+        expected = (self.robot_action_dim,)
+        if len(names) != self.robot_action_dim or len(set(names)) != len(names):
+            raise ValueError("Actuator contract must contain 23 unique joints.")
+        if any(value.shape != expected or not np.isfinite(value).all() for value in values):
+            raise ValueError("Actuator contract vectors must be finite 23D arrays.")
+        kp, kd, effort_limits = values
+        if (kp <= 0).any() or (kd < 0).any() or (effort_limits <= 0).any():
+            raise ValueError("Actuator contract gains and limits are invalid.")
+        actual = tuple((name or "").removeprefix("robot/") for name in self._robot_joints)
+        if actual != names:
+            raise RuntimeError(f"Actuator joint order mismatch: {actual} != {names}.")
+
+        for actuator_id, actuator_name in enumerate(self._robot_joints):
+            if int(self.model.actuator_trntype[actuator_id]) != int(
+                mujoco.mjtTrn.mjTRN_JOINT
+            ):
+                raise RuntimeError(f"{actuator_name} must use a joint transmission.")
+            joint_id = int(self.model.actuator_trnid[actuator_id, 0])
+            if self.model.joint(joint_id).name != actuator_name:
+                raise RuntimeError(f"{actuator_name} has an ambiguous joint mapping.")
+            gear = self.model.actuator_gear[actuator_id]
+            if not np.isclose(gear[0], 1.0) or not np.allclose(gear[1:], 0.0):
+                raise RuntimeError(f"{actuator_name} has an ambiguous joint gear.")
+            if not bool(self.model.actuator_forcelimited[actuator_id]):
+                raise RuntimeError(f"{actuator_name} has no force limit.")
+            if (
+                int(self.model.actuator_gaintype[actuator_id])
+                != int(mujoco.mjtGain.mjGAIN_FIXED)
+                or int(self.model.actuator_biastype[actuator_id])
+                != int(mujoco.mjtBias.mjBIAS_AFFINE)
+            ):
+                raise RuntimeError(f"{actuator_name} is not an affine PD actuator.")
+
+        for actuator_id, (p_gain, d_gain, effort) in enumerate(
+            zip(kp, kd, effort_limits, strict=True)
+        ):
+            self.model.actuator_gainprm[actuator_id, 0] = p_gain
+            self.model.actuator_biasprm[actuator_id, 1] = -p_gain
+            self.model.actuator_biasprm[actuator_id, 2] = -d_gain
+            self.model.actuator_forcerange[actuator_id] = (-effort, effort)
+        self._configure_aux_reward_contract()
 
     def set_reset_joint_offsets(
         self,
@@ -574,7 +632,7 @@ class HuskyLiteEnv:
                     raise ValueError("Reset quaternion is not normalized.")
             self.data.qpos[:] = qpos
             self.data.qvel[:] = qvel
-            self.data.ctrl[: self.robot_action_dim] = self._neutral_control
+        self.data.ctrl[: self.robot_action_dim] = self._neutral_control
         self._last_action.fill(0.0)
         self._previous_action.fill(0.0)
         self._last_aux_rewards = self._zero_aux_rewards()

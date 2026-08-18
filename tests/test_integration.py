@@ -10,6 +10,7 @@ import mujoco
 import numpy as np
 import pytest
 import torch
+import yaml
 from skate_husky import (
     AUX_REWARD_KEYS,
     HuskyLiteEnv,
@@ -21,13 +22,23 @@ from skate_husky.lite_env import (
 )
 
 from skate_bfm.integration.actions import (
+    BFM0_ACTION_CLIP,
     BFM0_ACTION_CONSUMERS,
+    BFM0_ACTION_RESCALE,
+    BFM0_ACTION_SCALE,
+    BFM0_ACTION_TARGET_GAINS,
+    BFM0_DEFAULT_JOINT_POSITION,
+    BFM0_EFFORT_LIMITS,
     BFM0_INACTIVE_ACTION_INDICES,
     BFM0_INACTIVE_JOINTS,
     BFM0_JOINTS,
+    BFM0_KD,
+    BFM0_KP,
     HUSKY_JOINTS,
     Bfm0ToHusky23,
     install_husky_action_projection,
+    official_husky_actuator_parameters,
+    official_husky_control_parameters,
     project_husky_bfm_action,
 )
 from skate_bfm.integration.online import HuskyBfmOnlineEnv
@@ -98,6 +109,32 @@ def _set_root_tilt(env: HuskyLiteEnv) -> None:
     mujoco.mj_forward(env.model, env.data)
 
 
+def _official_robot_config(name: str) -> dict[str, object]:
+    path = (
+        Path(__file__).parents[1]
+        / "train/scripts/isaac_env/humanoidverse/config/robot/g1"
+        / name
+    )
+    config = yaml.safe_load(path.read_text())["robot"]
+    if config.get("dof_names") != list(BFM0_JOINTS):
+        raise RuntimeError(f"Official BFM joint order mismatch: {path}")
+    return config
+
+
+def _official_joint_vector(config: dict[str, object], field: str) -> np.ndarray:
+    values = config["control"][field]
+    result = []
+    for name in BFM0_JOINTS:
+        key = name.removesuffix("_joint").removeprefix("left_").removeprefix("right_")
+        if key not in values:
+            raise RuntimeError(f"Official BFM {field} is missing {name}.")
+        result.append(values[key])
+    result = np.asarray(result, dtype=np.float64)
+    if result.shape != (29,) or not np.isfinite(result).all():
+        raise RuntimeError(f"Official BFM {field} vector is invalid.")
+    return result
+
+
 def test_bfm_actions_are_mapped_by_joint_name() -> None:
     adapter = Bfm0ToHusky23(action_clip=None)
     source = torch.arange(29, dtype=torch.float32)
@@ -114,6 +151,88 @@ def test_bfm_actions_are_mapped_by_joint_name() -> None:
         "right_wrist_pitch_joint",
         "right_wrist_yaw_joint",
     )
+
+
+def test_hard_waist_contract_has_official_config_provenance() -> None:
+    hard = _official_robot_config("g1_29dof_hard_waist.yaml")
+    ordinary = _official_robot_config("g1_29dof.yaml")
+    q0 = np.asarray(
+        [hard["init_state"]["default_joint_angles"][name] for name in BFM0_JOINTS]
+    )
+    effort = np.asarray(hard["dof_effort_limit_list"])
+    hard_kp = _official_joint_vector(hard, "stiffness")
+
+    assert np.max(np.abs(BFM0_DEFAULT_JOINT_POSITION - q0)) <= 1e-6
+    assert np.max(np.abs(BFM0_KP - hard_kp)) <= 1e-6
+    assert np.max(np.abs(BFM0_KD - _official_joint_vector(hard, "damping"))) <= 1e-6
+    assert np.max(np.abs(BFM0_EFFORT_LIMITS - effort)) <= 1e-6
+    expected_gain = BFM0_ACTION_RESCALE * BFM0_ACTION_SCALE * effort / hard_kp
+    assert np.max(np.abs(BFM0_ACTION_TARGET_GAINS - expected_gain)) <= 1e-6
+    assert hard["control"]["action_scale"] == BFM0_ACTION_SCALE
+    assert hard["control"]["action_clip_value"] == BFM0_ACTION_CLIP
+    assert hard["control"]["normalize_action_from"] == 1.0
+    assert hard["control"]["normalize_action_to"] == BFM0_ACTION_RESCALE
+    assert hard["control"]["action_rescale"] is True
+    assert np.max(
+        np.abs(BFM0_KP - _official_joint_vector(ordinary, "stiffness"))
+    ) > 1.0
+
+
+def test_online_target_uses_hard_waist_gain() -> None:
+    action = np.linspace(-1.0, 1.0, 29, dtype=np.float32)
+    action = project_husky_bfm_action(action)
+    indices = [BFM0_JOINTS.index(name) for name in HUSKY_JOINTS]
+    expected = (
+        BFM0_DEFAULT_JOINT_POSITION + BFM0_ACTION_TARGET_GAINS * action
+    )[indices]
+    neutral, scale = official_husky_control_parameters()
+    assert np.allclose(neutral + scale * action[indices], expected, atol=1e-6)
+
+    env = HuskyBfmOnlineEnv()
+    try:
+        env.reset()
+        transition = env.step(torch.from_numpy(action), torch.zeros(256))
+        assert np.allclose(env.env.data.ctrl[:23], expected, atol=1e-6)
+        assert torch.equal(transition.action_bfm, torch.from_numpy(action))
+    finally:
+        env.close()
+
+
+def test_hard_waist_actuators_do_not_modify_skateboard() -> None:
+    env = HuskyLiteEnv()
+    try:
+        board_ids = range(env.robot_action_dim, env.model.nu)
+        before = {
+            index: (
+                env.model.actuator_gainprm[index].copy(),
+                env.model.actuator_biasprm[index].copy(),
+                env.model.actuator_forcerange[index].copy(),
+            )
+            for index in board_ids
+        }
+        kp, kd, effort = official_husky_actuator_parameters()
+        env.set_actuator_control_parameters(HUSKY_JOINTS, kp, kd, effort)
+        assert np.allclose(env.model.actuator_gainprm[:23, 0], kp)
+        assert np.allclose(env.model.actuator_biasprm[:23, 1], -kp)
+        assert np.allclose(env.model.actuator_biasprm[:23, 2], -kd)
+        assert np.allclose(env.model.actuator_forcerange[:23, 0], -effort)
+        assert np.allclose(env.model.actuator_forcerange[:23, 1], effort)
+        for index, values in before.items():
+            assert np.array_equal(env.model.actuator_gainprm[index], values[0])
+            assert np.array_equal(env.model.actuator_biasprm[index], values[1])
+            assert np.array_equal(env.model.actuator_forcerange[index], values[2])
+        with pytest.raises(ValueError, match="23 unique"):
+            env.set_actuator_control_parameters(HUSKY_JOINTS[:-1], kp, kd, effort)
+        with pytest.raises(ValueError, match="finite 23D"):
+            invalid = kp.copy()
+            invalid[0] = np.nan
+            env.set_actuator_control_parameters(HUSKY_JOINTS, invalid, kd, effort)
+        with pytest.raises(TypeError, match="floating arrays"):
+            env.set_actuator_control_parameters(
+                HUSKY_JOINTS, np.ones(23, dtype=np.int64), kd, effort
+            )
+    finally:
+        env.close()
 
 
 def test_husky_action_projection_contract() -> None:
@@ -154,6 +273,10 @@ def test_husky_action_projection_contract() -> None:
     ) == 0
     with pytest.raises(ValueError, match="Expected 29"):
         project_husky_bfm_action(torch.zeros(28))
+    with pytest.raises(TypeError, match="floating dtype"):
+        project_husky_bfm_action(np.zeros(29, dtype=np.int64))
+    with pytest.raises(ValueError, match="finite"):
+        project_husky_bfm_action(torch.full((29,), torch.nan))
 
 
 def test_husky_action_projection_preserves_physical_action_and_autograd() -> None:
