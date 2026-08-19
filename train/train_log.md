@@ -68,3 +68,7 @@ Finalized exact/projected expert-action translation and completed the post-align
 ### 2026-08-18
 
 Unified data and runtime paths under `train/dataset/` and published the named 100k checkpoint with reproducible download/evaluation commands.
+
+### 2026-08-19
+
+Restored and validated the official BFM hard-waist control contract in the HUSKY runtime.

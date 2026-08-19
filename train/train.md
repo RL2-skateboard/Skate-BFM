@@ -394,7 +394,9 @@ single experiment.
 | Skate expert | `train/dataset/sim_collected/`: Phase 6,038 motions; Continuous 890 clips |
 | Completed formal run | Phase dataset |
 | Online simulator | four independent `HuskyBfmOnlineEnv` instances |
-| Control step | 0.02 s |
+| HUSKY integration | MuJoCo `0.002 s * 10 = 0.02 s` control step |
+| Official BFM reference | IsaacSim `0.005 s * 4 = 0.02 s` control step |
+| BFM robot contract | `g1_29dof_hard_waist` |
 | Actor/model device | CUDA |
 | Replay | CPU `DictBuffer`, capacity 100,000 |
 | Episode horizon | 1,024 transitions |
@@ -646,7 +648,8 @@ The following are process steps inside Experiment 3:
 | MotionLib and online observation scales differ | Distribution audit found expert root angular velocity scale 1.0 versus online 0.25 and 20-27 sigma waist drift; documented but not yet resolved. |
 | Random z was unrelated to the selected expert reset | Build same-reset tracking z from future expert observations and use it only in expert-role rollout slots. |
 | Source ONNX action and BFM normalized action have different physical target semantics | Derive an exact per-joint physical-target bridge and explicitly mark out-of-range components as projected. |
-| Phase boundaries can remove required previous-action context | Measure current/history/five-action representability; Phase strict coverage is 64.8366%, with `steer2push=12.1379%`. |
+| The first bridge used ordinary-G1 target gains instead of the formal hard-waist gains | Resolve the actual BFM training override and restore hard-waist `q0`, `Kp`, `Kd`, effort limits, and normalized target gains in the HUSKY runtime. |
+| Phase boundaries can remove required previous-action context | Recompute representability under the authoritative hard-waist contract; Phase strict-five coverage is 15.3561%, with `steer2push=3.0445%`. |
 
 **Caption.** `qpos` and `qvel` are MuJoCo generalized position and velocity;
 their reset errors should be zero. `sigma` is standard deviations from the
@@ -673,17 +676,19 @@ q_target_src[j] = q0_src[j] + s_src[j] * a_src[j]
 The BFM Actor uses the BFM-Zero convention:
 
 ```text
-q_target_bfm[j] = q0_bfm[j] + 5 * s_bfm[j] * a_bfm[j]
+a_env[j] = clip(5 * a_bfm[j], -5, 5)
+
+G_bfm[j] = 5 * 0.25 * effort_hard-waist[j] / Kp_hard-waist[j]
+
+q_target_bfm[j] = q0_hard-waist[j] + G_bfm[j] * a_bfm[j]
 ```
 
 Therefore the only exact per-joint physical-target bridge is:
 
 ```text
 a_bfm_eq[j] =
-    (q0_src[j] + s_src[j] * a_src[j] - q0_bfm[j])
-    / (5 * s_bfm[j])
-
-               = b[j] + k[j] * a_src[j]
+    (q0_src[j] + s_src[j] * a_src[j] - q0_hard-waist[j])
+    / G_bfm[j]
 ```
 
 The matching procedure was:
@@ -691,94 +696,97 @@ The matching procedure was:
 1. compare raw source action, raw source action divided by 5, and the affine
    physical-target inverse;
 2. reconstruct the source target with `q0_src + s_src*a_src` and the BFM target
-   with `q0_bfm + 5*s_bfm*a_bfm`;
+   with `q0_hard-waist + G_bfm*a_bfm`;
 3. classify each component as `EXACT` when `|a_bfm_eq| <= 1`, otherwise use an
    explicit diagnostic `PROJECTED = clip(a_bfm_eq,-1,1)`;
 4. audit all 452,885 collected frames and every joint;
 5. compare source and BFM target transitions in MuJoCo;
-6. test whether a learned/piecewise hip-tail correction generalizes to held-out
-   transitions;
+6. compare target-only, full hard-waist control, and full control with
+   BFM-like timing against the saved official IsaacSim one-step response;
 7. compare the translated source action with the fresh Actor's first action at
    the same reset, without executing the translated action.
 
-The source and current controllers share position-actuator semantics, PD gains,
-damping, force limits, 50 Hz policy rate, and no delay/filter. They still
-differ in target parameterization, clipping, MuJoCo integration
-(`0.005*4` source versus `0.002*10` current), and solver settings. Thus an
-exact target bridge does not imply identical low-level next-state dynamics.
-
-Measured mapping results:
+The first D2.5 bridge incorrectly used target scales approximating ordinary
+`g1_29dof`. The formal BFM0 entrypoint actually resolves
+`robot=g1/g1_29dof_hard_waist`, with:
 
 ```text
-raw source action range       = [-4.933043, 6.152792]
-raw components outside [-1,1] = 32.1595%
-affine BFM-equivalent range   = [-2.343024, 1.716985]
-exact component coverage      = 99.600839%
-exact full-frame coverage     = 92.1503%
+normalize_from = 1
+normalize_to   = 5
+action_clip    = 5
+action_scale   = 0.25
+control_type   = P
 ```
 
-Naive mappings were rejected:
+The current online path now applies the corresponding hard-waist `q0`,
+`G_bfm`, `Kp`, `Kd`, and effort limits to the 23 shared MuJoCo actuators.
+MuJoCo `gainprm[0]=Kp`, `biasprm[1]=-Kp`,
+`biasprm[2]=-Kd`, and `forcerange=[-effort,+effort]`. Robot actuators are
+matched one-to-one by joint name; skateboard actuators are unchanged.
 
-| Mapping | Physical target RMSE |
+Measured mapping results after the authoritative correction:
+
+```text
+BFM-equivalent range       = [-9.588672, 9.545807]
+exact component coverage   = 95.758968%
+exact full-frame coverage  = 37.012707%
+projected frames           = 285,260 / 452,885
+```
+
+The largest violation counts are:
+
+| Joint | Out-of-range components |
 |---|---:|
-| raw source action copied as BFM action | 1.330264 rad |
-| raw source action divided by 5 | 0.530560 rad |
-| affine bridge with projection | 0.021775 rad |
+| waist pitch | 221,184 |
+| waist roll | 157,780 |
+| waist yaw | 59,893 |
+| right hip pitch | 2,694 |
+| left hip pitch | 128 |
 
-**Caption.** `RMSE` is root-mean-square error between reconstructed source and
-BFM joint targets, measured in radians across shared joints and frames; lower
-is better and zero is exact. Projection clips normalized BFM actions to the
-allowed `[-1,1]` range.
-
-The remaining full-frame failures are concentrated in hip pitch. The exact
-bridge reconstructs representable targets with RMSE `1.97e-17 rad` and maximum
-error `4.44e-16 rad`; projected hip-tail errors reach `1.490767 rad`. Fixed
-center coverage would require left/right hip range multipliers of `1.510x` and
-`1.860x` for 99.9% coverage, or `2.156x` and `2.343x` for all observed
-targets. This is a control-parameterization mismatch, not a small numerical
-noise issue.
-
-The two dominant affine rows are:
-
-```text
-left hip pitch:  a_bfm_eq = +0.090089 + 0.493240 * a_src
-right hip pitch: a_bfm_eq = -0.540537 + 0.493240 * a_src
-```
-
-Removing the default-position offset would recover only `3.76%` of left-hip
-violations and `79.41%` of right-hip violations. The remaining tail therefore
-cannot be solved by recentering alone; reachable range is also insufficient.
+**Caption.** `BFM-equivalent range` is the normalized action required to
+reconstruct each HUSKY source PD target. `Exact component coverage` counts
+joint-frame values inside `[-1,1]`; `exact full-frame coverage` requires all
+23 physical joints in a frame to be inside that range. A projected frame
+clips at least one coordinate and therefore cannot exactly reproduce the
+source target. Higher coverage and fewer violations are better.
 
 The temporal part was audited separately because
 `action[t]` is the action already applied before `state[t]`, while the source
 transition to `state[t+1]` is `action[t+1]`. Under the formal reset
-distribution, current-action/history/five-action context coverage was:
+distribution, authoritative strict-five coverage was:
 
-| Dataset | Current valid | History valid | Strict five-action context |
-|---|---:|---:|---:|
-| Phase | 79.9611% | 66.6396% | 64.8366% |
-| Continuous | 92.2596% | 87.1721% | 85.8434% |
+| Dataset | Strict five-action context |
+|---|---:|
+| Phase | 15.3561% |
+| Continuous | 25.7769% |
+| Phase `steer2push` | 3.0445% |
+| Continuous `steer2push` | 3.0640% |
 
-**Caption.** `Current valid` means the source action for the reset frame maps
-inside BFM range. `History valid` also requires the available previous action;
-`strict five-action context` requires the current plus four preceding actions
-needed by Actor history. Values are sample percentages, and higher is better.
+**Caption.** `Strict five-action context` requires the current source action
+and its four history actions to map inside the BFM range. Percentages are
+computed over formal MotionLib records; higher is better. The low transition
+coverage shows that source actions remain diagnostic and cannot be inserted as
+universal BFM expert actions.
 
-Hip pitch explained `99.9612%` of Phase strict-context failures and `99.9810%`
-of Continuous failures. In `steer2push`, current hip violation was `60.15%`
-and strict five-context failure was `87.86%`; violation runs averaged 4.32
-frames, p95 9, maximum 14. This shows temporal persistence rather than a
-single corrupted frame.
+The low-level controller restoration was tested on 163 identical probes:
+one zero action, 138 single-joint actions, 16 seeded random actions, and eight
+fresh frozen-Actor outputs. Of these, 153 had a valid no-contact one-step
+comparison. Conditions were:
 
-A 4,096-transition MuJoCo refinement reduced normalized next-state RMSE from
-`0.4689` to `0.4482`, but the held-out RMSE ratio was only `0.9610` and
-left-only/right-only hip tails did not improve consistently. Learned,
-piecewise, and dynamics-aware correction was therefore rejected. The retained
-production rule is exact affine translation plus explicit `PROJECTED` fallback;
-canonical source actions and formal online semantics remain unchanged.
+```text
+A: authoritative target + old HUSKY actuator + 0.002*10
+B: authoritative target + hard-waist actuator + 0.002*10
+C: authoritative target + hard-waist actuator + 0.005*4
+```
 
-At the final P0 matched reset, 421 contexts were fully exact and 91 contained a
-projected component. The translated source action was diagnostic only:
+Against official IsaacSim, B reduced `dq`, `dqdot`, and torque RMSE relative
+to A by `20.65%`, `18.80%`, and `48.85%`. Hip `dqdot` improved `43.94%` and
+waist `dqdot` improved `82.36%`. C improved `dqdot` but worsened `dq` and
+torque relative to B, so production timing remains `0.002*10`.
+
+In the pre-D2.7 P0 matched reset, using the superseded target contract, 421
+contexts were fully exact and 91 contained a projected component. This was a
+historical diagnostic only; it is not a post-hard-waist result:
 
 | Context | Actor/expert cosine | Actor/expert L2 |
 |---|---:|---:|
@@ -794,10 +802,11 @@ This is why the source action cannot currently be treated as a universally
 exact BFM expert action, even though most individual components are
 representable.
 
-#### Post-alignment frozen preflight
+#### Post-alignment frozen preflight (pre-D2.7)
 
-The final current-stack check used fresh official BFM0, 512 matched Phase
-resets, exact source physics, seed 4728, and a 51-step horizon. It compared:
+The final pre-D2.7 current-stack check used fresh official BFM0, 512 matched
+Phase resets, exact source physics, seed 4728, and a 51-step horizon. It
+compared:
 
 ```text
 formal setting: expert slots use aligned tracking z; free slots use background z
@@ -819,11 +828,12 @@ named step, so lower is better. Root tilt is torso inclination in degrees;
 actions at the range boundary, where lower generally leaves more control
 margin.
 
-The reset population contained 421 fully exact and 91 projected source-action
-contexts. Formal Actor/expert first-action cosine was `0.435` for exact
-contexts and `0.185` for projected contexts. No board-relative reset variable
-strongly predicted failure; the largest absolute survival Spearman
-coefficient was `0.136`.
+The historical reset population contained 421 fully exact and 91 projected
+source-action contexts. Formal Actor/expert first-action cosine was `0.435`
+for exact contexts and `0.185` for projected contexts. No board-relative reset
+variable strongly predicted failure; the largest absolute survival Spearman
+coefficient was `0.136`. These numbers were not rerun after D2.7 and do not
+establish current post-restoration behavior.
 
 ### Problems and Solutions
 
@@ -833,8 +843,9 @@ coefficient was `0.136`.
 | Physical reset did not reproduce source dynamics | Restore exact source physics and exact robot-board state. |
 | Nonphysical wrist actions contaminated the BFM action interface | Apply one 29D active-subspace projection everywhere. |
 | Expert reset and random latent represented unrelated motion | Add same-reset future-expert tracking z for expert rollout slots. |
-| Source and BFM action coordinates differed | Use exact affine target translation plus explicit `PROJECTED` fallback. |
-| Hip-pitch tails exceed BFM action range | Record representability and projection; do not silently enlarge range or adopt weak learned correction. |
+| Source and BFM action coordinates differed | Use the hard-waist physical-target inverse plus explicit `PROJECTED` fallback. |
+| The first bridge used the wrong ordinary-G1 target gain | Restore the formal hard-waist target and actuator contract, then recompute all coverage. |
+| Waist and hip targets exceed the normalized BFM range | Record representability and projection; do not silently enlarge `[-1,1]`. |
 | Observation scale and history semantics are still asymmetric | Keep as explicit unresolved items; do not claim successful retraining. |
 
 **Caption.** `100k` denotes 100,000 online transitions. A projected action has
@@ -855,16 +866,20 @@ Verified:
   under the matched frozen evaluation.
 - [x] Source-physics restoration and robot-board qpos/qvel reset are exact.
 - [x] Shared 23DoF action mapping is exact and six wrists remain zero.
-- [x] Exact source-to-BFM action translation is valid for 99.600839% of
-  components; the remaining projected tail is mainly hip pitch.
-- [x] The current post-alignment structural preflight passes without changing
-  model or normalizer hashes.
+- [x] Official hard-waist `q0`, `Kp`, `Kd`, effort, and normalized target gain
+  match their authoritative configuration within `1e-6`.
+- [x] Restoring the complete hard-waist controller improves one-step MuJoCo
+  response relative to target-only correction.
+- [x] The authoritative source-to-BFM inverse is exact for 95.758968% of
+  components and 37.012707% of complete frames; violations are dominated by
+  waist pitch, roll, and yaw.
+- [x] The pre-D2.7 structural preflight passed without changing model or
+  normalizer hashes.
 
 Unverified:
 
 - [ ] The expert/online angular-velocity scale asymmetry has been resolved.
-- [ ] Hip-pitch range and low-level controller semantics have been fully
-  aligned.
+- [ ] Remaining IsaacSim/MuJoCo plant differences have been fully explained.
 - [ ] Aligned tracking z materially improves frozen official BFM0 behavior.
 - [ ] A post-alignment short retraining improves survival or Skate behavior.
 - [ ] The trained model is a stable and diverse Skate motion library.

@@ -283,20 +283,19 @@ These rows are diagnostic steps within Experiment 3:
 | Source physics + exact reset | max qpos/qvel error `0`; physics mismatch `0` | reset contract corrected |
 | Active action subspace | shared-action error `0`; six wrists `0` | 23DoF projection correct |
 | Observation distribution | waist reaches about 20-27 sigma; expert/online angular velocity 1.0/0.25 | observation asymmetry unresolved |
-| Temporal action context | Phase strict-5 coverage 64.8366%; Continuous 85.8434%; steer2push 12.1379% | Phase context loss is material |
-| Source-to-BFM action bridge | physical target RMSE `1.97e-17`; exact components 99.600839%; exact frames 92.1503% | exact where representable; hip tail projected |
-| Diagnostic hip-tail refinement | next-state RMSE 0.4689 -> 0.4482; held-out ratio 0.9610 | improvement too weak/inconsistent; not adopted |
+| First source-to-BFM bridge | used ordinary-G1 target gains | superseded after hard-waist provenance audit |
+| Authoritative action bridge | 95.758968% exact components; 37.012707% exact frames | waist targets dominate the projected set |
+| Hard-waist controller restoration | B improves `dq/dqdot/torque` RMSE by 20.65% / 18.80% / 48.85% over A | controller restoration passes; timing remains unchanged |
 | Same-reset tracking z on old 100k | step-20 root tilt 47.8 -> 25.2 deg; saturation 17.1% -> 0.29% | short old-checkpoint improvement only |
 
 **Caption.** `qpos/qvel` are MuJoCo generalized position/velocity; their reset
 errors are expected to be zero. `sigma` is standard deviation from the
 reference observation distribution, so 20-27 sigma indicates severe drift.
-`RMSE` is root-mean-square error in radians, where lower is better. Root tilt
-is torso inclination in degrees; action saturation is the fraction at the
-normalized action limit, where lower usually leaves more control margin.
-`Strict-5 coverage` is the fraction with all five required source actions
-representable; the held-out ratio is refined RMSE divided by baseline RMSE, so
-values below 1 improve and values near 1 improve little.
+`RMSE` is root-mean-square error, where lower is better. Root tilt is torso
+inclination in degrees; action saturation is the fraction at the normalized
+action limit, where lower usually leaves more control margin. `Strict-5
+coverage` requires the current source action and four prior history actions to
+be representable by the BFM action range.
 
 **Skate expert action matching process**
 
@@ -305,77 +304,91 @@ coordinates. The tested physical-target equations were:
 
 ```text
 q_target_src[j] = q0_src[j] + s_src[j] * a_src[j]
-q_target_bfm[j] = q0_bfm[j] + 5 * s_bfm[j] * a_bfm[j]
+a_env[j] = clip(5 * a_bfm[j], -5, 5)
+G_bfm[j] = 5 * 0.25 * effort_hard-waist[j] / Kp_hard-waist[j]
+q_target_bfm[j] = q0_hard-waist[j] + G_bfm[j] * a_bfm[j]
 
 a_bfm_eq[j] =
-    (q0_src[j] + s_src[j] * a_src[j] - q0_bfm[j])
-    / (5 * s_bfm[j])
+    (q0_src[j] + s_src[j] * a_src[j] - q0_hard-waist[j])
+    / G_bfm[j]
 ```
 
-Dominant hip rows:
+The prior bridge used ordinary-G1 scales and is superseded. The formal BFM0
+entrypoint resolves `g1_29dof_hard_waist` with `normalize_from=1`,
+`normalize_to=5`, action clip `5`, action scale `0.25`, and position control.
+The production HUSKY runtime now applies the matching `q0`, `Kp`, `Kd`, effort
+limit, and normalized target gain to its 23 robot actuators.
 
-```text
-left hip pitch:  a_bfm_eq = +0.090089 + 0.493240 * a_src
-right hip pitch: a_bfm_eq = -0.540537 + 0.493240 * a_src
-```
-
-| Source-to-BFM method | Physical target RMSE | Decision |
-|---|---:|---|
-| Copy raw source action | 1.330264 rad | Rejected |
-| Divide raw source action by 5 | 0.530560 rad | Rejected |
-| Affine inverse, no projection where valid | `1.97e-17 rad` on valid components | Retained |
-| Clip out-of-range components to `[-1,1]` | 0.021775 rad global target RMSE | Retained as explicit `PROJECTED` fallback |
-
-**Caption.** Physical-target `RMSE` is the root-mean-square joint-angle error
-in radians between source and reconstructed BFM targets; lower is better and
-zero is exact. `PROJECTED` means at least one normalized BFM action was clipped
-to `[-1,1]`, preserving the BFM interface but losing exact target equality.
-
-Coverage and mismatch:
+Authoritative representability:
 
 | Quantity | Result |
 |---|---:|
-| Raw source action range | `[-4.933043, 6.152792]` |
-| Raw components outside `[-1,1]` | 32.1595% |
-| Affine BFM-equivalent range | `[-2.343024,1.716985]` |
-| Exact component coverage | 99.600839% |
-| Exact full-frame coverage | 92.1503% |
-| Projected frames | 35,550 |
-| Maximum projected hip-tail error | 1.490767 rad |
-| Violations recovered by removing default offset | left 3.76% / right 79.41% |
-| Range multiplier for 99.9% target coverage | left 1.510x / right 1.860x |
-| Range multiplier for full observed coverage | left 2.156x / right 2.343x |
+| Raw rollout count / frames | 158 / 452,885 |
+| BFM-equivalent action range | `[-9.588672, 9.545807]` |
+| Exact component coverage | 95.758968% |
+| Exact full-frame coverage | 37.012707% |
+| Projected frames | 285,260 |
+| Phase strict-five coverage | 15.356147% |
+| Continuous strict-five coverage | 25.776854% |
+| Phase `steer2push` strict-five coverage | 3.044549% |
 
-**Caption.** Range values are normalized action coordinates; percentages are
-sample coverage, where higher is better. `Exact component coverage` counts
-individual joint-frame values inside BFM range; `exact full-frame coverage`
-requires every active joint in a frame to be exact. `Projected frames` fail
-that full-frame condition. Offset recovery tests recentering only; a range
-multiplier enlarges hip-action width. Projected count/error should be lower.
+**Caption.** The BFM-equivalent range is the normalized action required to
+reproduce a source HUSKY PD target. Component coverage is per joint-frame;
+full-frame coverage requires all 23 physical joints in one frame to lie in
+`[-1,1]`. Strict-five additionally requires four history actions. Higher
+coverage and fewer projected frames are better.
 
-Temporal alignment and controller comparison:
+Largest out-of-range component counts:
 
-| Check | Result |
+| Joint | Count |
 |---|---:|
-| Phase current/history/strict-five context | 79.9611% / 66.6396% / 64.8366% |
-| Continuous current/history/strict-five context | 92.2596% / 87.1721% / 85.8434% |
-| Phase `steer2push` current hip violation | 60.15% |
-| Phase `steer2push` strict-five failure | 87.86% |
-| Hip violation run length | mean 4.32 frames, p95 9, max 14 |
-| 4,096-transition refinement RMSE | 0.4689 -> 0.4482 |
-| Held-out refinement RMSE ratio | 0.9610 |
+| waist pitch | 221,184 |
+| waist roll | 157,780 |
+| waist yaw | 59,893 |
+| right hip pitch | 2,694 |
+| left hip pitch | 128 |
 
-**Caption.** `Current valid` checks the selected action, `history valid` also
-checks its available history, and `strict five-action context` requires the
-current plus four preceding actions. A `hip violation` is an equivalent hip
-action outside `[-1,1]`; run length is consecutive violating frames, with
-mean/95th percentile/maximum shown. Refinement RMSE compares predicted and
-source next state over 4,096 transitions; its held-out ratio is refined over
-baseline RMSE. Higher coverage and lower failure/RMSE are better.
+**Caption.** Counts are raw joint-frame values outside the normalized BFM
+action range. This table identifies where projection loses source-target
+equality; lower counts are better.
 
-**Post-alignment frozen preflight**
+**Hard-waist cross-simulator controller audit**
 
-Fresh official BFM0, 512 matched Phase resets, 51 steps:
+153 valid no-contact one-step samples from a 163-probe bank were compared to
+official BFM0 IsaacSim. A uses the authoritative target with the old HUSKY
+actuator. B is the production candidate with hard-waist target and actuator.
+C uses the same contract with BFM-like `0.005*4` timing for diagnosis only.
+
+| Condition | Target RMSE | dq RMSE | dqdot RMSE | Torque RMSE | Torque cosine | Torque sign mismatch |
+|---|---:|---:|---:|---:|---:|---:|
+| A: target only, `0.002*10` | 0 | 0.014618 | 0.971811 | 4.944166 | 0.918275 | 10.742% |
+| B: full hard-waist, `0.002*10` | 0 | 0.011599 | 0.789074 | 2.528767 | 0.974374 | 8.696% |
+| C: full hard-waist, `0.005*4` | 0 | 0.017378 | 0.578783 | 2.727654 | 0.968554 | 9.776% |
+
+**Caption.** `dq` and `dqdot` are one-control-step changes in joint position
+(rad) and velocity (rad/s); torque is generalized joint torque (N m). RMSE is
+computed over probes and 23 shared joints; lower is better. Cosine compares
+the torque-vector direction, where higher is better. Sign mismatch is the
+fraction of torque components with opposite sign, where lower is better.
+All conditions use exact target RMSE zero; B is the only production candidate.
+
+| B vs A group | dq RMSE improvement | dqdot RMSE improvement | Torque RMSE improvement |
+|---|---:|---:|---:|
+| all joints | 20.65% | 18.80% | 48.85% |
+| hip | 22.40% | 43.94% | 54.58% |
+| waist | 81.19% | 82.36% | 59.96% |
+| ankle | 0.03% | 0.18% | 0.12% |
+| arm | 61.16% | 57.52% | 26.90% |
+
+**Caption.** Improvement is `(A RMSE - B RMSE) / A RMSE`. Positive values
+mean B is closer to official IsaacSim. The strong hip and waist improvement
+supports restoring the hard-waist actuator contract; it does not prove that
+all remaining simulator or plant differences are resolved.
+
+**Post-alignment frozen preflight (pre-D2.7)**
+
+Fresh official BFM0, 512 matched Phase resets, 51 steps, before the D2.7
+hard-waist restoration:
 
 | Metric | Formal aligned/mixed | Pure random |
 |---|---:|---:|
@@ -406,8 +419,9 @@ better; `L2` is Euclidean distance between normalized action vectors, where
 lower is better. Counts are reset contexts, and these first-action metrics do
 not establish closed-loop success.
 
-**Conclusion.** Structural status is `PASS`; behavioral status is
-`BEHAVIORAL_DIAGNOSTIC_REQUIRED`.
+**Conclusion.** Hard-waist controller restoration is structurally and
+one-step-response validated. No post-restoration P0 or training run has been
+performed, so closed-loop Skate behavior remains unverified.
 
 ### Verified and Unverified Conclusions
 
@@ -420,19 +434,20 @@ Verified:
 - [x] Checkpoints reload with model, optimizer, and normalizer state.
 - [x] The 100k trained checkpoints are less stable than official BFM0 under
   matched frozen evaluation.
-- [x] Source physics, robot-board state, active action subspace, and current
+- [x] Source physics, robot-board state, active action subspace, and pre-D2.7
   P0 structural contracts pass.
-- [x] Source action timing, HUSKY target reconstruction, BFM target
-  reconstruction, and exact/projected coverage were experimentally checked.
-- [x] The final production action rule is recorded as exact affine translation
-  plus explicit projected fallback.
+- [x] Source action timing, target reconstruction, and authoritative
+  exact/projected coverage were experimentally checked.
+- [x] The official hard-waist target and 23-actuator PD/effort contract are
+  restored and improve one-step response over target-only correction.
 - [x] The P0 check made zero training/update/backward/optimizer calls and did
   not change model, normalizer, or buffer hashes.
 
 Unverified:
 
 - [ ] Tracking z materially improves frozen official BFM0.
-- [ ] Hip-pitch and observation semantics are fully resolved.
+- [ ] Remaining IsaacSim/MuJoCo plant differences and observation asymmetry
+  are fully resolved.
 - [ ] A single action translation reproduces every source physical target.
 - [ ] The projected source action is a valid universal BFM expert action.
 - [ ] A post-alignment retraining improves policy survival.
@@ -447,3 +462,15 @@ Unverified:
 
 Available dataset QC videos remain under the Phase and Continuous Hugging Face
 directories. Missing training evidence is not reconstructed from smoke output.
+
+## Experiment 4 (Planned): BFB/RFB Dynamics-Conditioned Training
+
+No BFB/RFB implementation or training result has been produced. The planned
+comparison is: current post-alignment FB-CPR-Aux baseline, baseline plus BFB
+dynamics context, and baseline plus BFB/RFB latent sampling. Planned metrics
+are held-out next-state prediction error, survival, fall rate, horizon
+completion, board retention, phase-conditioned success, latent coverage, and
+action saturation.
+
+**Caption.** This section records planned result fields only. It contains no
+measured values and must not be interpreted as completed training.
