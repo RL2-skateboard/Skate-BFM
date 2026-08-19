@@ -30,16 +30,18 @@ from skate_husky import randomize_husky_play_physics
 from train_skate_bfm import (
     AlignedSkateTrackingContext,
     EXPERT_DATASETS,
+    encode_target,
+    load_expert,
+    load_frozen_agent,
+)
+from train_runner import (
     OFFICIAL_BFM0_SHA256,
     checkpoint_model_path,
-    encode_target,
     hash_buffers,
     hash_components,
     hash_data,
     hash_file,
     hash_params,
-    load_expert,
-    load_frozen_agent,
     load_source_rollout,
     resolve_source_rollout_path,
 )

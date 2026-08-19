@@ -9,6 +9,7 @@ implementation.
 
 ```text
 scripts/train_skate_bfm.py                 formal BFM0 + HUSKY training
+scripts/train_runner.py                    shared runtime/checkpoint integrity
 scripts/evaluator.py                       frozen checkpoint rollout/evaluation
 scripts/data_collection/rollout_split.py   raw HUSKY rollout collection
 scripts/data_collection/convert_phase.py   phase MotionLib conversion and QC

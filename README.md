@@ -215,8 +215,9 @@ through `--mode fixed-target`.
 ## Layout
 
 ```text
-train/scripts/train_skate_bfm.py  M2.5b training entrypoint
-train/scripts/evaluator.py        frozen rollout and fixed-target evaluator
+train/scripts/train_skate_bfm.py  formal training entrypoint
+train/scripts/train_runner.py     shared runtime and checkpoint integrity
+train/scripts/evaluator.py         frozen rollout and fixed-target evaluator
 train/scripts/data_collection/    HUSKY expert-motion conversion
 train/scripts/isaac_env/          vendored BFM-Zero runtime
 train/dataset/base/               official Base/LAFAN training motion
