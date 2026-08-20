@@ -14,6 +14,7 @@ import copy
 import json
 import joblib
 import os
+import subprocess
 import sys
 from collections import Counter
 from datetime import datetime
@@ -502,6 +503,9 @@ class SkateRolloutContext:
             "free_transitions": 0,
             "post_tracking_free_transitions": 0,
         }
+        self.z_norm_sum = 0.0
+        self.z_norm_count = 0
+        self.z_norm_max = 0.0
         self.tracking_lengths: list[int] = []
 
     def reset(self, env_index: int, tracking: torch.Tensor | None) -> None:
@@ -557,7 +561,12 @@ class SkateRolloutContext:
                 self.counters["free_transitions"] += 1
                 if self.had_tracking[index] and tracking is not None:
                     self.counters["post_tracking_free_transitions"] += 1
-        return torch.stack(effective)
+        batch = torch.stack(effective)
+        norms = torch.linalg.vector_norm(batch, dim=1)
+        self.z_norm_sum += float(norms.sum().item())
+        self.z_norm_count += int(norms.numel())
+        self.z_norm_max = max(self.z_norm_max, float(norms.max().item()))
+        return batch
 
     def report(self) -> dict[str, Any]:
         lengths = np.asarray(self.tracking_lengths, dtype=np.float64)
@@ -586,6 +595,18 @@ class SkateRolloutContext:
             "realized_tracking_transition_ratio": (
                 self.counters["tracking_transitions"] / total if total else 0.0
             ),
+            "z_norm": {
+                "mean": (
+                    self.z_norm_sum / self.z_norm_count
+                    if self.z_norm_count else None
+                ),
+                "max": self.z_norm_max if self.z_norm_count else None,
+                "count": self.z_norm_count,
+            },
+            "z_buffer": {
+                "occupancy": len(self.agent.z_buffer),
+                "capacity": self.agent.cfg.train.z_buffer_size,
+            },
         }
 
 
@@ -628,6 +649,10 @@ class Workspace:
 
     def __init__(self, cfg: TrainConfig) -> None:
         self.cfg = cfg
+        self.run_started_at = datetime.now().isoformat(timespec="seconds")
+        self.git_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True
+        ).strip()
         self.work_dir = Path(cfg.work_dir).expanduser().resolve()
         if (self.work_dir / "summary.json").exists() or (self.work_dir / CHECKPOINT_DIR_NAME).exists():
             raise RuntimeError("Formal Skate-BFM requires a fresh SKATE_WORK_DIR.")
@@ -670,6 +695,9 @@ class Workspace:
                 "source_raw_npz",
                 "source_start_frame",
                 "source_end_frame",
+                "source_round",
+                "source_rollout",
+                "source_episode",
                 "physics_seed",
                 "dof",
             )
@@ -680,12 +708,17 @@ class Workspace:
                 "source_start_frame": int(record["source_start_frame"]),
                 "source_end_frame": int(record["source_end_frame"]),
                 "motion_frames": int(np.asarray(record["dof"]).shape[0]),
-                "source_round": record.get("source_round"),
-                "source_rollout": record.get("source_rollout"),
+                "source_round": record["source_round"],
+                "source_rollout": record["source_rollout"],
+                "source_episode": record["source_episode"],
                 "command_v": record.get("command_v"),
                 "command_h": record.get("command_h"),
-                "physics_seed": record.get("physics_seed"),
+                "physics_seed": int(record["physics_seed"]),
             }
+        self.dataset_report["source_rollout_count"] = len({
+            (str(record["source_round"]), str(record["source_rollout"]))
+            for record in loaded_records.values()
+        })
         del loaded_records, record
         self.reset_motion_keys = tuple(self.reset_records)
         self.reset_rng = np.random.default_rng(cfg.seed)
@@ -737,7 +770,16 @@ class Workspace:
             int(self.reset_rng.integers(len(self.reset_motion_keys)))
         ]
         record = self.reset_records[motion_key]
-        required = ("source_raw_npz", "source_start_frame", "source_end_frame", "motion_frames")
+        required = (
+            "source_raw_npz",
+            "source_start_frame",
+            "source_end_frame",
+            "source_round",
+            "source_rollout",
+            "source_episode",
+            "physics_seed",
+            "motion_frames",
+        )
         if any(field not in record for field in required):
             raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
         motion_frames = int(record["motion_frames"])
@@ -764,11 +806,12 @@ class Workspace:
             "local_frame": local_frame,
             "source_raw_npz": str(source_path),
             "source_frame": source_frame,
-            "source_round": record.get("source_round"),
-            "source_rollout": record.get("source_rollout"),
+            "source_round": record["source_round"],
+            "source_rollout": record["source_rollout"],
+            "source_episode": record["source_episode"],
             "command_v": record.get("command_v"),
             "command_h": record.get("command_h"),
-            "physics_seed": record.get("physics_seed"),
+            "physics_seed": int(record["physics_seed"]),
             "source_physics_aligned": True,
         }
 
@@ -927,6 +970,8 @@ class Workspace:
             "model_sha256": hash_file(checkpoint_dir / "model" / "model.safetensors"),
             "reload": "PASS",
             "optimizer_step": self.agent_update_calls,
+            "optimizer_present": (checkpoint_dir / "optimizers.pth").is_file(),
+            "normalizer_present": (checkpoint_dir / "model" / "model.safetensors").is_file(),
         }
 
     def train(self) -> dict[str, Any]:
@@ -998,6 +1043,7 @@ class Workspace:
         start = 1
         episodes = 0
         falls = 0
+        termination_reasons: Counter[str] = Counter()
         progress = tqdm(
             total=self.cfg.skate_max_steps,
             desc="M2.6 training",
@@ -1033,6 +1079,13 @@ class Workspace:
                     if transition.terminated or transition.truncated:
                         episodes += 1
                         falls += int(transition.terminated)
+                        if transition.terminated:
+                            reason = str(
+                                transition.raw_metadata.get("fall_reason", "")
+                            ).strip() or "unknown"
+                            termination_reasons[reason] += 1
+                        else:
+                            termination_reasons["truncated"] += 1
                         observations[index] = self._reset_online_env(index)
                         episode_steps[index] = 0
                         reset_counts[index] += 1
@@ -1145,6 +1198,20 @@ class Workspace:
 
         summary = {
             "milestone": "M2.6 Formal Skate-BFM Training",
+            "run_provenance": {
+                "run_name": self.work_dir.name,
+                "started_at": self.run_started_at,
+                "git_head": self.git_head,
+                "seed": self.cfg.seed,
+                "num_envs": self.cfg.online_envs,
+                "device": str(self.agent.device),
+                "work_dir": str(self.work_dir),
+                "checkpoint_dir": str(Path(self.cfg.checkpoint_dir).expanduser().resolve()),
+                "fresh_restart": True,
+                "resumed": False,
+                "val_used_for_training": False,
+                "test_used_for_training": False,
+            },
             "dataset": self.dataset_report,
             "checkpoint": self.agent.pretrained_load_report,
             "training": {
@@ -1168,6 +1235,13 @@ class Workspace:
                 "total_resets": sum(reset_counts),
                 "uniform_motion_uniform_local_frame": True,
             },
+            "episodes": {
+                "episodes": episodes,
+                "resets": sum(reset_counts),
+                "falls": falls,
+                "truncations": int(truncated.sum()),
+                "termination_reason_counts": dict(sorted(termination_reasons.items())),
+            },
             "rollout_latent": self.rollout_context.report(),
             "replay": {
                 "capacity": self.cfg.buffer_size,
@@ -1176,6 +1250,7 @@ class Workspace:
                 "terminated_count": int(terminated.sum()),
                 "truncated_count": int(truncated.sum()),
                 "normal_count": int((~(terminated | truncated)).sum()),
+                "termination_reason_counts": dict(sorted(termination_reasons.items())),
             },
             "expert": {
                 "base_skate_ratio": [0.5, 0.5],
@@ -1194,8 +1269,28 @@ class Workspace:
             "performance_evaluated": False,
             "next_milestone": "M2.6 Formal Phase/Continuous 100k Training",
         }
-        (self.work_dir / "summary.json").write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n"
+        summary_text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
+        (self.work_dir / "summary.json").write_text(summary_text)
+        (self.work_dir / "training_summary.json").write_text(summary_text)
+        (self.work_dir / "training_summary.md").write_text(
+            "\n".join(
+                (
+                    "# Skate-BFM Training Summary",
+                    "",
+                    f"- Run: `{self.work_dir.name}`",
+                    f"- Git HEAD: `{self.git_head}`",
+                    f"- Dataset: `{dataset['kind']}` ({dataset['motion_count']} motions, "
+                    f"{dataset['source_rollout_count']} source rollouts)",
+                    f"- Transitions: `{self.cfg.skate_max_steps}`",
+                    f"- Update blocks / native updates: `{len(update_steps)}` / `{expected_updates}`",
+                    f"- Checkpoints: `{', '.join(map(str, checkpoint_steps))}`",
+                    f"- Replay: `{len(replay['train'])}`; train aliases train_skate: "
+                    f"`{replay['train'] is replay['train_skate']}`",
+                    f"- Falls / truncations: `{int(terminated.sum())}` / `{int(truncated.sum())}`",
+                    f"- Evaluation during training: `NO` (Val/Test not used)",
+                    "",
+                )
+            )
         )
         print(
             "Formal Skate-BFM complete: "
