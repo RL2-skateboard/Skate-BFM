@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import random
 import sys
+from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
@@ -62,6 +64,24 @@ METRIC_NAMES = (
     "root_height_min_m",
     "root_tilt_max_deg",
     "episode_duration_s",
+    "robot_board_separation_initial_m",
+    "robot_board_separation_final_m",
+    "robot_board_separation_mean_m",
+    "robot_board_separation_max_m",
+    "robot_board_separation_delta_m",
+    "board_tilt_initial_deg",
+    "board_tilt_final_deg",
+    "board_tilt_mean_deg",
+    "board_tilt_max_deg",
+    "feet_on_board_ratio",
+    "illegal_contact_ratio",
+    "action_soft_saturation_fraction",
+    "action_hard_saturation_fraction",
+    "torque_utilization_mean",
+    "torque_utilization_p95",
+    "torque_utilization_p99",
+    "torque_utilization_max",
+    "torque_utilization_ge_0_95_fraction",
 )
 
 
@@ -69,7 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("rollout", "fixed-target"),
+        choices=("rollout", "fixed-target", "motion-reference"),
         default="rollout",
         help="Evaluate one formal checkpoint or run the historical fixed-target protocol.",
     )
@@ -141,7 +161,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-10k",
         type=Path,
-        help="M2.5b checkpoint saved after 10,000 transitions.",
+        help="M2.6-T1 checkpoint saved after 10,000 transitions.",
     )
     parser.add_argument(
         "--checkpoint-20k",
@@ -152,6 +172,18 @@ def parse_args() -> argparse.Namespace:
         "--training-summary",
         type=Path,
         help="Optional M2.5b training summary to update after inference-only evaluation.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=("val", "test"),
+        default="val",
+        help="Explicit held-out MotionLibrary split for mode=motion-reference.",
+    )
+    parser.add_argument(
+        "--video-dir",
+        type=Path,
+        default=Path("/tmp/m26_t1e_v_videos"),
+        help="Directory for motion-reference diagnostic MP4 files.",
     )
     return parser.parse_args()
 
@@ -425,12 +457,153 @@ def board_yaw(quaternion: np.ndarray) -> float:
     )
 
 
+def board_tilt_deg(quaternion: np.ndarray) -> float:
+    """Return world-up tilt from a normalized MuJoCo wxyz quaternion."""
+
+    quaternion = np.asarray(quaternion, dtype=np.float64)
+    if quaternion.shape != (4,) or not np.isfinite(quaternion).all():
+        raise RuntimeError("Board quaternion must be finite wxyz.")
+    norm = float(np.linalg.norm(quaternion))
+    if norm <= 1e-12:
+        raise RuntimeError("Board quaternion has zero norm.")
+    w, x, y, z = quaternion / norm
+    up_dot_world_up = 1.0 - 2.0 * (x * x + y * y)
+    return float(np.degrees(np.arccos(np.clip(up_dot_world_up, -1.0, 1.0))))
+
+
+class ControlDiagnostics:
+    """Aggregate actual HUSKY command and generalized-torque usage per rollout."""
+
+    _GROUPS = ("waist", "hip", "ankle")
+
+    def __init__(self, env: HuskyBfmOnlineEnv) -> None:
+        report = env.env.physical_actuator_report
+        if len(report) != env.env.robot_action_dim:
+            raise RuntimeError("Physical actuator report must contain exactly 23 entries.")
+        self.names: tuple[str, ...] = tuple(
+            str(item["joint_name"]).removeprefix("robot/") for item in report
+        )
+        if len(set(self.names)) != len(self.names):
+            raise RuntimeError("Physical actuator joint names must be unique.")
+        limits = np.asarray(
+            [item["derived_joint_torque_limit"] for item in report],
+            dtype=np.float64,
+        )
+        if limits.shape != (env.env.robot_action_dim,) or not np.isfinite(limits).all():
+            raise RuntimeError("Physical actuator torque limits must be finite 23D.")
+        if (limits <= 0.0).any():
+            raise RuntimeError("Physical actuator torque limits must be positive.")
+
+        dof_addresses = []
+        for index, item in enumerate(report):
+            actuator_name = str(item["actuator_name"])
+            joint_name = str(item["joint_name"])
+            actuator = env.env.model.actuator(index)
+            joint = env.env.model.joint(int(env.env.model.actuator_trnid[index, 0]))
+            if actuator.name != actuator_name or joint.name != joint_name:
+                raise RuntimeError("Physical actuator report order does not match MuJoCo.")
+            dof_addresses.append(int(joint.dofadr[0]))
+        if len(set(dof_addresses)) != env.env.robot_action_dim:
+            raise RuntimeError("Physical actuator report lacks one-to-one joint DoFs.")
+
+        self.limits = limits
+        self.dof_addresses = np.asarray(dof_addresses, dtype=np.int32)
+        self.group_indices = {
+            group: np.asarray(
+                [index for index, name in enumerate(self.names) if group in name],
+                dtype=np.int32,
+            )
+            for group in self._GROUPS
+        }
+        if any(indices.size == 0 for indices in self.group_indices.values()):
+            raise RuntimeError("HUSKY actuator groups waist, hip, and ankle are required.")
+        self.action_elements = 0
+        self.action_soft = 0
+        self.action_hard = 0
+        self.group_action = {
+            group: {"elements": 0, "soft": 0, "hard": 0}
+            for group in self._GROUPS
+        }
+        self.torque_utilization: list[np.ndarray] = []
+        self.group_torque_utilization = {
+            group: [] for group in self._GROUPS
+        }
+
+    def update(self, action_husky: torch.Tensor, qfrc_actuator: np.ndarray) -> None:
+        action = np.asarray(action_husky.detach().cpu(), dtype=np.float64)
+        torque = np.asarray(qfrc_actuator, dtype=np.float64)[self.dof_addresses]
+        if action.shape != self.limits.shape or torque.shape != self.limits.shape:
+            raise RuntimeError("Action or actuator torque shape does not match 23D HUSKY.")
+        if not np.isfinite(action).all() or not np.isfinite(torque).all():
+            raise RuntimeError("Action and actuator torque diagnostics must be finite.")
+        action_abs = np.abs(action)
+        utilization = np.abs(torque) / self.limits
+        self.action_elements += action.size
+        self.action_soft += int(np.count_nonzero(action_abs >= 0.95))
+        self.action_hard += int(np.count_nonzero(action_abs >= 0.99))
+        self.torque_utilization.append(utilization)
+        for group, indices in self.group_indices.items():
+            grouped_action = action_abs[indices]
+            group_counts = self.group_action[group]
+            group_counts["elements"] += grouped_action.size
+            group_counts["soft"] += int(np.count_nonzero(grouped_action >= 0.95))
+            group_counts["hard"] += int(np.count_nonzero(grouped_action >= 0.99))
+            self.group_torque_utilization[group].append(utilization[indices])
+
+    @staticmethod
+    def _fraction(numerator: int, denominator: int) -> float:
+        if denominator <= 0:
+            raise RuntimeError("Control diagnostics require at least one action.")
+        return float(numerator / denominator)
+
+    def summary(self) -> dict[str, Any]:
+        if not self.torque_utilization:
+            raise RuntimeError("Control diagnostics require at least one transition.")
+        utilization = np.concatenate(self.torque_utilization)
+        result: dict[str, Any] = {
+            "actuator_joint_names": list(self.names),
+            "action_soft_saturation_fraction": self._fraction(
+                self.action_soft, self.action_elements
+            ),
+            "action_hard_saturation_fraction": self._fraction(
+                self.action_hard, self.action_elements
+            ),
+            "torque_utilization_mean": float(utilization.mean()),
+            "torque_utilization_p95": float(np.quantile(utilization, 0.95)),
+            "torque_utilization_p99": float(np.quantile(utilization, 0.99)),
+            "torque_utilization_max": float(utilization.max()),
+            "torque_utilization_ge_0_95_fraction": float(
+                np.mean(utilization >= 0.95)
+            ),
+            "groups": {},
+        }
+        for group, values in self.group_torque_utilization.items():
+            group_utilization = np.concatenate(values)
+            action = self.group_action[group]
+            result["groups"][group] = {
+                "joint_names": [self.names[index] for index in self.group_indices[group]],
+                "action_soft_saturation_fraction": self._fraction(
+                    action["soft"], action["elements"]
+                ),
+                "action_hard_saturation_fraction": self._fraction(
+                    action["hard"], action["elements"]
+                ),
+                "torque_utilization_p95": float(np.quantile(group_utilization, 0.95)),
+                "torque_utilization_p99": float(np.quantile(group_utilization, 0.99)),
+                "torque_utilization_ge_0_95_fraction": float(
+                    np.mean(group_utilization >= 0.95)
+                ),
+            }
+        return result
+
+
 def physical_metrics(
     records: list[dict[str, Any]],
     initial_raw: dict[str, Any],
     control_dt: float,
 ) -> dict[str, float]:
     initial_board_position = np.asarray(initial_raw["board_position"], dtype=float)
+    initial_root_position = np.asarray(initial_raw["root_position"], dtype=float)
     initial_board_yaw = board_yaw(initial_raw["board_quaternion"])
     forward_axis = np.asarray(
         [math.cos(initial_board_yaw), math.sin(initial_board_yaw)]
@@ -462,6 +635,22 @@ def physical_metrics(
     root_heights = np.asarray([item["root_height"] for item in records])
     gravity = np.asarray([item["projected_gravity"] for item in records])
     root_tilt = np.degrees(np.arccos(np.clip(-gravity[:, 2], -1.0, 1.0)))
+    root_positions = np.asarray([item["root_position"] for item in records], dtype=float)
+    separations = np.linalg.norm(root_positions[:, :2] - board_positions[:, :2], axis=1)
+    initial_separation = float(
+        np.linalg.norm(initial_root_position[:2] - initial_board_position[:2])
+    )
+    board_tilts = np.asarray(
+        [board_tilt_deg(item["board_quaternion"]) for item in records],
+        dtype=float,
+    )
+    initial_board_tilt = board_tilt_deg(initial_raw["board_quaternion"])
+    feet_on_board = np.asarray(
+        [bool(item["feet_on_board"]) for item in records], dtype=bool
+    )
+    illegal_contact = np.asarray(
+        [bool(item["illegal_contact"]) for item in records], dtype=bool
+    )
     return {
         "board_forward_displacement_m": float(displacement[:2] @ forward_axis),
         "board_forward_velocity_mean_mps": float(forward_velocity.mean()),
@@ -478,6 +667,17 @@ def physical_metrics(
         "root_height_min_m": float(root_heights.min()),
         "root_tilt_max_deg": float(root_tilt.max()),
         "episode_duration_s": float(len(records) * control_dt),
+        "robot_board_separation_initial_m": initial_separation,
+        "robot_board_separation_final_m": float(separations[-1]),
+        "robot_board_separation_mean_m": float(separations.mean()),
+        "robot_board_separation_max_m": float(separations.max()),
+        "robot_board_separation_delta_m": float(separations[-1] - initial_separation),
+        "board_tilt_initial_deg": initial_board_tilt,
+        "board_tilt_final_deg": float(board_tilts[-1]),
+        "board_tilt_mean_deg": float(board_tilts.mean()),
+        "board_tilt_max_deg": float(board_tilts.max()),
+        "feet_on_board_ratio": float(feet_on_board.mean()),
+        "illegal_contact_ratio": float(illegal_contact.mean()),
     }
 
 
@@ -587,6 +787,7 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
             )
             initial_raw = env.env._observation()
             records: list[dict[str, Any]] = []
+            control_diagnostics = ControlDiagnostics(env)
             latent_fingerprints: list[str] = []
             terminated = False
             truncated = False
@@ -632,6 +833,10 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                     z,
                     truncated=step == args.horizon - 1,
                 )
+                control_diagnostics.update(
+                    transition.action_husky,
+                    env.env.data.qfrc_actuator,
+                )
                 records.append(dict(transition.raw_metadata))
                 observation = transition.next_observation
                 terminated = transition.terminated
@@ -647,6 +852,21 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                     break
                 raise RuntimeError("Frozen rollout produced no transitions.")
             metrics = physical_metrics(records, initial_raw, env.env.control_dt)
+            diagnostics = control_diagnostics.summary()
+            metrics.update(
+                {
+                    name: float(diagnostics[name])
+                    for name in (
+                        "action_soft_saturation_fraction",
+                        "action_hard_saturation_fraction",
+                        "torque_utilization_mean",
+                        "torque_utilization_p95",
+                        "torque_utilization_p99",
+                        "torque_utilization_max",
+                        "torque_utilization_ge_0_95_fraction",
+                    )
+                }
+            )
             row = {
                 "episode_index": episode_index,
                 "episode_seed": args.seed + episode_index,
@@ -682,6 +902,10 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                     ),
                 },
                 "metrics": metrics,
+                "control_diagnostics": {
+                    "actuator_joint_names": diagnostics["actuator_joint_names"],
+                    "groups": diagnostics["groups"],
+                },
             }
             rollouts.append(row)
             progress.update()
@@ -809,6 +1033,854 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
     print(f"Metrics: {output_path}")
     if video_path is not None:
         print(f"Video: {video_path}")
+    return 0
+
+
+REFERENCE_METRICS = (
+    "joint_position_mae_rad",
+    "joint_velocity_mae_rad_s",
+    "root_xy_displacement_error_m",
+    "root_z_error_m",
+    "root_orientation_geodesic_error_deg",
+    "board_xy_displacement_error_m",
+    "board_orientation_geodesic_error_deg",
+    "board_linear_velocity_error_mps",
+    "board_angular_velocity_error_rad_s",
+    "board_heading_error_deg",
+    "board_tilt_error_deg",
+    "coupling_xy_error_m",
+    "coupling_z_error_m",
+)
+
+
+def quaternion_geodesic_deg(actual: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    actual = np.asarray(actual, dtype=np.float64)
+    reference = np.asarray(reference, dtype=np.float64)
+    actual /= np.linalg.norm(actual, axis=-1, keepdims=True)
+    reference /= np.linalg.norm(reference, axis=-1, keepdims=True)
+    dot = np.clip(np.abs(np.sum(actual * reference, axis=-1)), 0.0, 1.0)
+    return np.degrees(2.0 * np.arccos(dot))
+
+
+def wrapped_angle_deg(actual: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    return np.degrees(np.abs(np.angle(np.exp(1j * (actual - reference)))))
+
+
+def summarize_values(values: np.ndarray) -> dict[str, float]:
+    values = np.asarray(values, dtype=np.float64)
+    if values.size == 0 or not np.isfinite(values).all():
+        raise RuntimeError("Reference metrics must be finite and non-empty.")
+    return {
+        "mean": float(values.mean()),
+        "median": float(np.median(values)),
+        "p95": float(np.quantile(values, 0.95)),
+        "max": float(values.max()),
+        "rmse": float(np.sqrt(np.mean(values * values))),
+    }
+
+
+class ReferenceSourceResolver:
+    """Resolve one held-out split without searching across dataset roots."""
+
+    def __init__(self, split: str) -> None:
+        metadata_split = {"val": "validation", "test": "test"}[split]
+        self.split = split
+        self.metadata_split = metadata_split
+        self.raw_root = (
+            REPOSITORY_ROOT / "train/dataset/sim_collected" / split / "raw"
+        ).resolve()
+        if not self.raw_root.is_dir():
+            raise FileNotFoundError(f"Reference raw root not found: {self.raw_root}")
+        self.cache: dict[Path, tuple[dict[str, np.ndarray], dict[str, Any]]] = {}
+
+    def load(self, record: Mapping[str, Any]) -> tuple[dict[str, np.ndarray], dict[str, Any], Path]:
+        required = (
+            "source_round",
+            "source_rollout",
+            "source_episode",
+            "source_start_frame",
+            "source_end_frame",
+            "physics_seed",
+            "dataset_split",
+        )
+        if any(name not in record for name in required):
+            raise RuntimeError("Reference MotionLibrary record lacks provenance.")
+        if record["dataset_split"] != self.metadata_split:
+            raise RuntimeError(
+                f"MotionLibrary record split={record['dataset_split']!r}, "
+                f"expected {self.metadata_split!r}."
+            )
+        round_id = str(record["source_round"]).zfill(3)
+        rollout_id = str(record["source_rollout"]).zfill(3)
+        rollout_root = self.raw_root / f"round_{round_id}" / f"rollout_{rollout_id}" / "raw_rollout"
+        matches = sorted(rollout_root.glob("*.npz"))
+        if len(matches) != 1:
+            raise RuntimeError(f"Expected one canonical raw NPZ under {rollout_root}.")
+        source_path = matches[0].resolve()
+        recorded_name = Path(str(record["source_raw_npz"])).name
+        if source_path.name != recorded_name:
+            raise RuntimeError("MotionLibrary raw filename does not match split resolver.")
+        if source_path not in self.cache:
+            metadata_path = source_path.with_suffix(".json")
+            metadata = json.loads(metadata_path.read_text())
+            expected = {
+                "dataset_split": self.metadata_split,
+                "round_id": round_id,
+                "rollout_id": rollout_id,
+                "episode_id": str(record["source_episode"]),
+            }
+            actual = {name: str(metadata.get(name, "")) for name in expected}
+            if actual != expected:
+                raise RuntimeError(f"Raw metadata provenance mismatch: {actual} != {expected}")
+            source_physics = metadata.get("physics_randomization")
+            if not isinstance(source_physics, dict):
+                raise RuntimeError("Reference raw metadata lacks source physics.")
+            if int(source_physics.get("seed", -1)) != int(record["physics_seed"]):
+                raise RuntimeError("Reference physics seed mismatch.")
+            with np.load(source_path, allow_pickle=False) as archive:
+                state = {
+                    name: np.asarray(archive[name]).copy()
+                    for name in (
+                        "qpos",
+                        "qvel",
+                        "frame_idx",
+                        "root_pos",
+                        "root_quat",
+                        "dof_pos",
+                        "dof_vel",
+                        "board_root_pos",
+                        "board_root_quat",
+                        "board_root_lin_vel",
+                        "board_root_ang_vel",
+                    )
+                }
+            count = state["qpos"].shape[0]
+            if (
+                state["qpos"].ndim != 2
+                or state["qvel"].ndim != 2
+                or any(value.shape[0] != count for value in state.values())
+                or not all(np.isfinite(value).all() for value in state.values())
+            ):
+                raise RuntimeError("Reference raw rollout is malformed.")
+            self.cache[source_path] = (state, copy.deepcopy(metadata))
+        state, metadata = self.cache[source_path]
+        return state, metadata, source_path
+
+
+def reference_dataset_paths(split: str, dataset: str) -> tuple[Path, Path]:
+    root = REPOSITORY_ROOT / "train/dataset/sim_collected" / split / dataset
+    return (
+        root / "motion_library" / f"skate_expert_{dataset}.pkl",
+        root / "motion_library" / "manifest.json",
+    )
+
+
+def load_reference_records(
+    split: str,
+    dataset: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any], Path, Path]:
+    motion_path, manifest_path = reference_dataset_paths(split, dataset)
+    if not motion_path.is_file() or not manifest_path.is_file():
+        raise FileNotFoundError(f"Reference {split}/{dataset} MotionLibrary is missing.")
+    manifest = json.loads(manifest_path.read_text())
+    expected_split = {"val": "validation", "test": "test"}[split]
+    if manifest.get("dataset_split") != expected_split:
+        raise RuntimeError("Reference manifest split mismatch.")
+    records = joblib.load(motion_path, mmap_mode="r")
+    if not isinstance(records, dict) or not records:
+        raise RuntimeError("Reference MotionLibrary must be a non-empty mapping.")
+    if dataset == "phase":
+        labels = {record.get("phase_label") for record in records.values()}
+        if not labels <= {"push", "push2steer", "steer_left", "steer_forward", "steer_right", "steer2push"}:
+            raise RuntimeError("Phase MotionLibrary has invalid phase labels.")
+    return {str(key): value for key, value in records.items()}, manifest, motion_path, manifest_path
+
+
+def reference_metric_summary(
+    actual: list[dict[str, Any]],
+    raw: Mapping[str, np.ndarray],
+    source_start: int,
+) -> dict[str, dict[str, float]]:
+    steps = len(actual)
+    reference = slice(source_start + 1, source_start + steps + 1)
+    if source_start < 0 or source_start + steps >= raw["qpos"].shape[0]:
+        raise RuntimeError("Reference transition slice is outside canonical raw trajectory.")
+    initial = source_start
+    actual_joint_pos = np.asarray([row["joint_position"] for row in actual])
+    actual_joint_vel = np.asarray([row["joint_velocity"] for row in actual])
+    actual_root_pos = np.asarray([row["root_position"] for row in actual])
+    actual_root_quat = np.asarray([row["root_quaternion"] for row in actual])
+    actual_board_pos = np.asarray([row["board_position"] for row in actual])
+    actual_board_quat = np.asarray([row["board_quaternion"] for row in actual])
+    actual_board_lin_vel = np.asarray([row["board_linear_velocity"] for row in actual])
+    actual_board_ang_vel = np.asarray([row["board_angular_velocity"] for row in actual])
+    ref_root_pos = raw["root_pos"][reference]
+    ref_board_pos = raw["board_root_pos"][reference]
+    values = {
+        "joint_position_mae_rad": np.mean(np.abs(actual_joint_pos - raw["dof_pos"][reference]), axis=1),
+        "joint_velocity_mae_rad_s": np.mean(np.abs(actual_joint_vel - raw["dof_vel"][reference]), axis=1),
+        "root_xy_displacement_error_m": np.linalg.norm(
+            (actual_root_pos[:, :2] - raw["root_pos"][initial, :2])
+            - (ref_root_pos[:, :2] - raw["root_pos"][initial, :2]),
+            axis=1,
+        ),
+        "root_z_error_m": np.abs(actual_root_pos[:, 2] - ref_root_pos[:, 2]),
+        "root_orientation_geodesic_error_deg": quaternion_geodesic_deg(
+            actual_root_quat, raw["root_quat"][reference]
+        ),
+        "board_xy_displacement_error_m": np.linalg.norm(
+            (actual_board_pos[:, :2] - raw["board_root_pos"][initial, :2])
+            - (ref_board_pos[:, :2] - raw["board_root_pos"][initial, :2]),
+            axis=1,
+        ),
+        "board_orientation_geodesic_error_deg": quaternion_geodesic_deg(
+            actual_board_quat, raw["board_root_quat"][reference]
+        ),
+        "board_linear_velocity_error_mps": np.linalg.norm(
+            actual_board_lin_vel - raw["board_root_lin_vel"][reference], axis=1
+        ),
+        "board_angular_velocity_error_rad_s": np.linalg.norm(
+            actual_board_ang_vel - raw["board_root_ang_vel"][reference], axis=1
+        ),
+        "board_heading_error_deg": wrapped_angle_deg(
+            np.asarray([board_yaw(value) for value in actual_board_quat]),
+            np.asarray([board_yaw(value) for value in raw["board_root_quat"][reference]]),
+        ),
+        "board_tilt_error_deg": np.abs(
+            np.asarray([board_tilt_deg(value) for value in actual_board_quat])
+            - np.asarray([board_tilt_deg(value) for value in raw["board_root_quat"][reference]])
+        ),
+        "coupling_xy_error_m": np.linalg.norm(
+            (actual_root_pos[:, :2] - actual_board_pos[:, :2])
+            - (ref_root_pos[:, :2] - ref_board_pos[:, :2]),
+            axis=1,
+        ),
+        "coupling_z_error_m": np.abs(
+            (actual_root_pos[:, 2] - actual_board_pos[:, 2])
+            - (ref_root_pos[:, 2] - ref_board_pos[:, 2])
+        ),
+    }
+    return {name: summarize_values(value) for name, value in values.items()}
+
+
+def reference_row_metric(row: Mapping[str, Any], name: str) -> float:
+    if name == "completion_ratio":
+        return float(row["completion_ratio"])
+    return float(row["metrics"][name]["mean"])
+
+
+def run_reference_motion(
+    agent: Any,
+    tracking: AlignedSkateTrackingContext,
+    resolver: ReferenceSourceResolver,
+    motion_key: str,
+    record: Mapping[str, Any],
+    *,
+    video_path: Path | None = None,
+) -> dict[str, Any]:
+    raw, metadata, source_path = resolver.load(record)
+    source_start = int(record["source_start_frame"])
+    source_end = int(record["source_end_frame"])
+    trajectory = tracking.trajectories.get(motion_key)
+    if trajectory is None:
+        raise RuntimeError(f"Missing tracking trajectory for {motion_key}.")
+    raw_frames = source_end - source_start
+    if raw_frames != int(np.asarray(record["dof"]).shape[0]):
+        raise RuntimeError("MotionLibrary source frame range is inconsistent.")
+    if trajectory["raw_frames"] != raw_frames:
+        raise RuntimeError("Tracking and MotionLibrary raw frame counts differ.")
+    t_eval = min(raw_frames - 1, trajectory["length"] - 1)
+    if t_eval <= 0:
+        raise RuntimeError("Reference motion has no executable transition.")
+    z, ranges = tracking.encode(agent._model, motion_key, 0, t_eval)
+    if z.shape != (t_eval, 256) or not torch.isfinite(z).all():
+        raise RuntimeError("Tracking latent is not finite [T_eval, 256].")
+    if any(item["future_start"] != step + 1 for step, item in enumerate(ranges)):
+        raise RuntimeError("Tracking future indices are not reset-aligned.")
+
+    env = HuskyBfmOnlineEnv()
+    renderer = writer = None
+    actual: list[dict[str, Any]] = []
+    diagnostics: ControlDiagnostics | None = None
+    terminated = truncated = False
+    try:
+        qpos = np.asarray(raw["qpos"][source_start], dtype=np.float64)
+        qvel = np.asarray(raw["qvel"][source_start], dtype=np.float64)
+        observation = env.reset(
+            qpos=qpos,
+            qvel=qvel,
+            source_physics=metadata["physics_randomization"],
+        )
+        if not (
+            np.allclose(env.env.data.qpos, qpos, atol=1e-8, rtol=0.0)
+            and np.allclose(env.env.data.qvel, qvel, atol=1e-8, rtol=0.0)
+        ):
+            raise RuntimeError("Physical reset does not reproduce canonical raw qpos/qvel.")
+        diagnostics = ControlDiagnostics(env)
+        if video_path is not None:
+            import imageio.v2 as imageio
+
+            video_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = imageio.get_writer(
+                video_path, fps=round(1.0 / env.env.control_dt), macro_block_size=1, codec="libx264"
+            )
+            renderer = mujoco.Renderer(env.env.model, height=720, width=1280)
+            renderer.update_scene(env.env.data, camera="robot/tracking")
+            writer.append_data(renderer.render())
+        for step in range(t_eval):
+            model_observation = {
+                key: value.unsqueeze(0).to(agent.device) for key, value in observation.items()
+            }
+            with torch.no_grad():
+                action = agent.act(obs=model_observation, z=z[step].unsqueeze(0), mean=True)[0]
+            transition = env.step(action, z[step], truncated=step == t_eval - 1)
+            diagnostics.update(transition.action_husky, env.env.data.qfrc_actuator)
+            actual.append(dict(transition.raw_metadata))
+            observation = transition.next_observation
+            terminated, truncated = transition.terminated, transition.truncated
+            if writer is not None:
+                renderer.update_scene(env.env.data, camera="robot/tracking")
+                writer.append_data(renderer.render())
+            if terminated or truncated:
+                break
+    finally:
+        if writer is not None:
+            writer.close()
+        if renderer is not None:
+            renderer.close()
+        env.close()
+    if not actual or diagnostics is None:
+        raise RuntimeError("Reference rollout produced no physical transitions.")
+    executed = len(actual)
+    metric_summary = reference_metric_summary(actual, raw, source_start)
+    control = diagnostics.summary()
+    return {
+        "motion_key": motion_key,
+        "source": {
+            "raw_npz": str(source_path),
+            "round": str(record["source_round"]),
+            "rollout": str(record["source_rollout"]),
+            "episode": str(record["source_episode"]),
+            "physics_seed": int(record["physics_seed"]),
+            "start_frame": source_start,
+            "end_frame": source_end,
+            "metadata_split": metadata["dataset_split"],
+        },
+        "phase_label": record.get("phase_label"),
+        "command_v": float(record["command_v"]),
+        "command_h": float(record["command_h"]),
+        "t_eval": t_eval,
+        "t_exec": executed,
+        "completion_ratio": float(executed / t_eval),
+        "full_completion": bool(executed == t_eval and not terminated),
+        "terminated": terminated,
+        "fall_reason": str(actual[-1].get("fall_reason", "")) if terminated else "",
+        "time_to_fall_s": float(executed * 0.02) if terminated else None,
+        "tracking": {
+            "z_shape": list(z.shape),
+            "z_norm": summarize_values(torch.linalg.vector_norm(z, dim=1).cpu().numpy()),
+            "ranges": ranges,
+            "frame_difference": trajectory["length"] - trajectory["raw_frames"],
+        },
+        "alignment": {
+            "reset_local_frame": 0,
+            "reset_raw_frame": source_start,
+            "actual_next_reference_start": source_start + 1,
+            "actual_next_reference_end": source_start + executed,
+            "raw_frame_idx": [
+                int(value) for value in raw["frame_idx"][source_start + 1 : source_start + min(executed, 5) + 1]
+            ],
+        },
+        "metrics": metric_summary,
+        "control": control,
+        "contact": {
+            "feet_on_board_ratio": float(np.mean([row["feet_on_board"] for row in actual])),
+            "illegal_contact_ratio": float(np.mean([row["illegal_contact"] for row in actual])),
+            "root_tilt_max_deg": float(max(
+                np.degrees(np.arccos(np.clip(-np.asarray(row["projected_gravity"])[2], -1.0, 1.0)))
+                for row in actual
+            )),
+            "board_tilt_max_deg": float(max(board_tilt_deg(row["board_quaternion"]) for row in actual)),
+        },
+        "video_path": str(video_path) if video_path is not None else None,
+    }
+
+
+def checkpoint_mutation(agent: Any) -> dict[str, Any]:
+    return {
+        "parameters": hash_params(agent._model),
+        "buffers": hash_buffers(agent._model),
+        "normalizer": hash_buffers(agent._model._obs_normalizer),
+        "components": hash_components(agent),
+    }
+
+
+def evaluate_reference_dataset(
+    checkpoint_name: str,
+    checkpoint: Path,
+    motion_path: Path,
+    records: Mapping[str, Mapping[str, Any]],
+    resolver: ReferenceSourceResolver,
+) -> dict[str, Any]:
+    agent, load_report = load_frozen_agent(checkpoint)
+    if agent._model.training or any(parameter.requires_grad for parameter in agent._model.parameters()):
+        raise RuntimeError("Reference evaluator requires a frozen eval-mode checkpoint.")
+    before = checkpoint_mutation(agent)
+    tracking = AlignedSkateTrackingContext.load(agent, motion_path)
+    if set(tracking.trajectories) != set(records):
+        raise RuntimeError("Reference tracking and MotionLibrary motion keys differ.")
+    rows = []
+    progress = tqdm(
+        sorted(records),
+        desc=f"{checkpoint_name} reference",
+        unit="motion",
+        dynamic_ncols=True,
+        disable=not sys.stderr.isatty(),
+    )
+    try:
+        for motion_key in progress:
+            row = run_reference_motion(agent, tracking, resolver, motion_key, records[motion_key])
+            rows.append(row)
+            progress.set_postfix(
+                completed=sum(item["full_completion"] for item in rows),
+                falls=sum(item["terminated"] for item in rows),
+                refresh=False,
+            )
+    finally:
+        progress.close()
+    after = checkpoint_mutation(agent)
+    if before != after:
+        raise RuntimeError(f"Frozen model mutated during {checkpoint_name} reference evaluation.")
+    return {
+        "checkpoint_name": checkpoint_name,
+        "checkpoint": str(checkpoint),
+        "checkpoint_model_sha256": hash_file(checkpoint_model_path(checkpoint)),
+        "load_report": load_report,
+        "frame_difference_counts": tracking.frame_difference_counts(),
+        "mutation": {
+            "parameters_changed": False,
+            "buffers_changed": False,
+            "normalizer_changed": False,
+            "optimizer_steps": 0,
+            "backward_calls": 0,
+            "agent_update_calls": 0,
+            "before": before,
+            "after": after,
+        },
+        "rows": rows,
+    }
+
+
+def cluster_bootstrap_delta(
+    fresh_rows: list[dict[str, Any]],
+    trained_rows: list[dict[str, Any]],
+    metric: str,
+    *,
+    seed: int = 4728,
+    repetitions: int = 10_000,
+) -> dict[str, float]:
+    trained = {row["motion_key"]: row for row in trained_rows}
+    pairs = [(row, trained[row["motion_key"]]) for row in fresh_rows]
+    if len(pairs) != len(trained):
+        raise RuntimeError("Paired reference motion keys do not match.")
+    clusters: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
+    for fresh, trained_row in pairs:
+        clusters[(fresh["source"]["round"], fresh["source"]["rollout"])].append((fresh, trained_row))
+    cluster_rows = list(clusters.values())
+    rng = np.random.default_rng(seed)
+    sample_means = np.empty(repetitions, dtype=np.float64)
+    for index in range(repetitions):
+        chosen = rng.integers(len(cluster_rows), size=len(cluster_rows))
+        values = [
+            reference_row_metric(trained_row, metric) - reference_row_metric(fresh, metric)
+            for cluster_index in chosen
+            for fresh, trained_row in cluster_rows[cluster_index]
+        ]
+        sample_means[index] = np.mean(values)
+    observed = np.mean([
+        reference_row_metric(trained_row, metric) - reference_row_metric(fresh, metric)
+        for fresh, trained_row in pairs
+    ])
+    return {
+        "mean_delta_10k_minus_fresh": float(observed),
+        "ci95_low": float(np.quantile(sample_means, 0.025)),
+        "ci95_high": float(np.quantile(sample_means, 0.975)),
+        "clusters": len(cluster_rows),
+        "bootstrap_repetitions": repetitions,
+    }
+
+
+def paired_reference_summary(
+    fresh: Mapping[str, Any],
+    trained: Mapping[str, Any],
+    *,
+    dataset: str,
+) -> dict[str, Any]:
+    fresh_rows = fresh["rows"]
+    trained_rows = trained["rows"]
+    metrics = ("completion_ratio", *REFERENCE_METRICS)
+    comparisons = {
+        name: cluster_bootstrap_delta(fresh_rows, trained_rows, name)
+        for name in metrics
+    }
+    trained_by_key = {row["motion_key"]: row for row in trained_rows}
+    categories = Counter()
+    phase_rows: dict[str, list[str]] = defaultdict(list)
+    per_motion = []
+    for fresh_row in fresh_rows:
+        trained_row = trained_by_key[fresh_row["motion_key"]]
+        fresh_complete = fresh_row["full_completion"]
+        trained_complete = trained_row["full_completion"]
+        category = (
+            "both_complete" if fresh_complete and trained_complete
+            else "fresh_only_complete" if fresh_complete
+            else "10k_only_complete" if trained_complete
+            else "both_incomplete"
+        )
+        categories[category] += 1
+        if dataset == "phase":
+            phase_rows[str(fresh_row["phase_label"])].append(fresh_row["motion_key"])
+        per_motion.append(
+            {
+                "motion_key": fresh_row["motion_key"],
+                "source_round": fresh_row["source"]["round"],
+                "source_rollout": fresh_row["source"]["rollout"],
+                "category": category,
+                "completion_delta_10k_minus_fresh": (
+                    trained_row["completion_ratio"] - fresh_row["completion_ratio"]
+                ),
+                "joint_position_delta_10k_minus_fresh": (
+                    trained_row["metrics"]["joint_position_mae_rad"]["mean"]
+                    - fresh_row["metrics"]["joint_position_mae_rad"]["mean"]
+                ),
+                "board_position_delta_10k_minus_fresh": (
+                    trained_row["metrics"]["board_xy_displacement_error_m"]["mean"]
+                    - fresh_row["metrics"]["board_xy_displacement_error_m"]["mean"]
+                ),
+                "coupling_delta_10k_minus_fresh": (
+                    trained_row["metrics"]["coupling_xy_error_m"]["mean"]
+                    - fresh_row["metrics"]["coupling_xy_error_m"]["mean"]
+                ),
+            }
+        )
+    phase_summary = {}
+    if dataset == "phase":
+        fresh_by_key = {row["motion_key"]: row for row in fresh_rows}
+        for phase, keys in sorted(phase_rows.items()):
+            phase_fresh = [fresh_by_key[key] for key in keys]
+            phase_trained = [trained_by_key[key] for key in keys]
+            phase_summary[phase] = {
+                "motion_count": len(keys),
+                "source_rollout_count": len({
+                    (row["source"]["round"], row["source"]["rollout"]) for row in phase_fresh
+                }),
+                "fresh_completion_mean": float(np.mean([row["completion_ratio"] for row in phase_fresh])),
+                "10k_completion_mean": float(np.mean([row["completion_ratio"] for row in phase_trained])),
+                "fresh_joint_position_mae_rad": float(np.mean([
+                    row["metrics"]["joint_position_mae_rad"]["mean"] for row in phase_fresh
+                ])),
+                "10k_joint_position_mae_rad": float(np.mean([
+                    row["metrics"]["joint_position_mae_rad"]["mean"] for row in phase_trained
+                ])),
+                "fresh_board_xy_displacement_error_m": float(np.mean([
+                    row["metrics"]["board_xy_displacement_error_m"]["mean"] for row in phase_fresh
+                ])),
+                "10k_board_xy_displacement_error_m": float(np.mean([
+                    row["metrics"]["board_xy_displacement_error_m"]["mean"] for row in phase_trained
+                ])),
+                "fresh_coupling_xy_error_m": float(np.mean([
+                    row["metrics"]["coupling_xy_error_m"]["mean"] for row in phase_fresh
+                ])),
+                "10k_coupling_xy_error_m": float(np.mean([
+                    row["metrics"]["coupling_xy_error_m"]["mean"] for row in phase_trained
+                ])),
+            }
+    return {
+        "pair_count": len(per_motion),
+        "pair_categories": dict(categories),
+        "clustered_paired_bootstrap": comparisons,
+        "phase_breakdown": phase_summary,
+        "per_motion": per_motion,
+    }
+
+
+def select_reference_videos(compare: Mapping[str, Any]) -> list[tuple[str, str]]:
+    rows = compare["per_motion"]
+    by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_category[row["category"]].append(row)
+    selection = []
+    if by_category["10k_only_complete"]:
+        selection.append(("10k_improves", min(
+            by_category["10k_only_complete"],
+            key=lambda row: row["joint_position_delta_10k_minus_fresh"],
+        )["motion_key"]))
+    elif rows:
+        selection.append(("10k_improves", min(
+            rows, key=lambda row: (
+                row["joint_position_delta_10k_minus_fresh"]
+                + row["board_position_delta_10k_minus_fresh"]
+                + row["coupling_delta_10k_minus_fresh"]
+            ),
+        )["motion_key"]))
+    if by_category["fresh_only_complete"]:
+        selection.append(("fresh_improves", min(
+            by_category["fresh_only_complete"],
+            key=lambda row: row["completion_delta_10k_minus_fresh"],
+        )["motion_key"]))
+    elif rows:
+        selection.append(("fresh_improves", max(
+            rows, key=lambda row: (
+                row["joint_position_delta_10k_minus_fresh"]
+                + row["board_position_delta_10k_minus_fresh"]
+                + row["coupling_delta_10k_minus_fresh"]
+            ),
+        )["motion_key"]))
+    for category, label in (("both_complete", "both_complete"), ("both_incomplete", "both_fail")):
+        if by_category[category]:
+            selection.append((label, by_category[category][0]["motion_key"]))
+    return selection
+
+
+def reference_decision(phase: Mapping[str, Any], continuous: Mapping[str, Any]) -> str:
+    core = (
+        "joint_position_mae_rad",
+        "board_xy_displacement_error_m",
+        "coupling_xy_error_m",
+    )
+    blocks = [phase["clustered_paired_bootstrap"], continuous["clustered_paired_bootstrap"]]
+    improved = sum(
+        block[name]["ci95_high"] < 0.0
+        for block in blocks
+        for name in core
+    )
+    regressed = sum(
+        block[name]["ci95_low"] > 0.0
+        for block in blocks
+        for name in core
+    )
+    completion = [block["completion_ratio"] for block in blocks]
+    if improved >= 2 and not any(item["ci95_high"] < 0.0 for item in completion) and regressed == 0:
+        return "T1E_V_CLEAR_IMPROVEMENT"
+    if regressed >= 2 and any(item["ci95_high"] < 0.0 for item in completion):
+        return "T1E_V_REGRESSION"
+    if improved == 0 and regressed == 0:
+        return "T1E_V_NO_GAIN"
+    return "T1E_V_MIXED"
+
+
+def write_reference_report(report: Mapping[str, Any]) -> None:
+    path = Path("/tmp/m26_t1e_v_motion_reference_report.md")
+    phase = report["phase"]["comparison"]["clustered_paired_bootstrap"]
+    continuous = report["continuous"]["comparison"]["clustered_paired_bootstrap"]
+    lines = [
+        "# M2.6-T1E-V Validation Motion Reference Evaluation",
+        "",
+        "## Decision",
+        "",
+        f"Classification: `{report['classification']}`",
+        "",
+        "## Validation Dataset",
+        "",
+        "| Dataset | Motions | Frames | Source rollouts | FPS | Motion SHA256 |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for name in ("phase", "continuous"):
+        item = report[name]["dataset"]
+        lines.append(
+            f"| {name.title()} | {item['motion_count']:,} | {item['frame_count']:,} | "
+            f"{item['source_rollout_count']} | {item['fps']:.0f} | `{item['motion_sha256']}` |"
+        )
+    lines += [
+        "",
+        "## Alignment Contract",
+        "",
+        "Each motion resets at local frame 0 using canonical raw `qpos/qvel` and source-realized physics. "
+        "At control step `t`, `AlignedSkateTrackingContext.encode()` uses the future reference beginning at "
+        "`t+1`; the post-step simulator state is compared to raw frame `source_start+t+1`. No state, board "
+        "state, history, or expert action is injected after reset.",
+        "",
+        "## Paired Effects",
+        "",
+        "Values are 10k minus Fresh. Completion is better above zero; tracking errors are better below zero. "
+        "95% CIs use 10,000 source-rollout-clustered paired bootstrap repetitions (seed 4728).",
+        "",
+        "| Metric | Phase delta [95% CI] | Continuous delta [95% CI] |",
+        "| --- | --- | --- |",
+    ]
+    for metric in ("completion_ratio", "joint_position_mae_rad", "board_xy_displacement_error_m", "coupling_xy_error_m"):
+        lines.append(
+            f"| {metric} | {phase[metric]['mean_delta_10k_minus_fresh']:.5g} "
+            f"[{phase[metric]['ci95_low']:.5g}, {phase[metric]['ci95_high']:.5g}] | "
+            f"{continuous[metric]['mean_delta_10k_minus_fresh']:.5g} "
+            f"[{continuous[metric]['ci95_low']:.5g}, {continuous[metric]['ci95_high']:.5g}] |"
+        )
+    lines += [
+        "",
+        "## Execution",
+        "",
+        "Training performed: NO",
+        "Test executed: NO",
+        "20k executed: NO",
+        "Evaluator modified: YES",
+        "Commit: NO",
+        "Push: NO",
+        "",
+    ]
+    path.write_text("\n".join(lines))
+
+
+def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
+    if args.split != "val":
+        raise ValueError("T1E-V only permits --split val; Test remains held out.")
+    if args.checkpoint_10k is None:
+        raise ValueError("--checkpoint-10k is required for mode=motion-reference.")
+    official = args.official_checkpoint.expanduser().resolve()
+    trained = args.checkpoint_10k.expanduser().resolve()
+    expected_10k = "e40b9b1c876c9d33878a00ba9943bb97841c9c1679820c8f12ffb3ed5696726f"
+    if hash_file(checkpoint_model_path(official)) != OFFICIAL_BFM0_SHA256:
+        raise RuntimeError("Official BFM0 checkpoint SHA256 mismatch.")
+    if hash_file(checkpoint_model_path(trained)) != expected_10k:
+        raise RuntimeError("M2.6-T1 10k checkpoint SHA256 mismatch.")
+
+    resolver = ReferenceSourceResolver("val")
+    datasets = {}
+    for dataset in ("phase", "continuous"):
+        records, manifest, motion_path, manifest_path = load_reference_records("val", dataset)
+        datasets[dataset] = (records, manifest, motion_path, manifest_path)
+    smoke_keys = []
+    seen_sources = set()
+    for key, record in sorted(datasets["phase"][0].items()):
+        source = (str(record["source_round"]), str(record["source_rollout"]))
+        if source not in seen_sources:
+            smoke_keys.append(key)
+            seen_sources.add(source)
+        if len(smoke_keys) == 2:
+            break
+    if len(smoke_keys) != 2:
+        raise RuntimeError("Validation smoke requires two phase motions from different sources.")
+
+    estimates = {}
+    for dataset, (records, _, motion_path, _) in datasets.items():
+        agent, _ = load_frozen_agent(official)
+        tracking = AlignedSkateTrackingContext.load(agent, motion_path)
+        total = sum(
+            min(
+                int(np.asarray(record["dof"]).shape[0]) - 1,
+                tracking.trajectories[key]["length"] - 1,
+            )
+            for key, record in records.items()
+        )
+        estimates[dataset] = total
+        del agent
+    total_transitions = 2 * sum(estimates.values())
+    print(
+        "Motion-reference estimate: "
+        f"phase/checkpoint={estimates['phase']}, continuous/checkpoint={estimates['continuous']}, "
+        f"total={total_transitions}"
+    )
+    if total_transitions > 1_000_000:
+        raise RuntimeError("Reference evaluation exceeds 1,000,000 MuJoCo transitions.")
+
+    smoke = {}
+    for name, checkpoint in (("fresh", official), ("10k", trained)):
+        agent, _ = load_frozen_agent(checkpoint)
+        tracking = AlignedSkateTrackingContext.load(agent, datasets["phase"][2])
+        before = checkpoint_mutation(agent)
+        rows = [
+            run_reference_motion(agent, tracking, resolver, key, datasets["phase"][0][key])
+            for key in smoke_keys
+        ]
+        after = checkpoint_mutation(agent)
+        if before != after:
+            raise RuntimeError("Smoke mutated a frozen checkpoint.")
+        smoke[name] = {"rows": rows, "frame_difference_counts": tracking.frame_difference_counts()}
+    write_json(Path("/tmp/m26_t1e_v_smoke.json"), {
+        "schema": "m26-t1e-v-smoke-v1",
+        "motion_keys": smoke_keys,
+        "source_rollouts": [
+            [datasets["phase"][0][key]["source_round"], datasets["phase"][0][key]["source_rollout"]]
+            for key in smoke_keys
+        ],
+        "fresh": smoke["fresh"],
+        "10k": smoke["10k"],
+        "result": "PASS",
+    })
+
+    evaluations = {}
+    for dataset, (records, manifest, motion_path, manifest_path) in datasets.items():
+        fresh = evaluate_reference_dataset("fresh", official, motion_path, records, resolver)
+        trained_result = evaluate_reference_dataset("10k", trained, motion_path, records, resolver)
+        write_json(Path(f"/tmp/m26_t1e_v_{dataset}_fresh.json"), fresh)
+        write_json(Path(f"/tmp/m26_t1e_v_{dataset}_10k.json"), trained_result)
+        comparison = paired_reference_summary(fresh, trained_result, dataset=dataset)
+        evaluations[dataset] = {
+            "dataset": {
+                "path": str(motion_path),
+                "manifest_path": str(manifest_path),
+                "motion_sha256": hash_file(motion_path),
+                "manifest_sha256": hash_file(manifest_path),
+                "motion_count": int(manifest["motion_count"]),
+                "frame_count": int(manifest["frame_count"]),
+                "source_rollout_count": int(manifest["source_rollout_count"]),
+                "fps": float(manifest["fps"]),
+            },
+            "fresh": fresh,
+            "10k": trained_result,
+            "comparison": comparison,
+        }
+        write_json(Path(f"/tmp/m26_t1e_v_{dataset}_compare.json"), comparison)
+
+    videos = []
+    selected = select_reference_videos(evaluations["continuous"]["comparison"])
+    records, _, motion_path, _ = datasets["continuous"]
+    for label, key in selected:
+        for checkpoint_name, checkpoint in (("fresh", official), ("10k", trained)):
+            agent, _ = load_frozen_agent(checkpoint)
+            tracking = AlignedSkateTrackingContext.load(agent, motion_path)
+            path = args.video_dir.expanduser().resolve() / f"{label}_{checkpoint_name}.mp4"
+            run_reference_motion(agent, tracking, resolver, key, records[key], video_path=path)
+            videos.append({"selection": label, "motion_key": key, "checkpoint": checkpoint_name, "path": str(path)})
+
+    report = {
+        "schema": "m26-t1e-v-motion-reference-v1",
+        "repository": {
+            "head": __import__("subprocess").check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "origin_train": __import__("subprocess").check_output(["git", "rev-parse", "origin/train"], text=True).strip(),
+            "preexisting_evaluator_sha256": Path("/tmp/m26_t1e_v_preexisting_evaluator.sha256").read_text().split()[0],
+            "evaluation_source_sha256": hash_file(Path(__file__)),
+        },
+        "validation_split": "val",
+        "alignment_contract": {
+            "reset": "local_frame=0 canonical raw qpos/qvel with source-realized physics",
+            "reference_latent": "checkpoint-specific AlignedSkateTrackingContext.encode future_start=local_frame+1",
+            "actual_state": "free HUSKY MuJoCo post-step state",
+            "metric_reference_frame": "source_start_frame+t+1",
+            "teacher_forcing": False,
+            "source_action_used": False,
+        },
+        "checkpoints": {
+            "fresh": {"path": str(official), "model_sha256": OFFICIAL_BFM0_SHA256},
+            "10k": {"path": str(trained), "model_sha256": expected_10k},
+        },
+        "estimate_transitions": estimates,
+        "smoke": smoke,
+        **evaluations,
+        "videos": videos,
+        "classification": reference_decision(
+            evaluations["phase"]["comparison"],
+            evaluations["continuous"]["comparison"],
+        ),
+        "test_executed": False,
+        "training_performed": False,
+        "production_training_control_modified": False,
+        "evaluator_modified": True,
+        "commit": "NO",
+        "push": "NO",
+    }
+    write_json(Path("/tmp/m26_t1e_v_motion_reference_report.json"), report)
+    write_reference_report(report)
+    print(f"Validation motion-reference complete: {report['classification']}")
     return 0
 
 
@@ -1211,6 +2283,8 @@ def main() -> int:
     args = parse_args()
     if args.mode == "rollout":
         return run_frozen_evaluation(args)
+    if args.mode == "motion-reference":
+        return run_motion_reference_evaluation(args)
     return run_fixed_target_evaluation(args)
 
 
