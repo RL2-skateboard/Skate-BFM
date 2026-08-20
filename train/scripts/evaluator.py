@@ -194,6 +194,15 @@ def parse_args() -> argparse.Namespace:
         help="Motion-reference dataset(s) to evaluate.",
     )
     parser.add_argument(
+        "--motion-key",
+        help="Run one exact held-out motion-reference rollout instead of the full evaluator.",
+    )
+    parser.add_argument(
+        "--checkpoint-view",
+        choices=("fresh", "10k"),
+        help="Checkpoint selected by --motion-key.",
+    )
+    parser.add_argument(
         "--smoke-only",
         action="store_true",
         help="Run only the two-source Phase motion-reference contract smoke.",
@@ -1837,6 +1846,52 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
         raise RuntimeError("M2.6-T1 10k checkpoint SHA256 mismatch.")
 
     resolver = ReferenceSourceResolver("val")
+    if args.motion_key is not None:
+        if args.reference_dataset == "both":
+            raise ValueError("--motion-key requires one --reference-dataset.")
+        if args.checkpoint_view is None:
+            raise ValueError("--motion-key requires --checkpoint-view.")
+        records, _, motion_path, _ = load_reference_records(
+            "val", args.reference_dataset
+        )
+        if args.motion_key not in records:
+            raise KeyError(
+                f"Motion key is not in Val {args.reference_dataset}: {args.motion_key}"
+            )
+        checkpoint_name = args.checkpoint_view
+        checkpoint = {"fresh": official, "10k": trained}[checkpoint_name]
+        agent, load_report = load_frozen_agent(checkpoint)
+        before = checkpoint_mutation(agent)
+        tracking = AlignedSkateTrackingContext.load(agent, motion_path)
+        env = HuskyBfmOnlineEnv(viewer=args.viewer, realtime=args.viewer)
+        try:
+            row = run_reference_motion(
+                agent,
+                tracking,
+                resolver,
+                args.motion_key,
+                records[args.motion_key],
+                env=env,
+                video_path=args.video,
+            )
+        finally:
+            env.close()
+        after = checkpoint_mutation(agent)
+        if before != after:
+            raise RuntimeError("Single-motion visualization mutated a frozen checkpoint.")
+        payload = serializable_reference_rows([row])[0]
+        payload["checkpoint_view"] = checkpoint_name
+        payload["checkpoint_model_sha256"] = hash_file(checkpoint_model_path(checkpoint))
+        payload["load_report"] = load_report
+        payload["viewer"] = bool(args.viewer)
+        payload["video_path"] = str(args.video) if args.video is not None else None
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.checkpoint_view is not None:
+        raise ValueError("--checkpoint-view requires --motion-key.")
+    if args.video is not None:
+        raise ValueError("--video in motion-reference mode requires --motion-key.")
+
     selected = ("phase", "continuous") if args.reference_dataset == "both" else (args.reference_dataset,)
     datasets = {}
     for dataset in set((*selected, "phase")):
