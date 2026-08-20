@@ -16,6 +16,7 @@ import joblib
 import os
 import subprocess
 import sys
+import traceback
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -985,6 +986,25 @@ class Workspace:
         checkpoint_steps = training_checkpoint_steps(self.cfg.skate_max_steps)
         expected_updates = len(update_steps) * self.cfg.updates_per_block
         dataset = self.dataset_report
+        diagnostics_path = self.work_dir / "training_diagnostics.jsonl"
+        diagnostics_path.touch()
+
+        def diagnostic(event: str, **payload: Any) -> None:
+            record = {
+                "event": event,
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "env_transitions": int(payload.pop("env_transitions", 0)),
+                "update_blocks": len(update_blocks),
+                "native_updates": self.agent_update_calls,
+                "replay_size": int(payload.pop("replay_size", 0)),
+                "episodes": episodes,
+                "falls": falls,
+                **payload,
+            }
+            with diagnostics_path.open("a") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+                handle.flush()
+
         print(
             "\n".join(
                 (
@@ -1044,6 +1064,33 @@ class Workspace:
         episodes = 0
         falls = 0
         termination_reasons: Counter[str] = Counter()
+        diagnostic(
+            "run_start",
+            env_transitions=0,
+            replay_size=0,
+            run_name=self.work_dir.name,
+            git_head=self.git_head,
+            seed=self.cfg.seed,
+            device=str(self.agent.device),
+            online_envs=self.cfg.online_envs,
+            dataset=dataset,
+            pretrained_checkpoint=self.agent.pretrained_load_report,
+            schedule={
+                "total_transitions": self.cfg.skate_max_steps,
+                "warmup": self.cfg.warmup_transitions,
+                "first_update": self.cfg.first_update_transition,
+                "update_interval": self.cfg.update_interval,
+                "updates_per_block": self.cfg.updates_per_block,
+                "expected_update_blocks": len(update_steps),
+                "expected_native_updates": expected_updates,
+                "checkpoints": list(checkpoint_steps),
+            },
+            rollout_latent=self.rollout_context.report(),
+            optimizer={
+                name: optimizer_step_report(item)
+                for name, item in optimizers.items()
+            },
+        )
         progress = tqdm(
             total=self.cfg.skate_max_steps,
             desc="M2.6 training",
@@ -1109,6 +1156,14 @@ class Workspace:
             )
             for env_step in events:
                 collect(env_step)
+                diagnostic(
+                    "collection_boundary",
+                    env_transitions=env_step,
+                    replay_size=len(replay["train"]),
+                    termination_reason_counts=dict(sorted(termination_reasons.items())),
+                    rollout_latent=self.rollout_context.report(),
+                    finite_model=module_state_is_finite(model),
+                )
                 if env_step in update_steps:
                     block_index = len(update_blocks) + 1
                     expert_contract = self._preflight(replay)
@@ -1157,6 +1212,20 @@ class Workspace:
                         f"native updates total={self.agent_update_calls}, "
                         f"first/mean/last: {key_metrics}"
                     )
+                    diagnostic(
+                        "update_block",
+                        env_transitions=env_step,
+                        replay_size=len(replay["train"]),
+                        block_index=block_index,
+                        metric_summary=metric_summary,
+                        expert_contract=expert_contract,
+                        rollout_latent=self.rollout_context.report(),
+                        finite_model=module_state_is_finite(model),
+                        optimizer={
+                            name: optimizer_step_report(item)
+                            for name, item in optimizers.items()
+                        },
+                    )
                 if env_step in checkpoint_steps:
                     checkpoints[str(env_step)] = self._save_checkpoint(replay, env_step)
                     report = checkpoints[str(env_step)]
@@ -1165,6 +1234,59 @@ class Workspace:
                         f"model reload={report['reload']}, "
                         f"optimizer step={report['optimizer_step']}"
                     )
+                    diagnostic(
+                        "checkpoint",
+                        env_transitions=env_step,
+                        replay_size=len(replay["train"]),
+                        checkpoint=report,
+                        rollout_latent=self.rollout_context.report(),
+                    )
+        except BaseException as exc:
+            failure = {
+                "event": "failure",
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+                "env_transitions": min(
+                    self.cfg.skate_max_steps,
+                    max(0, start - 1),
+                ),
+                "update_blocks": len(update_blocks),
+                "native_updates": self.agent_update_calls,
+                "replay_size": len(replay["train"]),
+                "episodes": episodes,
+                "falls": falls,
+                "termination_reason_counts": dict(sorted(termination_reasons.items())),
+                "rollout_latent": self.rollout_context.report(),
+                "optimizer": {
+                    name: optimizer_step_report(item)
+                    for name, item in optimizers.items()
+                },
+                "finite_model": module_state_is_finite(model),
+            }
+            with diagnostics_path.open("a") as handle:
+                handle.write(json.dumps(failure, sort_keys=True) + "\n")
+                handle.flush()
+            (self.work_dir / "training_failure.json").write_text(
+                json.dumps(failure, indent=2, sort_keys=True) + "\n"
+            )
+            (self.work_dir / "training_failure.md").write_text(
+                "\n".join(
+                    (
+                        "# Skate-BFM Training Failure",
+                        "",
+                        f"- Error: `{type(exc).__name__}: {exc}`",
+                        f"- Transitions: `{failure['env_transitions']}`",
+                        f"- Update blocks / native updates: "
+                        f"`{len(update_blocks)}` / `{self.agent_update_calls}`",
+                        f"- Replay size: `{len(replay['train'])}`",
+                        f"- Diagnostics: `{diagnostics_path}`",
+                        "",
+                    )
+                )
+            )
+            raise
         finally:
             progress.close()
             for env in self.train_envs:
