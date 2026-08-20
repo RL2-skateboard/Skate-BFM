@@ -198,14 +198,15 @@ hf download Yak9Ce3teeh/skate-bfm \
 ```
 
 Evaluate one frozen formal checkpoint with the same expert-reset and latent
-lifecycle used by online training. Add `--viewer` for the realtime MuJoCo
-window:
+lifecycle used by online training. Add `--video` to save one offscreen MP4 and
+`--viewer` for the realtime MuJoCo window:
 
 ```bash
 python train/scripts/evaluator.py \
   --checkpoint model/motion_library/m2.6-phase-100k-seed4728/checkpoint_100000 \
   --dataset phase \
   --episodes 4 \
+  --video results/frozen_rollout.mp4 \
   --viewer
 ```
 

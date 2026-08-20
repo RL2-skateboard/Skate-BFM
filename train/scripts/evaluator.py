@@ -18,6 +18,7 @@ import joblib
 import mujoco
 import numpy as np
 import torch
+from tqdm import tqdm
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -107,6 +108,17 @@ def parse_args() -> argparse.Namespace:
         "--viewer",
         action="store_true",
         help="Open the MuJoCo viewer and run at the 50 Hz control rate.",
+    )
+    parser.add_argument(
+        "--video",
+        type=Path,
+        help="Write one selected rollout as an offscreen MP4.",
+    )
+    parser.add_argument(
+        "--video-episode",
+        type=int,
+        default=0,
+        help="Zero-based rollout index to record when --video is set.",
     )
     parser.add_argument(
         "--output",
@@ -490,6 +502,10 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
         raise ValueError("--checkpoint is required for mode=rollout.")
     if args.episodes <= 0 or args.horizon <= 0 or args.latent_refresh <= 0:
         raise ValueError("--episodes, --horizon, and --latent-refresh must be positive.")
+    if args.video_episode < 0 or args.video_episode >= args.episodes:
+        raise ValueError("--video-episode must be within [0, --episodes).")
+    if args.video is not None and args.video.suffix.lower() != ".mp4":
+        raise ValueError("--video must have the .mp4 extension.")
 
     checkpoint = args.checkpoint.expanduser().resolve()
     if not checkpoint.is_dir():
@@ -540,7 +556,27 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
     )
     rollouts: list[dict[str, Any]] = []
     viewer_closed = False
+    video_path = args.video.expanduser().resolve() if args.video is not None else None
+    video_writer = None
+    renderer = None
     try:
+        if video_path is not None:
+            import imageio.v2 as imageio
+
+            video_path.parent.mkdir(parents=True, exist_ok=True)
+            video_writer = imageio.get_writer(
+                video_path,
+                fps=round(1.0 / env.env.control_dt),
+                macro_block_size=1,
+                codec="libx264",
+            )
+            renderer = mujoco.Renderer(env.env.model, height=720, width=1280)
+        progress = tqdm(
+            total=args.episodes,
+            desc="Frozen evaluation",
+            unit="episode",
+            dynamic_ncols=True,
+        )
         for episode_index in range(args.episodes):
             torch.manual_seed(args.seed + episode_index)
             qpos, qvel, source_physics, reset = sampler.sample()
@@ -565,6 +601,10 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                     args.horizon,
                 )
 
+            record_video = video_writer is not None and episode_index == args.video_episode
+            if record_video:
+                renderer.update_scene(env.env.data, camera="robot/tracking")
+                video_writer.append_data(renderer.render())
             for step in range(args.horizon):
                 if args.viewer and not env.env.is_running:
                     viewer_closed = True
@@ -596,6 +636,9 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                 observation = transition.next_observation
                 terminated = transition.terminated
                 truncated = transition.truncated
+                if record_video:
+                    renderer.update_scene(env.env.data, camera="robot/tracking")
+                    video_writer.append_data(renderer.render())
                 if terminated or truncated:
                     break
 
@@ -641,16 +684,28 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                 "metrics": metrics,
             }
             rollouts.append(row)
-            print(
-                "[Frozen rollout] "
-                f"episode={episode_index + 1}/{args.episodes}, "
-                f"steps={len(records)}, duration={metrics['episode_duration_s']:.2f}s, "
-                f"terminated={terminated}, truncated={truncated}, "
-                f"fall_reason={row['episode']['fall_reason'] or 'none'}"
+            progress.update()
+            progress.set_postfix(
+                falls=sum(item["episode"]["terminated"] for item in rollouts),
+                last_steps=len(records),
+                refresh=False,
             )
+            if terminated:
+                progress.write(
+                    "[Termination] "
+                    f"episode={episode_index + 1}, step={len(records)}, "
+                    f"time={metrics['episode_duration_s']:.2f}s, "
+                    f"reason={row['episode']['fall_reason'] or 'unknown'}"
+                )
             if viewer_closed:
                 break
     finally:
+        if "progress" in locals():
+            progress.close()
+        if video_writer is not None:
+            video_writer.close()
+        if renderer is not None:
+            renderer.close()
         env.close()
 
     after = {
@@ -699,6 +754,16 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
                 "stochastic" if args.stochastic_actions else "deterministic_mean"
             ),
             "viewer": args.viewer,
+            "video": (
+                {
+                    "path": str(video_path),
+                    "episode_index": args.video_episode,
+                    "fps": round(1.0 / env.env.control_dt),
+                    "camera": "robot/tracking",
+                }
+                if video_path is not None
+                else None
+            ),
             "seed": args.seed,
             "mutation": {
                 "parameters_changed": False,
@@ -742,6 +807,8 @@ def run_frozen_evaluation(args: argparse.Namespace) -> int:
         f"horizon_completions={truncated_count}, mutation=False"
     )
     print(f"Metrics: {output_path}")
+    if video_path is not None:
+        print(f"Video: {video_path}")
     return 0
 
 

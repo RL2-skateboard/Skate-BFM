@@ -115,7 +115,9 @@ hf download Yak9Ce3teeh/skate-bfm \
   --local-dir model
 ```
 
-Run a frozen checkpoint with the MuJoCo viewer:
+Run a frozen checkpoint with a compact terminal progress bar. `--video` records
+the selected zero-based rollout index with MuJoCo offscreen rendering; `--viewer`
+is optional for a realtime interactive window:
 
 ```bash
 python train/scripts/evaluator.py \
@@ -123,6 +125,8 @@ python train/scripts/evaluator.py \
   --dataset phase \
   --episodes 4 \
   --horizon 1024 \
+  --video results/frozen_rollout.mp4 \
+  --video-episode 0 \
   --viewer
 ```
 
