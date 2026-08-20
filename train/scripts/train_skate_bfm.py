@@ -82,12 +82,15 @@ DEFAULT_UPDATES_PER_BLOCK = 50
 DATASET_ROOT = REPOSITORY_ROOT / "train/dataset"
 BASE_MOTION_FILE = DATASET_ROOT / "base/lafan_29dof_10s-clipped.pkl"
 SKATE_DATASET_ROOT = DATASET_ROOT / "sim_collected"
-RAW_DATASET_ROOT = SKATE_DATASET_ROOT / "raw"
+RAW_DATASET_ROOT = SKATE_DATASET_ROOT / "train/raw"
 EXPERT_DATASETS = {
-    "phase": SKATE_DATASET_ROOT / "phase/motion_library/skate_expert_phase.pkl",
+    "phase": (
+        SKATE_DATASET_ROOT
+        / "train/phase/motion_library/skate_expert_phase.pkl"
+    ),
     "continuous": (
         SKATE_DATASET_ROOT
-        / "continuous/motion_library/skate_expert_continuous.pkl"
+        / "train/continuous/motion_library/skate_expert_continuous.pkl"
     ),
 }
 

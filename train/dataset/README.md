@@ -8,27 +8,50 @@ training.
 base/
   lafan_29dof_10s-clipped.pkl
 sim_collected/
-  raw/
-  phase/
-    motion_library/
-    qc/
-  continuous/
-    motion_library/
-    qc/
+  train/
+    raw/
+    phase/
+      motion_library/
+      qc/
+    continuous/
+      motion_library/
+      qc/
+  val/
+    raw/
+    phase/
+      motion_library/
+      qc/
+    continuous/
+      motion_library/
+      qc/
+  test/
+    raw/
+    phase/
+      motion_library/
+      qc/
+    continuous/
+      motion_library/
+      qc/
 ```
 
 - `base/` contains the official 862-motion BFM-Zero LAFAN training source.
-- `sim_collected/raw/` contains synchronized HUSKY source rollouts.
-- `sim_collected/phase/` contains phase-pure MotionLib records and QC.
-- `sim_collected/continuous/` contains fixed-window MotionLib records and QC.
+- `sim_collected/train/` is the only split used by formal training.
+- `sim_collected/val/` is source-disjoint and reserved for model selection.
+- `sim_collected/test/` is source-disjoint from Train and Val and reserved for
+  final held-out reporting.
+- Every split contains synchronized HUSKY raw rollouts, phase-pure MotionLib
+  records, and 500-frame Continuous MotionLib records with QC artifacts.
 
-Download the Skate data:
+Download the complete Skate dataset:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
   --local-dir train/dataset/sim_collected
 ```
+
+Formal training requires `train/raw/` plus either `train/phase/` or
+`train/continuous/`. Do not add `val/` or `test/` to the training sampler.
 
 Download the Base/LAFAN training source:
 

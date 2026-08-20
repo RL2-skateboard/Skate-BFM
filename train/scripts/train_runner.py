@@ -38,7 +38,7 @@ from humanoidverse.agents.envs.utils.gym_spaces import json_to_space
 from skate_bfm.integration import HuskyBfmOnlineEnv
 
 DATASET_ROOT = REPOSITORY_ROOT / "train/dataset"
-RAW_DATASET_ROOT = DATASET_ROOT / "sim_collected/raw"
+RAW_DATASET_ROOT = DATASET_ROOT / "sim_collected/train/raw"
 OFFICIAL_BFM0_SHA256 = (
     "33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361"
 )
@@ -47,15 +47,33 @@ OFFICIAL_BFM0_SHA256 = (
 def resolve_source_rollout_path(record: Mapping[str, Any]) -> Path:
     """Resolve raw provenance after moving or downloading a MotionLib."""
 
+    def validate(path: Path) -> Path:
+        metadata_path = path.with_suffix(".json")
+        if not metadata_path.is_file():
+            raise FileNotFoundError(f"Canonical raw metadata not found: {metadata_path}")
+        metadata = json.loads(metadata_path.read_text())
+        expected = {
+            "dataset_split": "train",
+            "round_id": str(record.get("source_round", "")).zfill(3),
+            "rollout_id": str(record.get("source_rollout", "")).zfill(3),
+            "episode_id": str(record.get("source_episode", "")),
+        }
+        actual = {name: str(metadata.get(name, "")) for name in expected}
+        if actual != expected:
+            raise RuntimeError(
+                f"Train raw provenance mismatch for {path}: {actual} != {expected}"
+            )
+        return path.resolve()
+
     recorded = Path(str(record["source_raw_npz"])).expanduser()
     if recorded.is_file():
-        return recorded.resolve()
+        return validate(recorded)
 
     parts = recorded.parts
     if "raw" in parts:
         relocated = RAW_DATASET_ROOT.joinpath(*parts[parts.index("raw") + 1 :])
         if relocated.is_file():
-            return relocated.resolve()
+            return validate(relocated)
 
     round_id = str(record.get("source_round", "")).zfill(3)
     rollout_id = str(record.get("source_rollout", "")).zfill(3)
@@ -67,7 +85,7 @@ def resolve_source_rollout_path(record: Mapping[str, Any]) -> Path:
     )
     matches = sorted(rollout_root.glob("*.npz"))
     if len(matches) == 1:
-        return matches[0].resolve()
+        return validate(matches[0])
     raise FileNotFoundError(
         "Cannot uniquely resolve source rollout "
         f"{recorded} under {RAW_DATASET_ROOT}: {len(matches)} candidates"

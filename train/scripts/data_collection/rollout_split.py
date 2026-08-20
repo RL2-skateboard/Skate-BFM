@@ -783,6 +783,7 @@ def run_parallel(args: argparse.Namespace) -> int:
     write_json(
         plan_path,
         {
+            "dataset_split": args.dataset_split,
             "target_raw_minutes": args.target_raw_minutes,
             "target_raw_frames": target_frames,
             "policy_frequency": args.policy_frequency,
@@ -891,6 +892,7 @@ def run_parallel(args: argparse.Namespace) -> int:
 
     def write_summary() -> dict[str, Any]:
         payload = summary()
+        payload["dataset_split"] = args.dataset_split
         write_json(output_root / "collection_summary.json", payload)
         return payload
 

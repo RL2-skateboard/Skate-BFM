@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -115,6 +116,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--aggregate-continuous", action="store_true")
     p.add_argument("--dataset-root", type=Path, required=True)
+    p.add_argument("--dataset-split", choices=("train", "validation", "test"), required=True)
     p.add_argument("--bfm-repo", type=Path, required=True)
     p.add_argument("--bfm-reference", type=Path, required=True)
     p.add_argument("--robot-xml", type=Path, required=True)
@@ -192,12 +194,23 @@ def raw_root_from_arg(path: Path) -> tuple[Path, Path]:
     return path, path.parent
 
 
-def rollout_paths(raw_root: Path) -> list[Path]:
+def rollout_paths(raw_root: Path, dataset_split: str) -> list[Path]:
     paths = sorted(
         path for path in raw_root.glob("round_*/rollout_*") if (path / "raw_rollout").is_dir()
     )
     if not paths:
         raise FileNotFoundError(f"no raw rollouts found below {raw_root}")
+    for path in paths:
+        metadata_files = sorted((path / "raw_rollout").glob("*.json"))
+        if len(metadata_files) != 1:
+            raise ValueError(f"{path} must contain one raw metadata JSON")
+        metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+        split = metadata.get("dataset_split")
+        if split != dataset_split:
+            raise ValueError(
+                f"{metadata_files[0]} has dataset_split={split!r}, "
+                f"expected {dataset_split!r}"
+            )
     return paths
 
 
@@ -486,6 +499,7 @@ def convert_record(
             "command_v": float(state["command_v"][0]),
             "command_h": float(state["command_h"][0]),
             "physics_seed": int(metadata["physics_randomization"]["seed"]),
+            "dataset_split": str(metadata["dataset_split"]),
         }
     )
     for name in SKATE_REQUIRED:
@@ -1002,7 +1016,7 @@ def aggregate(args: argparse.Namespace) -> int:
     raw_root, _ = raw_root_from_arg(args.dataset_root)
     output = args.output.resolve()
     manifest_path = (args.manifest or output.parent / "manifest.json").resolve()
-    rollouts = rollout_paths(raw_root)
+    rollouts = rollout_paths(raw_root, args.dataset_split)
     plan = plan_stats(raw_root)
     print_build_plan(args, raw_root, output, manifest_path, rollouts, plan)
     reference_keys, reference_record = load_reference(args.bfm_reference)
@@ -1215,8 +1229,10 @@ def aggregate(args: argparse.Namespace) -> int:
     manifest = {
         "dataset_stage": "M2.5c-C",
         "dataset_type": "continuous_fixed_window",
+        "dataset_split": args.dataset_split,
         "source_raw_root": str(args.dataset_root),
         "source_raw_rollouts": len(rollouts),
+        "source_rollout_count": len(accepted_rollouts),
         "source_dataset_stage": "M2.5c-P canonical raw collection",
         "source_policy": plan["source_policy"],
         "fps": dataset_fps,
@@ -1240,11 +1256,29 @@ def aggregate(args: argparse.Namespace) -> int:
         "raw_frames": int(raw_frames),
         "raw_seconds": raw_seconds,
         "raw_minutes": raw_seconds / 60,
+        "frame_count": expert_frames,
+        "duration_seconds": expert_seconds,
+        "duration_minutes": expert_seconds / 60,
+        "motion_count": len(records),
         "expert_frames": expert_frames,
         "expert_seconds": expert_seconds,
         "expert_minutes": expert_seconds / 60,
         "total_motion_count": len(records),
         "unique_physics_seed_count": len(physics_seeds),
+        "source_rounds": sorted({str(record["source_round"]) for record in records.values()}),
+        "source_identity_count": len(
+            {
+                (
+                    str(record["source_round"]),
+                    str(record["source_rollout"]),
+                    str(record["source_episode"]),
+                )
+                for record in records.values()
+            }
+        ),
+        "physics_seed_sha256": hashlib.sha256(
+            ",".join(map(str, sorted(physics_seeds))).encode()
+        ).hexdigest(),
         "continuous_statistics": {
             "continuous_motion_count": len(records),
             "valid_rollouts": len(validated_rollouts),
@@ -1264,6 +1298,9 @@ def aggregate(args: argparse.Namespace) -> int:
         "discard_motion_counts": dict(discard_motions),
         "rejection_details": rejected,
         "motion_library": str(output),
+        "motion_library_sha256": hashlib.file_digest(
+            output.open("rb"), "sha256"
+        ).hexdigest(),
         "structural_validation": "PENDING",
         "bfm_min_motion_frames": args.seq_length + 1,
     }

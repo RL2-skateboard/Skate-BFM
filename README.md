@@ -80,12 +80,14 @@ datasets from the
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --include "raw/**" "phase/**" \
+  --include "train/raw/**" "train/phase/**" \
   --local-dir train/dataset/sim_collected
 ```
 
-Replace `phase/**` with `continuous/**` to use the Continuous MotionLib; keep
-`raw/**` because training resets require the source robot-board states.
+Replace `train/phase/**` with `train/continuous/**` to use the Continuous
+MotionLib; keep `train/raw/**` because training resets require the source
+robot-board states. `val/` and `test/` are source-disjoint held-out splits for
+evaluation and must not be included by formal training.
 Restore the official BFM-Zero Base/LAFAN training file:
 
 ```bash
@@ -108,56 +110,54 @@ The dataset processor scans every raw rollout, uses recorded phase IDs for
 strict contiguous segmentation, aggregates all accepted motions, validates the
 result with official BFM interfaces, and can generate post-hoc full-scene QC:
 
-The completed M2.5c-P BFM-compatible phase MotionLib, manifests, and QC
-videos are hosted under
-[phase/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase)
-in the Skate-BFM Hugging Face dataset. The shared raw collection is stored
-beside it under
-[raw/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/raw).
-Restore the raw collection with:
+The formal dataset uses source-disjoint `train/`, `val/`, and `test/` roots.
+Each root contains `raw/`, `phase/`, and `continuous/`. Formal training reads
+only [train/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/train);
+Validation supports model selection and Test is reserved for final held-out
+reporting. Restore Train raw data with:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --include "raw/**" \
+  --include "train/raw/**" \
   --local-dir train/dataset/sim_collected
 ```
 
-Restore the Phase artifacts with:
+Restore Train Phase artifacts with:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --include "phase/**" \
+  --include "train/phase/**" \
   --local-dir train/dataset/sim_collected
 ```
 
 ```bash
 python train/scripts/data_collection/convert_phase.py \
   --aggregate-phase \
-  --dataset-root train/dataset/sim_collected/raw \
+  --dataset-root train/dataset/sim_collected/train \
+  --dataset-split train \
   --bfm-repo train/scripts/isaac_env \
   --bfm-reference train/dataset/base/lafan_29dof_10s-clipped.pkl \
   --robot-xml train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
   --husky-xml husky_sim/upstream/test_scene/mjlab_scene.xml \
-  --output train/dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl \
-  --manifest train/dataset/sim_collected/phase/motion_library/manifest.json \
-  --qc-root train/dataset/sim_collected/phase/qc \
+  --output train/dataset/sim_collected/train/phase/motion_library/skate_expert_phase.pkl \
+  --manifest train/dataset/sim_collected/train/phase/motion_library/manifest.json \
+  --qc-root train/dataset/sim_collected/train/phase/qc \
   --validate-motionlib
 ```
 
 Phase datasets use `convert_phase.py`; fixed-window continuous datasets use
 `convert_continuous.py`. Both consume the same canonical raw collection.
 
-The completed M2.5c-C continuous dataset is published under the same Hugging
-Face dataset repository at
-[continuous/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous).
+The Train Continuous dataset is published under
+[train/continuous/](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/train/continuous).
 Restore it with:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --include "continuous/**" \
+  --include "train/continuous/**" \
   --local-dir train/dataset/sim_collected
 ```
 

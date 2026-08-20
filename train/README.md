@@ -15,32 +15,35 @@ scripts/data_collection/rollout_split.py   raw HUSKY rollout collection
 scripts/data_collection/convert_phase.py   phase MotionLib conversion and QC
 scripts/data_collection/convert_continuous.py
                                             continuous MotionLib conversion and QC
-scripts/data_collection/rollout_config.json collection parameters
+scripts/data_collection/rollout_config.json historical Train collection parameters
+scripts/data_collection/val_config.json     held-out Validation collection parameters
+scripts/data_collection/test_config.json    held-out Test collection parameters
 scripts/isaac_env/                          vendored BFM-Zero runtime
 dataset/base/                               official Base/LAFAN motion
-dataset/sim_collected/                      raw, Phase, and Continuous Skate data
+dataset/sim_collected/                      Train, Val, and Test Skate data
 ```
 
 ## Data Source
 
-Formal Skate data is published on Hugging Face:
+Skate data is published with split-first paths on Hugging Face:
 
-- [raw collection](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/raw)
-- [phase MotionLib](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/phase)
-- [continuous MotionLib](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/continuous)
+- [Train](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/train)
+- [Validation](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/val)
+- [Test](https://huggingface.co/datasets/Yak9Ce3teeh/skate-sim-dataset/tree/main/test)
 
-Restore the selected dataset under `train/dataset/`:
+Restore the formal Train Phase dataset:
 
 ```bash
 hf download Yak9Ce3teeh/skate-sim-dataset \
   --repo-type dataset \
-  --include "raw/**" "phase/**" \
+  --include "train/raw/**" "train/phase/**" \
   --local-dir train/dataset/sim_collected
 ```
 
-Replace `phase/**` with `continuous/**` when needed, but retain `raw/**`
-because training resets use the source robot-board state. The official
-Base/LAFAN training file is a separate BFM-Zero dependency. Restore it with:
+Replace `train/phase/**` with `train/continuous/**` when needed, but retain
+`train/raw/**` because training resets use the source robot-board state.
+`val/` and `test/` are evaluator-only held-out data. The official Base/LAFAN
+training file is a separate BFM-Zero dependency. Restore it with:
 
 ```bash
 mkdir -p train/dataset/base
@@ -66,14 +69,15 @@ Convert an existing raw collection:
 ```bash
 python train/scripts/data_collection/convert_phase.py \
   --aggregate-phase \
-  --dataset-root train/dataset/sim_collected/raw \
+  --dataset-root train/dataset/sim_collected/train \
+  --dataset-split train \
   --bfm-repo train/scripts/isaac_env \
   --bfm-reference train/dataset/base/lafan_29dof_10s-clipped.pkl \
   --robot-xml train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
   --husky-xml husky_sim/upstream/test_scene/mjlab_scene.xml \
-  --output train/dataset/sim_collected/phase/motion_library/skate_expert_phase.pkl \
-  --manifest train/dataset/sim_collected/phase/motion_library/manifest.json \
-  --qc-root train/dataset/sim_collected/phase/qc \
+  --output train/dataset/sim_collected/train/phase/motion_library/skate_expert_phase.pkl \
+  --manifest train/dataset/sim_collected/train/phase/motion_library/manifest.json \
+  --qc-root train/dataset/sim_collected/train/phase/qc \
   --validate-motionlib
 ```
 
@@ -82,14 +86,15 @@ Build Continuous from the same raw collection:
 ```bash
 python train/scripts/data_collection/convert_continuous.py \
   --aggregate-continuous \
-  --dataset-root train/dataset/sim_collected/raw \
+  --dataset-root train/dataset/sim_collected/train \
+  --dataset-split train \
   --bfm-repo train/scripts/isaac_env \
   --bfm-reference train/dataset/base/lafan_29dof_10s-clipped.pkl \
   --robot-xml train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml \
   --husky-xml husky_sim/upstream/test_scene/mjlab_scene.xml \
-  --output train/dataset/sim_collected/continuous/motion_library/skate_expert_continuous.pkl \
-  --manifest train/dataset/sim_collected/continuous/motion_library/manifest.json \
-  --qc-root train/dataset/sim_collected/continuous/qc \
+  --output train/dataset/sim_collected/train/continuous/motion_library/skate_expert_continuous.pkl \
+  --manifest train/dataset/sim_collected/train/continuous/motion_library/manifest.json \
+  --qc-root train/dataset/sim_collected/train/continuous/qc \
   --validate-motionlib
 ```
 
