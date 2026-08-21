@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import signal
@@ -64,6 +65,12 @@ PHASE_LABELS = {
 }
 STEER = frozenset(("steer_left", "steer_forward", "steer_right"))
 BEHAVIORS = ("push", "steer", "push2steer", "steer2push")
+SELECTION_SEED_OFFSETS = {
+    "push": 0,
+    "steer": 1000,
+    "push2steer": 2000,
+    "steer2push": 3000,
+}
 PRIMARY_METRICS = (
     "joint_position_mae_rad",
     "joint_velocity_mae_rad_s",
@@ -498,6 +505,169 @@ def formal_candidates(
         },
     }
     return bank, excluded
+
+
+def source_group(case: Mapping[str, Any]) -> tuple[str, str, str, int]:
+    return (
+        str(case["source_round"]).zfill(3),
+        str(case["source_rollout"]).zfill(3),
+        str(case["source_episode"]),
+        int(case["physics_seed"]),
+    )
+
+
+def case_sort_key(case: Mapping[str, Any]) -> tuple[str, str, int, str]:
+    return (
+        str(case["source_round"]).zfill(3),
+        str(case["source_rollout"]).zfill(3),
+        int(case["reset_raw_frame"]),
+        str(case["case_id"]),
+    )
+
+
+def case_identity(case: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "case_id": str(case["case_id"]),
+        "behavior": str(case["behavior"]),
+        "source_raw_npz": str(case["source_raw_npz"]),
+        "source_round": str(case["source_round"]).zfill(3),
+        "source_rollout": str(case["source_rollout"]).zfill(3),
+        "source_episode": str(case["source_episode"]),
+        "physics_seed": int(case["physics_seed"]),
+        "reset_raw_frame": int(case["reset_raw_frame"]),
+    }
+
+
+def selected_direction(case: Mapping[str, Any]) -> str | None:
+    behavior = str(case["behavior"])
+    if behavior == "steer":
+        return str(case["steer_direction"])
+    if behavior == "push2steer":
+        phase = str(case.get("post_phase", ""))
+    elif behavior == "steer2push":
+        phase = str(case.get("pre_phase", ""))
+    else:
+        return None
+    return phase.removeprefix("steer_") if phase in STEER else None
+
+
+def selection_stats(
+    bank: Mapping[str, Sequence[Mapping[str, Any]]],
+    selected: Mapping[str, Sequence[Mapping[str, Any]]],
+    mode: str,
+    seed: int | None,
+    limit: int | None,
+) -> dict[str, Any]:
+    selected_cases = [
+        case
+        for behavior in BEHAVIORS
+        for case in sorted(selected.get(behavior, ()), key=case_sort_key)
+    ]
+    identities = [case_identity(case) for case in selected_cases]
+    fingerprint = hashlib.sha256(
+        json.dumps(identities, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    def group_count(cases: Sequence[Mapping[str, Any]]) -> int:
+        paths: dict[tuple[str, str, str, int], str] = {}
+        for case in cases:
+            key = source_group(case)
+            path = str(case["source_raw_npz"])
+            if key in paths and paths[key] != path:
+                raise RuntimeError(f"Source group maps to multiple raw files: {key}")
+            paths[key] = path
+        return len(paths)
+
+    direction_counts = {
+        behavior: dict(
+            sorted(
+                Counter(
+                    direction
+                    for case in selected.get(behavior, ())
+                    if (direction := selected_direction(case)) is not None
+                ).items()
+            )
+        )
+        for behavior in ("steer", "push2steer", "steer2push")
+    }
+    warnings = []
+    if mode == "rollout_balanced_without_replacement":
+        for behavior in direction_counts:
+            eligible_directions = Counter(
+                direction
+                for case in bank[behavior]
+                if (direction := selected_direction(case)) is not None
+            )
+            for direction in eligible_directions:
+                if direction_counts[behavior].get(direction, 0) == 0:
+                    warnings.append(
+                        f"{behavior} selected no {direction} case despite eligible cases."
+                    )
+    return {
+        "mode": mode,
+        "seed": seed,
+        "max_cases_per_behavior": limit,
+        "selection_fingerprint": fingerprint,
+        "eligible_counts": {behavior: len(bank[behavior]) for behavior in BEHAVIORS},
+        "selected_counts": {behavior: len(selected.get(behavior, ())) for behavior in BEHAVIORS},
+        "eligible_source_groups": {
+            behavior: group_count(bank[behavior]) for behavior in BEHAVIORS
+        },
+        "selected_unique_source_groups": {
+            behavior: group_count(selected.get(behavior, ())) for behavior in BEHAVIORS
+        },
+        "selected_direction_counts": direction_counts,
+        "warnings": warnings,
+    }
+
+
+def select_balanced_cases(
+    cases: Sequence[Mapping[str, Any]],
+    limit: int | None,
+    seed: int,
+    behavior: str,
+) -> list[Mapping[str, Any]]:
+    ordered = sorted(cases, key=case_sort_key)
+    if limit is None or limit >= len(ordered):
+        return ordered
+    if limit <= 0:
+        raise ValueError("max-cases-per-behavior must be positive.")
+    if behavior not in SELECTION_SEED_OFFSETS:
+        raise ValueError(f"Unsupported selection behavior: {behavior}")
+
+    grouped: dict[tuple[str, str, str, int], list[Mapping[str, Any]]] = {}
+    for case in ordered:
+        key = source_group(case)
+        group = grouped.setdefault(key, [])
+        if group and str(group[0]["source_raw_npz"]) != str(case["source_raw_npz"]):
+            raise RuntimeError(f"Source group maps to multiple raw files: {key}")
+        group.append(case)
+    rng = np.random.default_rng(seed + SELECTION_SEED_OFFSETS[behavior])
+    group_keys = list(grouped)
+    group_keys = [group_keys[index] for index in rng.permutation(len(group_keys))]
+    for key in group_keys:
+        group = grouped[key]
+        permutation = rng.permutation(len(group))
+        grouped[key] = [group[index] for index in permutation]
+
+    selected: list[Mapping[str, Any]] = []
+    depth = 0
+    while len(selected) < limit:
+        added = False
+        for key in group_keys:
+            group = grouped[key]
+            if depth < len(group):
+                selected.append(group[depth])
+                added = True
+                if len(selected) == limit:
+                    break
+        if not added:
+            raise RuntimeError("Balanced selection exhausted before reaching limit.")
+        depth += 1
+    selected_ids = [str(case["case_id"]) for case in selected]
+    if len(selected_ids) != len(set(selected_ids)):
+        raise RuntimeError("Balanced selection returned duplicate case IDs.")
+    return selected
 
 
 def behavior_candidates(
@@ -1113,7 +1283,7 @@ def make_cases(
     resolver: RawResolver,
     args: argparse.Namespace,
     seq_length: int,
-) -> tuple[list[dict[str, Any]], Counter[str]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if command == "eval":
         steady_steps = round(args.steady_duration_s / CONTROL_DT)
         if steady_steps <= 0:
@@ -1122,6 +1292,8 @@ def make_cases(
             records, resolver, steady_steps, seq_length
         )
         if args.case_spec:
+            if args.max_cases_per_behavior is not None:
+                raise RuntimeError("case-spec already fixes case selection.")
             payload = json.loads(args.case_spec.read_text())
             cases = payload.get("cases", [])
             if not cases:
@@ -1137,24 +1309,73 @@ def make_cases(
                 normalized.append(
                     prepare_case(item, records, resolver, steps, seq_length)
                 )
-            return normalized, Counter()
+            selected_by_behavior = {
+                behavior: sorted(
+                    [
+                        case
+                        for case in normalized
+                        if case["behavior"] == behavior
+                    ],
+                    key=case_sort_key,
+                )
+                for behavior in BEHAVIORS
+            }
+            selection = selection_stats(
+                bank,
+                selected_by_behavior,
+                "case_spec",
+                None,
+                None,
+            )
+            selection["excluded_reasons"] = {}
+            return normalized, selection
         selected_behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
+        selected_by_behavior: dict[str, list[Mapping[str, Any]]] = {}
+        for name in BEHAVIORS:
+            selected_by_behavior[name] = (
+                select_balanced_cases(
+                    bank[name],
+                    args.max_cases_per_behavior,
+                    args.seed,
+                    name,
+                )
+                if name in selected_behaviors
+                else []
+            )
         cases = []
         for name in selected_behaviors:
-            selected = bank[name]
-            if args.max_cases_per_behavior is not None:
-                selected = selected[: args.max_cases_per_behavior]
             cases.extend(
                 prepare_case(item, records, resolver, int(item["steps"]), seq_length)
-                for item in selected
+                for item in selected_by_behavior[name]
             )
-        return cases, Counter(
-            {
-                f"{behavior}:{reason}": count
-                for behavior, values in excluded_by_behavior.items()
-                for reason, count in values.items()
-            }
+        cases.sort(
+            key=lambda case: (
+                BEHAVIORS.index(str(case["behavior"])),
+                case_sort_key(case),
+            )
         )
+        mode = (
+            "rollout_balanced_without_replacement"
+            if args.max_cases_per_behavior is not None
+            and any(
+                len(selected_by_behavior[name]) < len(bank[name])
+                for name in selected_behaviors
+            )
+            else "all"
+        )
+        selection = selection_stats(
+            bank,
+            selected_by_behavior,
+            mode,
+            args.seed,
+            args.max_cases_per_behavior,
+        )
+        selection["excluded_reasons"] = {
+            f"{behavior}:{reason}": count
+            for behavior, values in excluded_by_behavior.items()
+            for reason, count in values.items()
+        }
+        return cases, selection
 
     cases = []
     behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
@@ -1189,7 +1410,7 @@ def make_cases(
                 options[0], records, resolver, steps, seq_length, options[0]["clip_end_raw"]
             )
         cases.append(selected)
-    return cases, Counter()
+    return cases, {}
 
 
 def training_date(summary_path: Path) -> str:
@@ -1225,6 +1446,7 @@ def invocation_config(
     full_test: bool,
     full_behavior: Mapping[str, bool],
     steady_steps: int | None = None,
+    case_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "command": args.command,
@@ -1254,6 +1476,7 @@ def invocation_config(
         "transition_lead_steps": LEAD_STEPS if args.command == "eval" else None,
         "formal_full_test": full_test,
         "formal_full_behavior": dict(full_behavior),
+        "case_selection": dict(case_selection or {}),
         "protocol": (
             {
                 "push": {
@@ -1581,23 +1804,23 @@ def run_eval(args: argparse.Namespace) -> int:
     steady_steps = round(args.steady_duration_s / CONTROL_DT)
     if steady_steps <= 0:
         raise ValueError("steady-duration-s must be positive.")
-    candidate_bank, excluded_by_behavior = formal_candidates(
-        records, resolver, steady_steps, seq_length
-    )
     selected_behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
-    cases, _ = make_cases("eval", records, resolver, args, seq_length)
+    cases, selection = make_cases("eval", records, resolver, args, seq_length)
     if not cases:
-        counts = {name: len(candidate_bank[name]) for name in selected_behaviors}
+        counts = {
+            name: selection.get("eligible_counts", {}).get(name, 0)
+            for name in selected_behaviors
+        }
         raise RuntimeError(f"No eligible cases for {args.behavior}: {counts}")
-    candidate_counts = {name: len(candidate_bank[name]) for name in BEHAVIORS}
-    excluded = {
-        f"{behavior}:{reason}": count
-        for behavior, values in excluded_by_behavior.items()
-        for reason, count in values.items()
-    }
+    candidate_counts = selection["eligible_counts"]
+    excluded = selection["excluded_reasons"]
     limit = args.max_cases_per_behavior
     full_behavior = {
-        name: name in selected_behaviors and limit is None and args.case_spec is None
+        name: (
+            name in selected_behaviors
+            and selection["selected_counts"][name] == selection["eligible_counts"][name]
+            and args.case_spec is None
+        )
         for name in BEHAVIORS
     }
     formal_full_test = args.behavior == "all" and limit is None and args.case_spec is None
@@ -1690,6 +1913,7 @@ def run_eval(args: argparse.Namespace) -> int:
                     "transition_lead_s": LEAD_SECONDS,
                     "transition_lead_steps": LEAD_STEPS,
                 },
+                "selection": selection,
                 "cases": cases,
                 "formal_full_test": formal_full_test,
             },
@@ -1707,6 +1931,7 @@ def run_eval(args: argparse.Namespace) -> int:
             formal_full_test,
             full_behavior,
             steady_steps,
+            selection,
         )
         config["tracking_parity"] = parity
         write_json(root / "config.json", config)
@@ -1717,6 +1942,19 @@ def run_eval(args: argparse.Namespace) -> int:
             "aggregation": aggregate_results(rows),
             "candidate_counts": candidate_counts,
             "excluded_reasons": excluded,
+            "selection": {
+                key: selection[key]
+                for key in ("mode", "seed", "selection_fingerprint")
+            },
+            "source_group_coverage": {
+                behavior: {
+                    "eligible": selection["eligible_source_groups"][behavior],
+                    "selected": selection["selected_unique_source_groups"][behavior],
+                }
+                for behavior in BEHAVIORS
+            },
+            "selected_direction_counts": selection["selected_direction_counts"],
+            "selection_warnings": selection["warnings"],
             "tracking_parity": parity,
             "evaluation_only": True,
             "training": False,
