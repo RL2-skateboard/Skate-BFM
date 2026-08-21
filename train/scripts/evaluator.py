@@ -102,7 +102,13 @@ def parse_args() -> argparse.Namespace:
 
     evaluate = subparsers.add_parser("eval", help="Formal Test Phase + Raw evaluation.")
     common(evaluate)
-    evaluate.add_argument("--max-cases-per-transition", type=int)
+    evaluate.add_argument(
+        "--behavior",
+        choices=(*BEHAVIORS, "all"),
+        default="all",
+    )
+    evaluate.add_argument("--steady-duration-s", type=float, default=3.0)
+    evaluate.add_argument("--max-cases-per-behavior", type=int)
     evaluate.add_argument("--case-spec", type=Path)
 
     video = subparsers.add_parser("video", help="Val Phase + Raw presentation videos.")
@@ -337,7 +343,7 @@ def transition_candidates(
             else:
                 continue
             if not valid:
-                excluded["phase_semantics"] += 1
+                excluded[f"{kind}:phase_semantics"] += 1
                 continue
             start = int(transition_record["source_start_frame"])
             end = int(transition_record["source_end_frame"])
@@ -345,21 +351,23 @@ def transition_candidates(
             raw, metadata, path = resolver.load(transition_record)
             bridge_end = reset + EVAL_STEPS + seq_length + 1
             if reset < 0:
-                excluded["no_lead"] += 1
+                excluded[f"{kind}:no_lead"] += 1
             elif bridge_end > len(raw["qpos"]):
-                excluded["raw_window"] += 1
+                excluded[f"{kind}:raw_window"] += 1
             elif np.any(raw["reset"][reset:bridge_end]) or np.any(raw["fall"][reset:bridge_end]):
-                excluded["raw_reset_or_fall"] += 1
+                excluded[f"{kind}:raw_reset_or_fall"] += 1
             else:
                 candidate_index = len([item for item in candidates if item["transition"] == kind])
                 candidates.append(
                     {
                         "case_id": f"{kind}_{candidate_index:03d}",
+                        "behavior": kind,
                         "transition": kind,
                         "transition_motion_key": transition_key,
                         "pre_motion_key": pre_key,
                         "post_motion_key": post_key,
                         "motion_key": transition_key,
+                        "steps": EVAL_STEPS,
                         "source_raw_npz": str(path),
                         "source_round": str(transition_record["source_round"]),
                         "source_rollout": str(transition_record["source_rollout"]),
@@ -391,9 +399,105 @@ def transition_candidates(
                         "source_physics": metadata["physics_randomization"],
                     }
                 )
-    if not candidates:
-        raise RuntimeError("No eligible Phase transition candidates.")
     return candidates, excluded
+
+
+def steady_candidates(
+    records: Mapping[str, Mapping[str, Any]],
+    resolver: RawResolver,
+    behavior: str,
+    steps: int,
+    seq_length: int,
+) -> tuple[list[dict[str, Any]], Counter[str]]:
+    labels = {"push"} if behavior == "push" else STEER
+    candidates: list[dict[str, Any]] = []
+    excluded: Counter[str] = Counter()
+    required_frames = steps + seq_length + 1
+    phase_ids = {name: value for value, name in PHASE_LABELS.items()}
+    for key, record in sorted(records.items()):
+        label = str(record["phase_label"])
+        if label not in labels:
+            continue
+        phase_start = int(record["source_start_frame"])
+        phase_end = int(record["source_end_frame"])
+        if phase_end - phase_start < required_frames:
+            excluded["too_short"] += 1
+            continue
+        reset = (phase_start + phase_end - required_frames) // 2
+        raw, metadata, path = resolver.load(record)
+        raw_end = reset + required_frames
+        if raw_end > len(raw["qpos"]):
+            excluded["tracking_context"] += 1
+            continue
+        if np.any(raw["reset"][reset:raw_end]) or np.any(raw["fall"][reset:raw_end]):
+            excluded["raw_reset_or_fall"] += 1
+            continue
+        expected_phase = phase_ids[label]
+        if not np.all(np.asarray(raw["phase_id"][reset:raw_end]) == expected_phase):
+            excluded["phase_contamination"] += 1
+            continue
+        candidates.append(
+            {
+                "case_id": f"{behavior}_{len(candidates):03d}",
+                "behavior": behavior,
+                "motion_key": key,
+                "source_raw_npz": str(path),
+                "source_round": str(record["source_round"]),
+                "source_rollout": str(record["source_rollout"]),
+                "source_episode": str(record["source_episode"]),
+                "physics_seed": int(record["physics_seed"]),
+                "reset_raw_frame": reset,
+                "steps": steps,
+                "phase_start_raw": phase_start,
+                "phase_end_raw": phase_end,
+                "phase_ranges": [
+                    {"phase": label, "start": phase_start, "end": phase_end}
+                ],
+                "source_physics": metadata["physics_randomization"],
+                **(
+                    {"steer_direction": label.removeprefix("steer_")}
+                    if behavior == "steer"
+                    else {}
+                ),
+            }
+        )
+    return candidates, excluded
+
+
+def formal_candidates(
+    records: Mapping[str, Mapping[str, Any]],
+    resolver: RawResolver,
+    steady_steps: int,
+    seq_length: int,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, int]]]:
+    push, push_excluded = steady_candidates(
+        records, resolver, "push", steady_steps, seq_length
+    )
+    steer, steer_excluded = steady_candidates(
+        records, resolver, "steer", steady_steps, seq_length
+    )
+    transition, transition_excluded = transition_candidates(records, resolver, seq_length)
+    bank = {
+        "push": push,
+        "steer": steer,
+        "push2steer": [item for item in transition if item["behavior"] == "push2steer"],
+        "steer2push": [item for item in transition if item["behavior"] == "steer2push"],
+    }
+    excluded = {
+        "push": dict(push_excluded),
+        "steer": dict(steer_excluded),
+        "push2steer": {
+            key.split(":", 1)[1]: value
+            for key, value in transition_excluded.items()
+            if key.startswith("push2steer:")
+        },
+        "steer2push": {
+            key.split(":", 1)[1]: value
+            for key, value in transition_excluded.items()
+            if key.startswith("steer2push:")
+        },
+    }
+    return bank, excluded
 
 
 def behavior_candidates(
@@ -1011,28 +1115,46 @@ def make_cases(
     seq_length: int,
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
     if command == "eval":
-        candidates, excluded = transition_candidates(records, resolver, seq_length)
-        by_type = {
-            name: [item for item in candidates if item["transition"] == name]
-            for name in ("push2steer", "steer2push")
-        }
+        steady_steps = round(args.steady_duration_s / CONTROL_DT)
+        if steady_steps <= 0:
+            raise ValueError("steady-duration-s must be positive.")
+        bank, excluded_by_behavior = formal_candidates(
+            records, resolver, steady_steps, seq_length
+        )
         if args.case_spec:
             payload = json.loads(args.case_spec.read_text())
             cases = payload.get("cases", [])
             if not cases:
                 raise RuntimeError("Case spec has no cases.")
-            return [
-                prepare_case(case, records, resolver, EVAL_STEPS, seq_length) for case in cases
-            ], excluded
-        limit = args.max_cases_per_transition
+            normalized = []
+            for case in cases:
+                item = dict(case)
+                if "behavior" not in item and item.get("transition") in BEHAVIORS:
+                    item["behavior"] = item["transition"]
+                if item.get("behavior") not in BEHAVIORS:
+                    raise RuntimeError(f"Case spec has invalid behavior: {item}")
+                steps = int(item.get("steps", EVAL_STEPS))
+                normalized.append(
+                    prepare_case(item, records, resolver, steps, seq_length)
+                )
+            return normalized, Counter()
+        selected_behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
         cases = []
-        for name in ("push2steer", "steer2push"):
-            selected = by_type[name] if limit is None else by_type[name][:limit]
+        for name in selected_behaviors:
+            selected = bank[name]
+            if args.max_cases_per_behavior is not None:
+                selected = selected[: args.max_cases_per_behavior]
             cases.extend(
-                prepare_case(item, records, resolver, EVAL_STEPS, seq_length)
+                prepare_case(item, records, resolver, int(item["steps"]), seq_length)
                 for item in selected
             )
-        return cases, excluded
+        return cases, Counter(
+            {
+                f"{behavior}:{reason}": count
+                for behavior, values in excluded_by_behavior.items()
+                for reason, count in values.items()
+            }
+        )
 
     cases = []
     behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
@@ -1081,7 +1203,7 @@ def training_date(summary_path: Path) -> str:
 def output_root(args: argparse.Namespace) -> Path:
     date = training_date(args.training_summary)
     suffix = (
-        "test_phase_transition_5s"
+        "test_phase_eval"
         if args.command == "eval"
         else "videos"
         if args.command == "video"
@@ -1098,9 +1220,11 @@ def invocation_config(
     checkpoint: Path,
     checkpoint_sha: str,
     provenance: Mapping[str, Any],
-    candidates: Sequence[Mapping[str, Any]],
+    candidates: Mapping[str, int],
     excluded: Mapping[str, int],
     full_test: bool,
+    full_behavior: Mapping[str, bool],
+    steady_steps: int | None = None,
 ) -> dict[str, Any]:
     return {
         "command": args.command,
@@ -1117,15 +1241,45 @@ def invocation_config(
         "phase_motionlib_sha256": hash_file(phase_path),
         "raw_root": str(raw_root),
         "phase_boundary_convention": "exact source_end_frame == next source_start_frame",
-        "candidate_counts": Counter(item["transition"] for item in candidates),
+        "candidate_counts": dict(candidates),
         "excluded_reasons": dict(excluded),
         "tracking_bridge": provenance,
         "control_dt": CONTROL_DT,
-        "duration_s": EVAL_SECONDS if args.command == "eval" else None,
-        "duration_steps": EVAL_STEPS if args.command == "eval" else None,
-        "lead_s": LEAD_SECONDS if args.command == "eval" else None,
-        "lead_steps": LEAD_STEPS if args.command == "eval" else None,
+        "eval_behaviors": args.behavior if args.command == "eval" else None,
+        "steady_duration_s": args.steady_duration_s if args.command == "eval" else None,
+        "steady_steps": steady_steps if args.command == "eval" else None,
+        "transition_duration_s": EVAL_SECONDS if args.command == "eval" else None,
+        "transition_steps": EVAL_STEPS if args.command == "eval" else None,
+        "transition_lead_s": LEAD_SECONDS if args.command == "eval" else None,
+        "transition_lead_steps": LEAD_STEPS if args.command == "eval" else None,
         "formal_full_test": full_test,
+        "formal_full_behavior": dict(full_behavior),
+        "protocol": (
+            {
+                "push": {
+                    "duration_s": args.steady_duration_s,
+                    "duration_steps": steady_steps,
+                },
+                "steer": {
+                    "duration_s": args.steady_duration_s,
+                    "duration_steps": steady_steps,
+                },
+                "push2steer": {
+                    "duration_s": EVAL_SECONDS,
+                    "duration_steps": EVAL_STEPS,
+                    "lead_s": LEAD_SECONDS,
+                    "lead_steps": LEAD_STEPS,
+                },
+                "steer2push": {
+                    "duration_s": EVAL_SECONDS,
+                    "duration_steps": EVAL_STEPS,
+                    "lead_s": LEAD_SECONDS,
+                    "lead_steps": LEAD_STEPS,
+                },
+            }
+            if args.command == "eval"
+            else None
+        ),
         "evaluation_only": True,
         "training": False,
         "test": args.command == "eval",
@@ -1233,6 +1387,100 @@ def write_expert_video(path: Path, run: Mapping[str, Any], steps: int) -> None:
     render_expert(path, run, steps)
 
 
+def write_summary_markdown(
+    path: Path, summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> None:
+    aggregation = summary["aggregation"]
+
+    def value(behavior: str, metric: str) -> str:
+        group = aggregation.get(behavior, {})
+        metric_data = group.get(metric)
+        return "-" if not metric_data else f"{metric_data['mean']:.5g}"
+
+    def completion(behavior: str) -> str:
+        data = aggregation.get(behavior, {}).get("completion", {})
+        if not data:
+            return "-"
+        return f"{data['full_completion_rate']:.3f}"
+
+    lines = [
+        "# Formal Phase Evaluation",
+        "",
+        "| Behavior | Cases | Full completion | Joint MAE | Root Ori | "
+        "Board XY | Coupling XY | Feet on board |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for behavior in BEHAVIORS:
+        group = aggregation.get(behavior, {})
+        count = group.get("completion", {}).get("case_count", 0)
+        retention = group.get("retention", {}).get("feet_on_board_ratio", {}).get("mean")
+        lines.append(
+            f"| {behavior} | {count} | {completion(behavior)} | "
+            f"{value(behavior, 'joint_position_mae_rad')} | "
+            f"{value(behavior, 'root_orientation_geodesic_error_deg')} | "
+            f"{value(behavior, 'board_xy_displacement_error_m')} | "
+            f"{value(behavior, 'coupling_xy_error_m')} | "
+            f"{'-' if retention is None else f'{retention:.3f}'} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Steer",
+            "",
+            "| Direction | Cases | Joint MAE | Full completion |",
+            "|---|---:|---:|---:|",
+        ]
+    )
+    for direction in ("left", "forward", "right"):
+        key = "steer_by_direction"
+        group = aggregation.get(key, {}).get(direction, {})
+        count = group.get("completion", {}).get("case_count", 0)
+        rate = group.get("completion", {}).get("full_completion_rate")
+        mae = group.get("joint_position_mae_rad", {}).get("mean")
+        lines.append(
+            f"| {direction} | {count} | {'-' if mae is None else f'{mae:.5g}'} | "
+            f"{'-' if rate is None else f'{rate:.3f}'} |"
+        )
+    lines.extend(["", "## Transition Sections", ""])
+    for behavior in ("push2steer", "steer2push"):
+        lines.append(f"### {behavior}")
+        group = aggregation.get(behavior, {})
+        section_lines = []
+        for section in ("pre", "transition", "post"):
+            section_rows = [
+                row["metrics"][section]
+                for row in rows
+                if row["case"]["behavior"] == behavior and row["metrics"].get(section)
+            ]
+            metric_values = [
+                item["joint_position_mae_rad"]["mean"] for item in section_rows
+            ]
+            section_lines.append(
+                f"| {section} | {len(section_rows)} | "
+                f"{'-' if not metric_values else f'{np.mean(metric_values):.5g}'} |"
+            )
+        lines.extend(
+            [
+                "",
+                "| Section | Cases | Joint MAE |",
+                "|---|---:|---:|",
+                *section_lines,
+            ]
+        )
+        lines.append("")
+    lines.extend(
+        [
+            "## Protocol",
+            "",
+            f"- Full test: `{summary.get('formal_full_test', False)}`",
+            f"- Tracking parity: `{summary.get('tracking_parity', {}).get('status', 'UNKNOWN')}`",
+            f"- Training: `{summary.get('training', False)}`",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines))
+
+
 def aggregate_results(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     def aggregate(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if not items:
@@ -1256,19 +1504,42 @@ def aggregate_results(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 np.mean([item["evaluation"]["terminated"] for item in items])
             ),
         }
+        for section in ("retention", "stability"):
+            keys = set().union(*(item[section] for item in items))
+            result[section] = {
+                key: summarize(np.asarray([item[section][key] for item in items]))
+                for key in sorted(keys)
+                if all(
+                    item[section].get(key) is not None
+                    and np.isfinite(float(item[section][key]))
+                    for item in items
+                )
+            }
         return result
 
-    return {
-        "all": aggregate(rows),
-        "push2steer": aggregate([row for row in rows if row["case"]["transition"] == "push2steer"]),
-        "steer2push": aggregate([row for row in rows if row["case"]["transition"] == "steer2push"]),
+    result = {"all": aggregate(rows)}
+    for behavior in BEHAVIORS:
+        result[behavior] = aggregate(
+            [row for row in rows if row["case"]["behavior"] == behavior]
+        )
+    result["steer_by_direction"] = {
+        direction: aggregate(
+            [
+                row
+                for row in rows
+                if row["case"]["behavior"] == "steer"
+                and row["case"].get("steer_direction") == direction
+            ]
+        )
+        for direction in ("left", "forward", "right")
     }
+    return result
 
 
 def select_representatives(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
     selected = {}
-    for transition in ("push2steer", "steer2push"):
-        items = [row for row in rows if row["case"]["transition"] == transition]
+    for behavior in BEHAVIORS:
+        items = [row for row in rows if row["case"]["behavior"] == behavior]
         if not items:
             continue
         complete = [row for row in items if row["evaluation"]["full_completion"]]
@@ -1278,7 +1549,7 @@ def select_representatives(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mappi
                     [row["metrics"]["full"]["joint_position_mae_rad"]["mean"] for row in complete]
                 )
             )
-            selected[transition] = min(
+            selected[behavior] = min(
                 complete,
                 key=lambda row: (
                     abs(row["metrics"]["full"]["joint_position_mae_rad"]["mean"] - median),
@@ -1287,7 +1558,7 @@ def select_representatives(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mappi
             )
         else:
             median = float(np.median([row["evaluation"]["completion_ratio"] for row in items]))
-            selected[transition] = min(
+            selected[behavior] = min(
                 items,
                 key=lambda row: (
                     abs(row["evaluation"]["completion_ratio"] - median),
@@ -1307,8 +1578,29 @@ def run_eval(args: argparse.Namespace) -> int:
         parameter.requires_grad for parameter in agent._model.parameters()
     ):
         raise RuntimeError("Checkpoint is not frozen.")
-    candidates, excluded = transition_candidates(records, resolver, seq_length)
+    steady_steps = round(args.steady_duration_s / CONTROL_DT)
+    if steady_steps <= 0:
+        raise ValueError("steady-duration-s must be positive.")
+    candidate_bank, excluded_by_behavior = formal_candidates(
+        records, resolver, steady_steps, seq_length
+    )
+    selected_behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
     cases, _ = make_cases("eval", records, resolver, args, seq_length)
+    if not cases:
+        counts = {name: len(candidate_bank[name]) for name in selected_behaviors}
+        raise RuntimeError(f"No eligible cases for {args.behavior}: {counts}")
+    candidate_counts = {name: len(candidate_bank[name]) for name in BEHAVIORS}
+    excluded = {
+        f"{behavior}:{reason}": count
+        for behavior, values in excluded_by_behavior.items()
+        for reason, count in values.items()
+    }
+    limit = args.max_cases_per_behavior
+    full_behavior = {
+        name: name in selected_behaviors and limit is None and args.case_spec is None
+        for name in BEHAVIORS
+    }
+    formal_full_test = args.behavior == "all" and limit is None and args.case_spec is None
     with tempfile.TemporaryDirectory(prefix="skate_bfm_eval_") as temp:
         temp_dir = Path(temp)
         temp_cases = []
@@ -1340,10 +1632,10 @@ def run_eval(args: argparse.Namespace) -> int:
             case["case_id"]: {
                 "raw_frames": temp_tracking.trajectories[case["case_id"]]["raw_frames"],
                 "observation_rows": temp_tracking.trajectories[case["case_id"]]["length"],
-                "required_policy_steps": EVAL_STEPS,
+                "required_policy_steps": int(case["steps"]),
                 "seq_length": agent._model.cfg.seq_length,
                 "final_future_context": (
-                    temp_tracking.trajectories[case["case_id"]]["length"] - EVAL_STEPS
+                    temp_tracking.trajectories[case["case_id"]]["length"] - int(case["steps"])
                 ),
                 "gap_free": True,
             }
@@ -1357,10 +1649,17 @@ def run_eval(args: argparse.Namespace) -> int:
         rows = []
         try:
             for index, case in enumerate(cases):
-                source = records[case["transition_motion_key"]]
+                source = records[str(case.get("transition_motion_key", case["motion_key"]))]
                 raw, metadata, _ = resolver.load(source)
                 run = run_policy(
-                    agent, temp_tracking, case["case_id"], raw, metadata, case, env, EVAL_STEPS
+                    agent,
+                    temp_tracking,
+                    case["case_id"],
+                    raw,
+                    metadata,
+                    case,
+                    env,
+                    int(case["steps"]),
                 )
                 result = run["result"]
                 result["checkpoint"] = {
@@ -1382,7 +1681,18 @@ def run_eval(args: argparse.Namespace) -> int:
         checkpoint_sha = hash_file(checkpoint_model_path(args.checkpoint.resolve()))
         write_json(
             root / "cases.json",
-            {"cases": cases, "formal_full_test": args.max_cases_per_transition is None},
+            {
+                "protocol": {
+                    "steady_duration_s": args.steady_duration_s,
+                    "steady_steps": steady_steps,
+                    "transition_duration_s": EVAL_SECONDS,
+                    "transition_steps": EVAL_STEPS,
+                    "transition_lead_s": LEAD_SECONDS,
+                    "transition_lead_steps": LEAD_STEPS,
+                },
+                "cases": cases,
+                "formal_full_test": formal_full_test,
+            },
         )
         config = invocation_config(
             args,
@@ -1392,9 +1702,11 @@ def run_eval(args: argparse.Namespace) -> int:
             args.checkpoint.resolve(),
             checkpoint_sha,
             bridge,
-            candidates,
+            candidate_counts,
             excluded,
-            args.max_cases_per_transition is None,
+            formal_full_test,
+            full_behavior,
+            steady_steps,
         )
         config["tracking_parity"] = parity
         write_json(root / "config.json", config)
@@ -1403,11 +1715,36 @@ def run_eval(args: argparse.Namespace) -> int:
                 handle.write(json.dumps(row, sort_keys=True) + "\n")
         summary = {
             "aggregation": aggregate_results(rows),
-            "candidate_counts": dict(Counter(item["transition"] for item in candidates)),
+            "candidate_counts": candidate_counts,
+            "excluded_reasons": excluded,
             "tracking_parity": parity,
             "evaluation_only": True,
             "training": False,
-            "full_test_executed": args.max_cases_per_transition is None,
+            "mutation": {
+                "parameters_changed": False,
+                "buffers_changed": False,
+                "normalizer_changed": False,
+                "components_changed": False,
+            },
+            "protocol": {
+                "push": {"duration_s": args.steady_duration_s, "duration_steps": steady_steps},
+                "steer": {"duration_s": args.steady_duration_s, "duration_steps": steady_steps},
+                "push2steer": {
+                    "duration_s": EVAL_SECONDS,
+                    "duration_steps": EVAL_STEPS,
+                    "lead_s": LEAD_SECONDS,
+                    "lead_steps": LEAD_STEPS,
+                },
+                "steer2push": {
+                    "duration_s": EVAL_SECONDS,
+                    "duration_steps": EVAL_STEPS,
+                    "lead_s": LEAD_SECONDS,
+                    "lead_steps": LEAD_STEPS,
+                },
+            },
+            "full_test_executed": formal_full_test,
+            "formal_full_test": formal_full_test,
+            "formal_full_behavior": full_behavior,
         }
         selected = select_representatives(rows)
         summary["representative_selection_rule"] = (
@@ -1416,9 +1753,9 @@ def run_eval(args: argparse.Namespace) -> int:
         )
         videos = root / "videos"
         replay_checks = {}
-        for transition, row in selected.items():
+        for behavior, row in selected.items():
             case = row["case"]
-            source = records[case["transition_motion_key"]]
+            source = records[str(case.get("transition_motion_key", case["motion_key"]))]
             raw, metadata, _ = resolver.load(source)
             replay_env = HuskyBfmOnlineEnv()
             replay_before = checkpoint_mutation(agent)
@@ -1431,8 +1768,8 @@ def run_eval(args: argparse.Namespace) -> int:
                     metadata,
                     case,
                     env=replay_env,
-                    steps=EVAL_STEPS,
-                    model_video=videos / transition / "model.mp4",
+                    steps=int(case["steps"]),
+                    model_video=videos / behavior / "model.mp4",
                 )
             finally:
                 replay_env.close()
@@ -1465,22 +1802,25 @@ def run_eval(args: argparse.Namespace) -> int:
                     )
                 )
             if not all(checks.values()):
-                raise RuntimeError(f"Representative replay mismatch for {transition}: {checks}")
-            replay_checks[transition] = checks
+                raise RuntimeError(f"Representative replay mismatch for {behavior}: {checks}")
+            replay_checks[behavior] = checks
             write_expert_video(
-                videos / transition / "expert.mp4",
+                videos / behavior / "expert.mp4",
                 run,
-                EVAL_STEPS,
+                int(case["steps"]),
             )
-            write_json(videos / transition / "case.json", case)
+            write_json(videos / behavior / "case.json", case)
         summary["representative_replay"] = replay_checks
+        summary["representative_selection"] = {
+            behavior: row["case"]["case_id"] for behavior, row in selected.items()
+        }
         write_json(root / "summary.json", summary)
-        (root / "summary.md").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        write_summary_markdown(root / "summary.md", summary, rows)
     print(
         json.dumps(
             {
                 "status": "PASS",
-                "formal_full_test": args.max_cases_per_transition is None,
+                "formal_full_test": formal_full_test,
                 "cases": len(rows),
                 "output": str(output_root(args)),
             },
