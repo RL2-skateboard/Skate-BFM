@@ -1322,6 +1322,7 @@ def run_reference_motion(
     *,
     env: HuskyBfmOnlineEnv | None = None,
     video_path: Path | None = None,
+    local_frame: int = 0,
 ) -> dict[str, Any]:
     raw, metadata, source_path = resolver.load(record)
     source_start = int(record["source_start_frame"])
@@ -1334,13 +1335,18 @@ def run_reference_motion(
         raise RuntimeError("MotionLibrary source frame range is inconsistent.")
     if trajectory["raw_frames"] != raw_frames:
         raise RuntimeError("Tracking and MotionLibrary raw frame counts differ.")
-    t_eval = min(raw_frames - 1, trajectory["length"] - 1)
+    if not 0 <= local_frame < raw_frames:
+        raise ValueError(f"Reset local frame is outside motion {motion_key}: {local_frame}")
+    t_eval = min(raw_frames - local_frame - 1, trajectory["length"] - local_frame - 1)
     if t_eval <= 0:
-        raise RuntimeError("Reference motion has no executable transition.")
-    z, ranges = tracking.encode(agent._model, motion_key, 0, t_eval)
+        raise RuntimeError("Reset local frame has no executable transition.")
+    z, ranges = tracking.encode(agent._model, motion_key, local_frame, t_eval)
     if z.shape != (t_eval, 256) or not torch.isfinite(z).all():
         raise RuntimeError("Tracking latent is not finite [T_eval, 256].")
-    if any(item["future_start"] != step + 1 for step, item in enumerate(ranges)):
+    if any(
+        item["future_start"] != local_frame + step + 1
+        for step, item in enumerate(ranges)
+    ):
         raise RuntimeError("Tracking future indices are not reset-aligned.")
 
     owns_env = env is None
@@ -1352,8 +1358,9 @@ def run_reference_motion(
     terminated = truncated = False
     first_action_fingerprint = None
     try:
-        qpos = np.asarray(raw["qpos"][source_start], dtype=np.float64)
-        qvel = np.asarray(raw["qvel"][source_start], dtype=np.float64)
+        reset_frame = source_start + local_frame
+        qpos = np.asarray(raw["qpos"][reset_frame], dtype=np.float64)
+        qvel = np.asarray(raw["qvel"][reset_frame], dtype=np.float64)
         observation = env.reset(
             qpos=qpos,
             qvel=qvel,
@@ -1403,7 +1410,8 @@ def run_reference_motion(
     if not actual or diagnostics is None:
         raise RuntimeError("Reference rollout produced no physical transitions.")
     executed = len(actual)
-    metric_series = reference_metric_series(actual, raw, source_start)
+    reset_frame = source_start + local_frame
+    metric_series = reference_metric_series(actual, raw, reset_frame)
     metric_summary = reference_metric_summary(metric_series)
     control = diagnostics.summary()
     return {
@@ -1416,6 +1424,7 @@ def run_reference_motion(
             "physics_seed": int(record["physics_seed"]),
             "start_frame": source_start,
             "end_frame": source_end,
+            "reset_frame": reset_frame,
             "metadata_split": metadata["dataset_split"],
         },
         "phase_label": record.get("phase_label"),
@@ -1435,12 +1444,15 @@ def run_reference_motion(
             "frame_difference": trajectory["length"] - trajectory["raw_frames"],
         },
         "alignment": {
-            "reset_local_frame": 0,
-            "reset_raw_frame": source_start,
-            "actual_next_reference_start": source_start + 1,
-            "actual_next_reference_end": source_start + executed,
+            "reset_local_frame": local_frame,
+            "reset_raw_frame": reset_frame,
+            "actual_next_reference_start": reset_frame + 1,
+            "actual_next_reference_end": reset_frame + executed,
             "raw_frame_idx": [
-                int(value) for value in raw["frame_idx"][source_start + 1 : source_start + min(executed, 5) + 1]
+                int(value)
+                for value in raw["frame_idx"][
+                    reset_frame + 1 : reset_frame + min(executed, 5) + 1
+                ]
             ],
         },
         "metrics": metric_summary,
@@ -1468,25 +1480,42 @@ def run_reference_viewer_sequence(
     *,
     motion_key: str | None,
     episodes: int,
+    seed: int,
     env: HuskyBfmOnlineEnv,
     output_dir: Path,
 ) -> int:
-    """Run consecutive reference motions in one live MuJoCo viewer."""
+    """Run random push/steer reference resets in one live MuJoCo viewer."""
 
     if episodes <= 0:
         raise ValueError("--episodes must be positive.")
-    motion_keys = sorted(records)
+    motion_keys = sorted(
+        key
+        for key, record in records.items()
+        if record.get("phase_label") == "push"
+        or str(record.get("phase_label", "")).startswith("steer_")
+    )
+    if not motion_keys:
+        raise RuntimeError("Viewer sequence has no push/steer motions.")
+    eligible = [
+        key for key in motion_keys if tracking.eligible_frame_count(key, 1) > 0
+    ]
+    if not eligible:
+        raise RuntimeError("Viewer sequence has no push/steer motion with a valid tracking frame.")
+    rng = np.random.default_rng(seed)
     if motion_key is not None:
-        if motion_key not in records:
-            raise KeyError(f"Motion key is not in the selected validation dataset: {motion_key}")
-        start = motion_keys.index(motion_key)
-    else:
-        start = 0
+        if motion_key not in eligible:
+            raise KeyError(
+                f"Viewer motion must be an eligible push/steer motion: {motion_key}"
+            )
     rows = []
-    for offset in range(min(episodes, len(motion_keys) - start)):
+    for _ in range(episodes):
         if not env.env.is_running:
             break
-        key = motion_keys[start + offset]
+        key = motion_key if motion_key is not None else eligible[
+            int(rng.integers(len(eligible)))
+        ]
+        frame_count = tracking.eligible_frame_count(key, 1)
+        local_frame = int(rng.integers(frame_count))
         row = run_reference_motion(
             agent,
             tracking,
@@ -1494,11 +1523,14 @@ def run_reference_viewer_sequence(
             key,
             records[key],
             env=env,
+            local_frame=local_frame,
         )
+        motion_key = None
         rows.append(serializable_reference_rows([row])[0])
         print(
             f"[Viewer reset] sequence={len(rows)}/{episodes}, "
-            f"motion={key}, steps={row['t_exec']}, "
+            f"phase={row['phase_label']}, motion={key}, "
+            f"local_frame={local_frame}, steps={row['t_exec']}, "
             f"termination={row['fall_reason'] or 'natural_end'}"
         )
     if not rows:
@@ -1508,7 +1540,12 @@ def run_reference_viewer_sequence(
         "episodes_requested": episodes,
         "episodes_completed": len(rows),
         "same_viewer_window": True,
+        "seed": seed,
+        "phase_filter": ["push", "steer_left", "steer_forward", "steer_right"],
         "motion_keys": [row["motion_key"] for row in rows],
+        "reset_local_frames": [
+            row["alignment"]["reset_local_frame"] for row in rows
+        ],
         "rollouts": rows,
     })
     return len(rows)
@@ -1931,6 +1968,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
                 records,
                 motion_key=args.motion_key,
                 episodes=args.episodes,
+                seed=args.seed,
                 env=env,
                 output_dir=output_dir,
             )
