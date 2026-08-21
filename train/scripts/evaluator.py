@@ -195,7 +195,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--motion-key",
-        help="Run one exact held-out motion-reference rollout instead of the full evaluator.",
+        help=(
+            "Exact motion to run; with --viewer it is the first motion in a "
+            "same-window multi-motion sequence."
+        ),
     )
     parser.add_argument(
         "--checkpoint-view",
@@ -1457,6 +1460,60 @@ def run_reference_motion(
     }
 
 
+def run_reference_viewer_sequence(
+    agent: Any,
+    tracking: AlignedSkateTrackingContext,
+    resolver: ReferenceSourceResolver,
+    records: Mapping[str, Mapping[str, Any]],
+    *,
+    motion_key: str | None,
+    episodes: int,
+    env: HuskyBfmOnlineEnv,
+    output_dir: Path,
+) -> int:
+    """Run consecutive reference motions in one live MuJoCo viewer."""
+
+    if episodes <= 0:
+        raise ValueError("--episodes must be positive.")
+    motion_keys = sorted(records)
+    if motion_key is not None:
+        if motion_key not in records:
+            raise KeyError(f"Motion key is not in the selected validation dataset: {motion_key}")
+        start = motion_keys.index(motion_key)
+    else:
+        start = 0
+    rows = []
+    for offset in range(min(episodes, len(motion_keys) - start)):
+        if not env.env.is_running:
+            break
+        key = motion_keys[start + offset]
+        row = run_reference_motion(
+            agent,
+            tracking,
+            resolver,
+            key,
+            records[key],
+            env=env,
+        )
+        rows.append(serializable_reference_rows([row])[0])
+        print(
+            f"[Viewer reset] sequence={len(rows)}/{episodes}, "
+            f"motion={key}, steps={row['t_exec']}, "
+            f"termination={row['fall_reason'] or 'natural_end'}"
+        )
+    if not rows:
+        raise RuntimeError("Viewer closed before the first reference motion completed.")
+    write_json(output_dir / "viewer_sequence.json", {
+        "schema": "skate-bfm-motion-reference-viewer-sequence-v1",
+        "episodes_requested": episodes,
+        "episodes_completed": len(rows),
+        "same_viewer_window": True,
+        "motion_keys": [row["motion_key"] for row in rows],
+        "rollouts": rows,
+    })
+    return len(rows)
+
+
 def checkpoint_mutation(agent: Any) -> dict[str, Any]:
     return {
         "parameters": hash_params(agent._model),
@@ -1848,6 +1905,49 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
     trained_sha256 = hash_file(checkpoint_model_path(trained))
 
     resolver = ReferenceSourceResolver("val")
+    if args.viewer:
+        if args.reference_dataset == "both":
+            raise ValueError("--viewer requires one --reference-dataset.")
+        if args.checkpoint_view is None:
+            raise ValueError("--viewer requires --checkpoint-view fresh|trained.")
+        if args.video is not None:
+            raise ValueError(
+                "--video is not supported with multi-motion --viewer; run video separately."
+            )
+        records, _, motion_path, _ = load_reference_records(
+            "val", args.reference_dataset
+        )
+        checkpoint_name = args.checkpoint_view
+        checkpoint = {"fresh": official, "trained": trained}[checkpoint_name]
+        agent, load_report = load_frozen_agent(checkpoint)
+        before = checkpoint_mutation(agent)
+        tracking = AlignedSkateTrackingContext.load(agent, motion_path)
+        env = HuskyBfmOnlineEnv(viewer=True, realtime=True)
+        try:
+            completed = run_reference_viewer_sequence(
+                agent,
+                tracking,
+                resolver,
+                records,
+                motion_key=args.motion_key,
+                episodes=args.episodes,
+                env=env,
+                output_dir=output_dir,
+            )
+        finally:
+            env.close()
+        after = checkpoint_mutation(agent)
+        if before != after:
+            raise RuntimeError("Viewer sequence mutated a frozen checkpoint.")
+        print(json.dumps({
+            "viewer_sequence": "PASS",
+            "episodes_completed": completed,
+            "checkpoint_view": checkpoint_name,
+            "checkpoint_model_sha256": hash_file(checkpoint_model_path(checkpoint)),
+            "load_report": load_report,
+            "output": str(output_dir / "viewer_sequence.json"),
+        }, indent=2, sort_keys=True))
+        return 0
     if args.motion_key is not None:
         if args.reference_dataset == "both":
             raise ValueError("--motion-key requires one --reference-dataset.")
