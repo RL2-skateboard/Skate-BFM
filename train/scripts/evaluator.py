@@ -1225,7 +1225,9 @@ def load_reference_records(
     expected_split = {"val": "validation", "test": "test"}[split]
     if manifest.get("dataset_split") != expected_split:
         raise RuntimeError("Reference manifest split mismatch.")
-    records = joblib.load(motion_path, mmap_mode="r")
+    # Evaluation keeps the record dictionary in memory so thousands of
+    # per-motion arrays do not remain as open memmap file descriptors.
+    records = joblib.load(motion_path)
     if not isinstance(records, dict) or not records:
         raise RuntimeError("Reference MotionLibrary must be a non-empty mapping.")
     if dataset == "phase":
