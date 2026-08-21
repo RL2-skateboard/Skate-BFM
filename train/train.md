@@ -131,7 +131,7 @@ privileged_state = [
 privileged state, last action, and Actor history. `29D` and `23D` below mean
 29- and 23-coordinate action vectors, respectively.
 
-### Verified and Unverified Conclusions
+### Experiment 3 Verified and Unverified Conclusions
 
 Verified:
 
@@ -385,24 +385,44 @@ by the failed training result. Reward audits, rollout preflights, reset/latent
 audits, action audits, and frozen evaluations are all internal steps of this
 single experiment.
 
+### Current Status
+
+| Area | Current state |
+|---|---|
+| Formal training | 100,000 transitions, 198 update blocks, 9,900 native updates |
+| Skate expert data | Phase train motion library, 6,038 motions, 452,291 frames, 50 Hz |
+| Runtime contract | fresh official BFM0, hard-waist HUSKY23 controller, 29D BFM action input |
+| Formal held-out eval | one fixed 80-case Test benchmark, exact replay for 20k / 50k / 100k |
+| Best current behavior | push and steer are improved over the earliest checkpoint, but push2steer and steer2push remain the weak link |
+
+**Caption.** This summary separates the current formal run from historical
+bring-up diagnostics. `100,000 transitions` is the full training horizon;
+`update blocks` group 50 native updates every 500 transitions after the
+1,500-transition warm-up; `50 Hz` is the data rate of the Phase motion
+library. The held-out Test benchmark is the same fixed case bank used by the
+current 20k/50k/100k comparison.
+
 ### Environment and Inputs
 
 | Item | Formal setting |
 |---|---|
 | Initialization | fresh official BFM0 checkpoint |
-| Base expert | `train/dataset/base/`: 862 LAFAN motions |
-| Skate expert | `train/dataset/sim_collected/`: Phase 6,038 motions; Continuous 890 clips |
-| Completed formal run | Phase dataset |
+| Base expert | `train/dataset/base/lafan_29dof_10s-clipped.pkl`: 862 LAFAN motions |
+| Skate expert | `train/dataset/sim_collected/train/phase/motion_library/skate_expert_phase.pkl`: 6,038 motions / 452,291 frames / 50 Hz |
+| Completed formal run | Phase train motion library |
 | Online simulator | four independent `HuskyBfmOnlineEnv` instances |
 | HUSKY integration | MuJoCo `0.002 s * 10 = 0.02 s` control step |
 | Official BFM reference | IsaacSim `0.005 s * 4 = 0.02 s` control step |
 | BFM robot contract | `g1_29dof_hard_waist` |
 | Actor/model device | CUDA |
 | Replay | CPU `DictBuffer`, capacity 100,000 |
-| Episode horizon | 1,024 transitions |
-| Stored/executed action | BFM29 / HUSKY23 |
-| Expert batch | 64 Base Seq8 + 64 Skate Seq8 = 1,024 rows |
-| Online reset | uniform motion, then uniform local frame |
+| Episode horizon | 1,024 transitions per rollout batch; 100k training horizon |
+| Stored/executed action | 29D BFM action / 23D HUSKY actuator action |
+| Expert batch | 64 Base `Seq8` + 64 Skate `Seq8` = 1,024 rows |
+| Online reset | uniform motion, then uniform local frame, exact source physics, `history_actor=0`, `last_action=0` |
+| Expert rollout slots | env indices `[0, 3]`, 50% expert rollout, 250-step tracking cap |
+| Rollout latent refresh | every 100 steps from z-buffer when available, otherwise `sample_z()` |
+| Latent contract | `z_dim=256`, `norm_z=True`, `||z||_2 = 16` |
 
 **Caption.** A transition is one `(state, action, next state)` sample at the
 0.02 s control step. Episode horizon is the maximum transitions before
@@ -412,16 +432,16 @@ time-limit truncation. `Seq8` contains eight consecutive transitions; the
 `Motions` count MotionLib trajectories, `clips` count fixed continuous
 segments, replay capacity is the maximum stored online transitions, and the
 uniform reset gives each selected motion and then each local frame equal
-sampling probability.
+sampling probability. `history_actor` and `last_action` are cleared on reset
+so the first online observation is not contaminated by the previous rollout.
 
 The **current intended online rollout setting** restores the exact source
-physics realization associated with the selected expert frame. It does not
-sample an additional random physics realization online. This differs from:
-
-- Experiment 2, where random physics is sampled to collect diverse source
-  episodes;
-- the historical Phase 100k run, which injected source `qpos/qvel` into
-  nominal physics before the mismatch was found.
+physics realization associated with the selected expert frame and never
+samples an additional physics realization online. This differs from
+Experiment 2, where physics randomization is used to collect diverse source
+episodes. The formal Phase run also uses aligned tracking latents instead of
+the earlier unrelated random-rollout z that was used before the mismatch was
+found.
 
 Formal schedule:
 
@@ -436,6 +456,25 @@ total native updates = 9,900
 checkpoints = 20k, 50k, 100k
 seed = 4728
 ```
+
+#### Current formal checkpoint comparison
+
+The fixed held-out benchmark replays the same 80 Test cases for 20k, 50k, and
+100k. Completion is the primary closed-loop signal; lower board / coupling
+error on an episode that falls early is only a prefix statistic.
+
+| Behavior | 20k completion | 50k completion | 100k completion |
+|---|---:|---:|---:|
+| push | 0.986 | 0.580 | 0.760 |
+| steer | 0.965 | 0.730 | 0.894 |
+| push2steer | 0.893 | 0.121 | 0.301 |
+| steer2push | 1.000 | 0.222 | 0.434 |
+
+**Caption.** Completion is executed control steps divided by planned horizon.
+`push` and `steer` are the steady behaviors; `push2steer` and `steer2push`
+are the transition behaviors. The table shows that the later checkpoints
+recover steady push / steer behavior relative to 50k, but the transition
+behaviors remain the weakest part of the policy.
 
 ### Experiment Process and Method
 
@@ -613,7 +652,7 @@ No forward-speed, command, balance, steering, or board-displacement reward was
 added. Fall termination uses the same persistent 70-degree/0.45 m detector as
 Experiment 2.
 
-#### Training and failure
+#### Historical training and failure
 
 The native update path was first checked on one fixed 1,024-transition replay
 for 1, 10, and 100 updates. A 20k closed-loop baseline then verified growing
@@ -686,7 +725,7 @@ checkpoint/phase directions. This is a common 3D spherical direction view,
 not a lossless 256D geometry, an action-space coverage result, or a causal
 behavior explanation.
 
-#### Semantics mismatch diagnosis and methods
+#### Semantics mismatch diagnosis and fixes
 
 The following are process steps inside Experiment 3:
 

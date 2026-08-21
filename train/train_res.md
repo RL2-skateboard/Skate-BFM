@@ -137,7 +137,27 @@ are dataset-quality checks, not trained-policy performance videos.
 
 ## Experiment 3: BFM + Skate Expert Training and Semantics Alignment
 
-### Training Process Results
+### Current Formal Summary
+
+The current authoritative result for Experiment 3 is the fixed 80-case R5
+held-out comparison in
+[`eval_res/2026-08-20/20k-50k-100k-s20b/comparison.md`](eval_res/2026-08-20/20k-50k-100k-s20b/comparison.md).
+The table below summarizes the nearest training diagnostics for the three
+formal checkpoints.
+
+| Checkpoint | Env transitions | Native updates | Episodes | Falls | Tracking ratio | FB loss | Critic loss | Aux critic loss | Actor loss | Disc loss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20k | 20,000 | 1,900 | 17 | 1 | 0.0228 | -245.13 | 1.11 | 1.30 | 42,843.37 | 0.266 |
+| 50k | 50,000 | 4,900 | 236 | 212 | 0.0612 | -5,135.21 | 39.37 | 29.26 | 9,395.31 | 0.139 |
+| 100k | 100,000 | 9,900 | 1,917 | 1,893 | 0.1886 | -10,463.11 | 4.18 | 1.74 | 2,467.11 | 0.103 |
+
+**Caption.** `FB loss`, `critic loss`, `aux critic loss`, `actor loss`, and
+`disc loss` are the actual metric names produced by the training code.
+`Tracking ratio` is the fraction of rollout transitions that used aligned
+tracking latents. Lower loss is not by itself evidence of better behavior;
+the closed-loop held-out evaluation below is the deciding evidence.
+
+### Historical Training Process Results
 
 Fixed 1,024-transition replay:
 
@@ -175,7 +195,7 @@ value estimates, and Actor loss updates the policy. These are scalar
 optimization objectives with implementation-specific scales; finite values
 and downward trends are diagnostics, not proof of policy improvement.
 
-**20k closed-loop bring-up**
+**Historical 20k closed-loop bring-up**
 
 | Quantity | Result |
 |---|---:|
@@ -208,7 +228,7 @@ same objective, but matched frozen behavior is the deciding criterion.
 **Conclusion.** Optimization and checkpointing worked, but every fixed
 evaluation episode fell; physical performance was inconclusive.
 
-**Formal Phase 100k run**
+**Historical formal Phase 100k run**
 
 | Quantity | Result |
 |---|---:|
@@ -326,7 +346,7 @@ The three per-checkpoint latent views are
 [50k](eval_res/2026-08-20/50k-s20b_test_phase_eval/latent_space.png), and
 [100k](eval_res/2026-08-20/100k-s20b_test_phase_eval/latent_space.png).
 
-### Failure Diagnosis and Semantics Correction Results
+### Historical Failure Diagnosis and Semantics Correction Results
 
 These rows are diagnostic steps within Experiment 3:
 
@@ -349,7 +369,7 @@ action limit, where lower usually leaves more control margin. `Strict-5
 coverage` requires the current source action and four prior history actions to
 be representable by the BFM action range.
 
-**Skate expert action matching process**
+**Historical Skate expert action matching process**
 
 The source policy and BFM Actor do not share the same normalized action
 coordinates. The tested physical-target equations were:
@@ -437,7 +457,7 @@ mean B is closer to official IsaacSim. The strong hip and waist improvement
 supports restoring the hard-waist actuator contract; it does not prove that
 all remaining simulator or plant differences are resolved.
 
-**Post-alignment frozen preflight (pre-D2.7)**
+**Historical post-alignment frozen preflight (pre-D2.7)**
 
 Fresh official BFM0, 512 matched Phase resets, 51 steps, before the D2.7
 hard-waist restoration:
@@ -475,7 +495,7 @@ not establish closed-loop success.
 one-step-response validated. No post-restoration P0 or training run has been
 performed, so closed-loop Skate behavior remains unverified.
 
-### Verified and Unverified Conclusions
+### Experiment 3 Verified and Unverified Conclusions
 
 Verified:
 
