@@ -54,11 +54,6 @@ from train_runner import (
 DEFAULT_PROTOCOL = REPOSITORY_ROOT / "train/evaluation_protocol.json"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "results/m2.5b-target-conditioned"
 DEFAULT_RANDOM_SEEDS = (2026081101, 2026081102, 2026081103, 2026081104)
-DEFAULT_T1_10K = (
-    REPOSITORY_ROOT
-    / "model/motion_library/m2.6-t1-phase-10k-post-d27-seed4728/checkpoint_10000"
-)
-
 METRIC_NAMES = (
     "board_forward_displacement_m",
     "board_forward_velocity_mean_mps",
@@ -169,7 +164,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-10k",
         type=Path,
-        help="M2.6-T1 checkpoint saved after 10,000 transitions.",
+        help="Legacy fixed-target evaluator checkpoint argument.",
+    )
+    parser.add_argument(
+        "--reference-checkpoint",
+        type=Path,
+        help="Arbitrary frozen checkpoint for motion-reference comparison against Fresh BFM0.",
     )
     parser.add_argument(
         "--checkpoint-20k",
@@ -199,8 +199,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--checkpoint-view",
-        choices=("fresh", "10k"),
-        help="Checkpoint selected by --motion-key.",
+        choices=("fresh", "trained"),
+        help="Checkpoint selected by --motion-key: Fresh BFM0 or --reference-checkpoint.",
     )
     parser.add_argument(
         "--smoke-only",
@@ -1560,7 +1560,7 @@ def cluster_bootstrap_deltas(
         sample_means[index] = np.mean(values)
     observed = float(np.mean([value for values in cluster_rows for value in values]))
     return {
-        "mean_delta_10k_minus_fresh": observed,
+        "mean_delta_trained_minus_fresh": observed,
         "ci95_low": float(np.quantile(sample_means, 0.025)),
         "ci95_high": float(np.quantile(sample_means, 0.975)),
         "clusters": len(cluster_rows),
@@ -1604,7 +1604,7 @@ def paired_reference_summary(
         category = (
             "both_complete" if fresh_complete and trained_complete
             else "fresh_only_complete" if fresh_complete
-            else "10k_only_complete" if trained_complete
+            else "trained_only_complete" if trained_complete
             else "both_incomplete"
         )
         categories[category] += 1
@@ -1616,23 +1616,23 @@ def paired_reference_summary(
             "source_rollout": fresh_row["source"]["rollout"],
             "category": category,
             "fresh_t_exec": int(fresh_row["t_exec"]),
-            "10k_t_exec": int(trained_row["t_exec"]),
+            "trained_t_exec": int(trained_row["t_exec"]),
             "t_common": t_common,
-            "completion_delta_10k_minus_fresh": (
+            "completion_delta_trained_minus_fresh": (
                 trained_row["completion_ratio"] - fresh_row["completion_ratio"]
             ),
         }
         for metric in REFERENCE_METRICS:
             fresh_value = float(np.mean(fresh_row["_metric_series"][metric][:t_common]))
             trained_value = float(np.mean(trained_row["_metric_series"][metric][:t_common]))
-            item[f"{metric}_delta_10k_minus_fresh"] = trained_value - fresh_value
+            item[f"{metric}_delta_trained_minus_fresh"] = trained_value - fresh_value
         per_motion.append(item)
     completion = cluster_bootstrap_deltas(
-        per_motion, "completion_delta_10k_minus_fresh"
+        per_motion, "completion_delta_trained_minus_fresh"
     )
     common_tracking = {
         metric: cluster_bootstrap_deltas(
-            per_motion, f"{metric}_delta_10k_minus_fresh"
+            per_motion, f"{metric}_delta_trained_minus_fresh"
         )
         for metric in REFERENCE_METRICS
     }
@@ -1640,10 +1640,10 @@ def paired_reference_summary(
     unequal = [
         {
             key: row[key]
-            for key in ("motion_key", "fresh_t_exec", "10k_t_exec", "t_common")
+            for key in ("motion_key", "fresh_t_exec", "trained_t_exec", "t_common")
         }
         for row in per_motion
-        if row["fresh_t_exec"] != row["10k_t_exec"]
+        if row["fresh_t_exec"] != row["trained_t_exec"]
     ]
     phase_summary = {}
     if dataset == "phase":
@@ -1659,15 +1659,15 @@ def paired_reference_summary(
                     (row["source"]["round"], row["source"]["rollout"]) for row in phase_fresh
                 }),
                 "fresh_completion_mean": float(np.mean([row["completion_ratio"] for row in phase_fresh])),
-                "10k_completion_mean": float(np.mean([row["completion_ratio"] for row in phase_trained])),
-                "common_survival_joint_delta_10k_minus_fresh": float(np.mean([
-                    row["joint_position_mae_rad_delta_10k_minus_fresh"] for row in phase_pairs
+                "trained_completion_mean": float(np.mean([row["completion_ratio"] for row in phase_trained])),
+                "common_survival_joint_delta_trained_minus_fresh": float(np.mean([
+                    row["joint_position_mae_rad_delta_trained_minus_fresh"] for row in phase_pairs
                 ])),
-                "common_survival_board_delta_10k_minus_fresh": float(np.mean([
-                    row["board_xy_displacement_error_m_delta_10k_minus_fresh"] for row in phase_pairs
+                "common_survival_board_delta_trained_minus_fresh": float(np.mean([
+                    row["board_xy_displacement_error_m_delta_trained_minus_fresh"] for row in phase_pairs
                 ])),
-                "common_survival_coupling_delta_10k_minus_fresh": float(np.mean([
-                    row["coupling_xy_error_m_delta_10k_minus_fresh"] for row in phase_pairs
+                "common_survival_coupling_delta_trained_minus_fresh": float(np.mean([
+                    row["coupling_xy_error_m_delta_trained_minus_fresh"] for row in phase_pairs
                 ])),
             }
     return {
@@ -1695,30 +1695,30 @@ def select_reference_videos(compare: Mapping[str, Any]) -> list[tuple[str, str]]
     for row in rows:
         by_category[row["category"]].append(row)
     selection = []
-    if by_category["10k_only_complete"]:
-        selection.append(("10k_improves", min(
-            by_category["10k_only_complete"],
-            key=lambda row: row["joint_position_mae_rad_delta_10k_minus_fresh"],
+    if by_category["trained_only_complete"]:
+        selection.append(("trained_improves", min(
+            by_category["trained_only_complete"],
+            key=lambda row: row["joint_position_mae_rad_delta_trained_minus_fresh"],
         )["motion_key"]))
     elif rows:
-        selection.append(("10k_improves", min(
+        selection.append(("trained_improves", min(
             rows, key=lambda row: (
-                row["joint_position_mae_rad_delta_10k_minus_fresh"]
-                + row["board_xy_displacement_error_m_delta_10k_minus_fresh"]
-                + row["coupling_xy_error_m_delta_10k_minus_fresh"]
+                row["joint_position_mae_rad_delta_trained_minus_fresh"]
+                + row["board_xy_displacement_error_m_delta_trained_minus_fresh"]
+                + row["coupling_xy_error_m_delta_trained_minus_fresh"]
             ),
         )["motion_key"]))
     if by_category["fresh_only_complete"]:
         selection.append(("fresh_improves", min(
             by_category["fresh_only_complete"],
-            key=lambda row: row["completion_delta_10k_minus_fresh"],
+            key=lambda row: row["completion_delta_trained_minus_fresh"],
         )["motion_key"]))
     elif rows:
         selection.append(("fresh_improves", max(
             rows, key=lambda row: (
-                row["joint_position_mae_rad_delta_10k_minus_fresh"]
-                + row["board_xy_displacement_error_m_delta_10k_minus_fresh"]
-                + row["coupling_xy_error_m_delta_10k_minus_fresh"]
+                row["joint_position_mae_rad_delta_trained_minus_fresh"]
+                + row["board_xy_displacement_error_m_delta_trained_minus_fresh"]
+                + row["coupling_xy_error_m_delta_trained_minus_fresh"]
             ),
         )["motion_key"]))
     for category, label in (("both_complete", "both_complete"), ("both_incomplete", "both_fail")):
@@ -1752,17 +1752,17 @@ def reference_decision(phase: Mapping[str, Any], continuous: Mapping[str, Any]) 
         continuous["completion"]["clustered_paired_bootstrap"],
     ]
     if improved >= 2 and not any(item["ci95_high"] < 0.0 for item in completion) and regressed == 0:
-        return "T1E_V_CLEAR_IMPROVEMENT"
+        return "MOTION_REFERENCE_CLEAR_IMPROVEMENT"
     if regressed >= 2 and any(item["ci95_high"] < 0.0 for item in completion):
-        return "T1E_V_REGRESSION"
+        return "MOTION_REFERENCE_REGRESSION"
     if improved == 0 and regressed == 0:
-        return "T1E_V_NO_GAIN"
-    return "T1E_V_MIXED"
+        return "MOTION_REFERENCE_NO_GAIN"
+    return "MOTION_REFERENCE_MIXED"
 
 
 def write_reference_report(report: Mapping[str, Any], path: Path) -> None:
     lines = [
-        "# M2.6-T1E-V Validation Motion Reference Evaluation",
+        "# Validation Motion Reference Evaluation",
         "",
         "## Decision",
         "",
@@ -1790,7 +1790,7 @@ def write_reference_report(report: Mapping[str, Any], path: Path) -> None:
         "",
         "## Paired Effects",
         "",
-        "Values are 10k minus Fresh. Completion is better above zero; tracking errors are better below zero. "
+        "Values are trained checkpoint minus Fresh. Completion is better above zero; tracking errors are better below zero. "
         "95% CIs use 10,000 source-rollout-clustered paired bootstrap repetitions (seed 4728).",
         "",
         "| Metric | Phase delta [95% CI] | Continuous delta [95% CI] |",
@@ -1814,7 +1814,7 @@ def write_reference_report(report: Mapping[str, Any], path: Path) -> None:
                 else comparison["common_survival_tracking"][metric]
             )
             values.append(
-                f"{result['mean_delta_10k_minus_fresh']:.5g} "
+                f"{result['mean_delta_trained_minus_fresh']:.5g} "
                 f"[{result['ci95_low']:.5g}, {result['ci95_high']:.5g}]"
             )
         lines.append(
@@ -1826,7 +1826,7 @@ def write_reference_report(report: Mapping[str, Any], path: Path) -> None:
         "",
         "Training performed: NO",
         "Test executed: NO",
-        "20k executed: NO",
+        "Checkpoint path is explicit in the report; no training was performed.",
         "Paired tracking uses per-motion common survival prefixes.",
         "",
     ]
@@ -1836,14 +1836,14 @@ def write_reference_report(report: Mapping[str, Any], path: Path) -> None:
 def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
     if args.split != "val":
         raise ValueError("Test remains held out until evaluator protocol is frozen.")
+    if args.reference_checkpoint is None:
+        raise ValueError("--reference-checkpoint is required for mode=motion-reference.")
     output_dir = args.reference_output_dir.expanduser().resolve()
     official = args.official_checkpoint.expanduser().resolve()
-    trained = (args.checkpoint_10k or DEFAULT_T1_10K).expanduser().resolve()
-    expected_10k = "e40b9b1c876c9d33878a00ba9943bb97841c9c1679820c8f12ffb3ed5696726f"
+    trained = args.reference_checkpoint.expanduser().resolve()
     if hash_file(checkpoint_model_path(official)) != OFFICIAL_BFM0_SHA256:
         raise RuntimeError("Official BFM0 checkpoint SHA256 mismatch.")
-    if hash_file(checkpoint_model_path(trained)) != expected_10k:
-        raise RuntimeError("M2.6-T1 10k checkpoint SHA256 mismatch.")
+    trained_sha256 = hash_file(checkpoint_model_path(trained))
 
     resolver = ReferenceSourceResolver("val")
     if args.motion_key is not None:
@@ -1859,7 +1859,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
                 f"Motion key is not in Val {args.reference_dataset}: {args.motion_key}"
             )
         checkpoint_name = args.checkpoint_view
-        checkpoint = {"fresh": official, "10k": trained}[checkpoint_name]
+        checkpoint = {"fresh": official, "trained": trained}[checkpoint_name]
         agent, load_report = load_frozen_agent(checkpoint)
         before = checkpoint_mutation(agent)
         tracking = AlignedSkateTrackingContext.load(agent, motion_path)
@@ -1932,7 +1932,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
         raise RuntimeError("Reference evaluation exceeds 1,000,000 MuJoCo transitions.")
 
     smoke = {}
-    for name, checkpoint in (("fresh", official), ("10k", trained)):
+    for name, checkpoint in (("fresh", official), ("trained", trained)):
         agent, _ = load_frozen_agent(checkpoint)
         tracking = AlignedSkateTrackingContext.load(agent, datasets["phase"][2])
         before = checkpoint_mutation(agent)
@@ -1971,7 +1971,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
             "environment_reuse_equivalence": "PASS",
         }
     smoke_output = {
-        "schema": "m26-t1e-v-smoke-v1",
+        "schema": "skate-bfm-motion-reference-smoke-v2",
         "motion_keys": smoke_keys,
         "source_rollouts": [
             [datasets["phase"][0][key]["source_round"], datasets["phase"][0][key]["source_rollout"]]
@@ -1981,9 +1981,9 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
             **smoke["fresh"],
             "rows": serializable_reference_rows(smoke["fresh"]["rows"]),
         },
-        "10k": {
-            **smoke["10k"],
-            "rows": serializable_reference_rows(smoke["10k"]["rows"]),
+        "trained": {
+            **smoke["trained"],
+            "rows": serializable_reference_rows(smoke["trained"]["rows"]),
         },
         "result": "PASS",
     }
@@ -1997,11 +1997,11 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
     for dataset in selected:
         records, manifest, motion_path, manifest_path = datasets[dataset]
         fresh = evaluate_reference_dataset("fresh", official, motion_path, records, resolver)
-        trained_result = evaluate_reference_dataset("10k", trained, motion_path, records, resolver)
+        trained_result = evaluate_reference_dataset("trained", trained, motion_path, records, resolver)
         comparison = paired_reference_summary(fresh, trained_result, dataset=dataset)
         runtime_results[dataset] = (fresh, trained_result)
         write_json(output_dir / f"{dataset}_fresh.json", serializable_reference_result(fresh))
-        write_json(output_dir / f"{dataset}_10k.json", serializable_reference_result(trained_result))
+        write_json(output_dir / f"{dataset}_trained.json", serializable_reference_result(trained_result))
         evaluations[dataset] = {
             "dataset": {
                 "path": str(motion_path),
@@ -2014,7 +2014,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
                 "fps": float(manifest["fps"]),
             },
             "fresh": serializable_reference_result(fresh),
-            "10k": serializable_reference_result(trained_result),
+            "trained": serializable_reference_result(trained_result),
             "comparison": comparison,
         }
         write_json(output_dir / f"{dataset}_compare.json", comparison)
@@ -2035,15 +2035,15 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
         - np.mean(fresh_row["_metric_series"]["joint_position_mae_rad"][:common])
     )
     paired_delta = next(
-        row["joint_position_mae_rad_delta_10k_minus_fresh"]
+        row["joint_position_mae_rad_delta_trained_minus_fresh"]
         for row in evaluations[audit_dataset]["comparison"]["per_motion"]
         if row["motion_key"] == audit_pair["motion_key"]
     )
     write_json(output_dir / "common_survival_audit.json", {
         **audit_pair,
         "metric": "joint_position_mae_rad",
-        "manual_delta_10k_minus_fresh": manual_delta,
-        "evaluator_delta_10k_minus_fresh": paired_delta,
+        "manual_delta_trained_minus_fresh": manual_delta,
+        "evaluator_delta_trained_minus_fresh": paired_delta,
         "match": bool(np.isclose(manual_delta, paired_delta, atol=1e-12)),
     })
     if not np.isclose(manual_delta, paired_delta, atol=1e-12):
@@ -2054,7 +2054,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
     if not args.skip_videos:
         records, _, motion_path, _ = datasets[video_dataset]
         selected_videos = select_reference_videos(evaluations[video_dataset]["comparison"])
-        for checkpoint_name, checkpoint in (("fresh", official), ("10k", trained)):
+        for checkpoint_name, checkpoint in (("fresh", official), ("trained", trained)):
             agent, _ = load_frozen_agent(checkpoint)
             tracking = AlignedSkateTrackingContext.load(agent, motion_path)
             for label, key in selected_videos:
@@ -2063,7 +2063,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
                 videos.append({"selection": label, "motion_key": key, "checkpoint": checkpoint_name, "path": str(path)})
 
     report = {
-        "schema": "m26-eval-r1-motion-reference-v1",
+        "schema": "skate-bfm-motion-reference-v2",
         "repository": {
             "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
             "origin_train": subprocess.check_output(["git", "rev-parse", "origin/train"], text=True).strip(),
@@ -2082,7 +2082,7 @@ def run_motion_reference_evaluation(args: argparse.Namespace) -> int:
         },
         "checkpoints": {
             "fresh": {"path": str(official), "model_sha256": OFFICIAL_BFM0_SHA256},
-            "10k": {"path": str(trained), "model_sha256": expected_10k},
+            "trained": {"path": str(trained), "model_sha256": trained_sha256},
         },
         "estimate_transitions": estimates,
         "smoke": smoke_output,
