@@ -496,9 +496,10 @@ z_track[k] =
 ```
 
 Tracking lasts at most 250 steps and cannot cross the selected Phase segment.
-After tracking ends, the slot returns to its background latent. The historical
-100k run used unrelated random z; this aligned rule was added after failure
-and has not yet been used in a retraining run.
+After tracking ends, the slot returns to its background latent. The formal P1
+run recorded 18,860 tracking transitions (18.86% of 100,000) across 769
+tracking resets; R5 held-out results below show that this structural alignment
+did not yet produce robust phase behavior.
 
 #### Native FB-CPR-Aux optimization
 
@@ -620,9 +621,9 @@ replay and checkpoints. The formal Phase run completed 100k transitions and
 9,900 native updates, but:
 
 ```text
-completed training episodes = 3,109
-fall terminations = 3,109
-horizon completions = 0
+completed training episodes = 1,917
+fall terminations = 1,893
+horizon completions = 24
 ```
 
 Frozen matched evaluation:
@@ -636,6 +637,54 @@ official BFM0 mean survival = 1.264 s
 
 This established a behavioral failure despite finite optimization and valid
 checkpoint reloads.
+
+#### Formal held-out checkpoint evaluation
+
+The current evaluator uses Test Phase semantics and Test Raw physical ground
+truth only; it has no Continuous-data dependency. A fixed benchmark contains
+80 rollout-balanced, without-replacement cases (`seed=4728`): 20 each for
+`push`, `steer`, `push2steer`, and `steer2push`. The same
+`cases.json` identity, including source rollout, source physics, reset Raw
+frame, step count, and phase ranges, is replayed by 20k, 50k, and 100k:
+
+```text
+case identity SHA256 =
+ff7a290d384d00ae34ff2ccd8c5765227df711bca0fab5e668532234aa12e3ad
+```
+
+Steady skills run for 2.0 s (100 control steps); transition skills use the
+frozen 5.0 s / 250-step protocol. For every executed policy step, the
+checkpoint-specific tracking latent is reconstructed exactly as:
+
+```text
+Test Raw window
+-> temporary MotionLib
+-> AlignedSkateTrackingContext.encode
+-> z_t
+-> deterministic Actor mean action
+```
+
+`future_start=t+1` is mapped to `reset_raw_frame+t+1`; saved case labels are
+used when available, and the authoritative Raw `phase_id` labels bridge
+context beyond a saved phase clip. The evaluator does not teacher-force,
+correct state, update model/normalizer, or train. It records completion,
+joint/root/board/coupling tracking error, board retention, root tilt,
+termination, and a representative replay video per behavior.
+
+For latent diagnostics, official `sample_z()` draws a standard normal vector
+and calls `project_z`, yielding `||z||_2=sqrt(256)=16`. Actual eval tracking
+latents and a fixed 4,096-point prior bank are therefore compared as
+directions:
+
+```text
+u = z / ||z||_2
+v = PCA_shared(u) / ||PCA_shared(u)||_2
+```
+
+One shared three-component PCA is fitted over the prior bank plus all
+checkpoint/phase directions. This is a common 3D spherical direction view,
+not a lossless 256D geometry, an action-space coverage result, or a causal
+behavior explanation.
 
 #### Semantics mismatch diagnosis and methods
 
@@ -862,8 +911,10 @@ Verified:
 - [x] Rewards, termination, replay, six optimizers, model state, and checkpoint
   reload are finite and structurally valid.
 - [x] The Phase 100k run completed 100,000 transitions and 9,900 updates.
-- [x] The Phase 100k trained checkpoints are less stable than official BFM0
-  under the matched frozen evaluation.
+- [x] The historical 32-case matched evaluation found the Phase 100k
+  checkpoints less stable than official BFM0.
+- [x] The current fixed 80-case Test subset shows no checkpoint with robust
+  completion across all four phase behaviors.
 - [x] Source-physics restoration and robot-board qpos/qvel reset are exact.
 - [x] Shared 23DoF action mapping is exact and six wrists remain zero.
 - [x] Official hard-waist `q0`, `Kp`, `Kd`, effort, and normalized target gain
@@ -881,9 +932,12 @@ Unverified:
 - [ ] The expert/online angular-velocity scale asymmetry has been resolved.
 - [ ] Remaining IsaacSim/MuJoCo plant differences have been fully explained.
 - [ ] Aligned tracking z materially improves frozen official BFM0 behavior.
-- [ ] A post-alignment short retraining improves survival or Skate behavior.
+- [ ] A revised post-alignment training run improves robust phase behavior on
+  held-out Test cases.
 - [ ] The trained model is a stable and diverse Skate motion library.
-- [ ] Held-out validation/test generalization.
+- [x] A frozen 80-case held-out Test subset was replayed identically for 20k,
+  50k, and 100k.
+- [ ] Full held-out Test coverage and generalization.
 
 Relevant implementation:
 

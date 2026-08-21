@@ -1,0 +1,1464 @@
+{
+  "artifact_integrity": {
+    "100k": {
+      "checkpoint_sha256": "ab8ef719d613ce988a173ad8734ce655c3b564045d616d1ce01416b070129434",
+      "representative_videos_complete": true,
+      "result_directory": "train/eval_res/2026-08-20/100k-s20b_test_phase_eval",
+      "status": "PASS"
+    },
+    "20k": {
+      "checkpoint_sha256": "b758f01fd9600f9d175344ea3da2aeeedcbbace70aabacd2a82cfac67dff5612",
+      "representative_videos_complete": true,
+      "result_directory": "train/eval_res/2026-08-20/20k-s20b_test_phase_eval",
+      "status": "PASS"
+    },
+    "50k": {
+      "checkpoint_sha256": "b1f16d00ae80f567d4046b983177bce09b33ea5e78f6f9588a99c61b24c90050",
+      "representative_videos_complete": true,
+      "result_directory": "train/eval_res/2026-08-20/50k-s20b_test_phase_eval",
+      "status": "PASS"
+    }
+  },
+  "benchmark": {
+    "case_count": 80,
+    "case_counts": {
+      "push": 20,
+      "push2steer": 20,
+      "steer": 20,
+      "steer2push": 20
+    },
+    "case_identity_sha256": "ff7a290d384d00ae34ff2ccd8c5765227df711bca0fab5e668532234aa12e3ad",
+    "exact_replay_equality": "PASS",
+    "path": "train/eval_res/2026-08-20/100k-s20b_test_phase_eval/cases.json",
+    "selection": "rollout_balanced_without_replacement, seed=4728",
+    "selection_fingerprint": "d1211f85f17765de93f75c22dc36b10135ddad1663de176556f99f226f5c2a03"
+  },
+  "evaluation": {
+    "100k": {
+      "by_behavior": {
+        "push": {
+          "board_heading_error_deg": 5.624444796862289,
+          "board_xy_displacement_error_m": 0.12910749190869214,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.18092176211284206,
+          "feet_on_board_ratio": 0.8479972304454153,
+          "full_completion_rate": 0.25,
+          "joint_position_mae_rad": 0.5362651954302191,
+          "joint_velocity_mae_rad_s": 2.015408761660457,
+          "mean_completion_ratio": 0.7605,
+          "off_board_ratio": 0.15200276955458467,
+          "root_orientation_geodesic_error_deg": 21.69127023701233,
+          "root_tilt_max_deg": 77.10502099990845,
+          "root_tilt_mean_deg": 30.65616340637207,
+          "termination_rate": 0.75
+        },
+        "push2steer": {
+          "board_heading_error_deg": 3.6779364838908974,
+          "board_xy_displacement_error_m": 0.2643364579646162,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.1470005108065459,
+          "feet_on_board_ratio": 0.903685510530847,
+          "full_completion_rate": 0.05,
+          "joint_position_mae_rad": 0.5262327080772,
+          "joint_velocity_mae_rad_s": 2.162422226341671,
+          "mean_completion_ratio": 0.301,
+          "off_board_ratio": 0.09631448946915273,
+          "root_orientation_geodesic_error_deg": 24.72876026622637,
+          "root_tilt_max_deg": 85.99502506256104,
+          "root_tilt_mean_deg": 31.485400485992432,
+          "termination_rate": 0.95
+        },
+        "steer": {
+          "board_heading_error_deg": 13.568759332069922,
+          "board_xy_displacement_error_m": 0.1603281360645722,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.15138628787157404,
+          "feet_on_board_ratio": 0.9218064435329003,
+          "full_completion_rate": 0.75,
+          "joint_position_mae_rad": 0.4307290119341164,
+          "joint_velocity_mae_rad_s": 1.1682012298655775,
+          "mean_completion_ratio": 0.8940000000000001,
+          "off_board_ratio": 0.07819355646709959,
+          "root_orientation_geodesic_error_deg": 28.8888602437735,
+          "root_tilt_max_deg": 53.19786229133606,
+          "root_tilt_mean_deg": 21.771080565452575,
+          "termination_rate": 0.25
+        },
+        "steer2push": {
+          "board_heading_error_deg": 15.722351513704249,
+          "board_xy_displacement_error_m": 0.19462832405782263,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.19418025379808618,
+          "feet_on_board_ratio": 0.8562615954645008,
+          "full_completion_rate": 0.0,
+          "joint_position_mae_rad": 0.4607794124624219,
+          "joint_velocity_mae_rad_s": 1.582111824685893,
+          "mean_completion_ratio": 0.43360000000000004,
+          "off_board_ratio": 0.1437384045354993,
+          "root_orientation_geodesic_error_deg": 29.75566162639465,
+          "root_tilt_max_deg": 91.92351188659669,
+          "root_tilt_mean_deg": 25.377404594421385,
+          "termination_rate": 1.0
+        }
+      },
+      "transition_mean_of_case_means": {
+        "push2steer": {
+          "post": {
+            "board_xy_displacement_error_m": 1.6184155081551541,
+            "case_count": 4,
+            "coupling_xy_error_m": 0.48247379691071474,
+            "joint_position_mae_rad": 0.5558917803719403,
+            "root_orientation_geodesic_error_deg": 59.6132612889664
+          },
+          "pre": {
+            "board_xy_displacement_error_m": 0.05267768593496641,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.1011904938711891,
+            "joint_position_mae_rad": 0.5010243195978188,
+            "root_orientation_geodesic_error_deg": 13.664512348119638
+          },
+          "transition": {
+            "board_xy_displacement_error_m": 0.3860056045309265,
+            "case_count": 19,
+            "coupling_xy_error_m": 0.2530512721752019,
+            "joint_position_mae_rad": 0.6440069161706755,
+            "root_orientation_geodesic_error_deg": 66.44491330341661
+          }
+        },
+        "steer2push": {
+          "post": {
+            "board_xy_displacement_error_m": 0.4223676635401603,
+            "case_count": 18,
+            "coupling_xy_error_m": 0.37870386614184515,
+            "joint_position_mae_rad": 0.5464610706920158,
+            "root_orientation_geodesic_error_deg": 59.12228397272455
+          },
+          "pre": {
+            "board_xy_displacement_error_m": 0.036916049185674635,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.06416952895791725,
+            "joint_position_mae_rad": 0.38266907753993057,
+            "root_orientation_geodesic_error_deg": 8.776620457425846
+          },
+          "transition": {
+            "board_xy_displacement_error_m": 0.10614198018663697,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.15821409614246693,
+            "joint_position_mae_rad": 0.4979832307994365,
+            "root_orientation_geodesic_error_deg": 31.603573646981744
+          }
+        }
+      }
+    },
+    "20k": {
+      "by_behavior": {
+        "push": {
+          "board_heading_error_deg": 12.804368358827976,
+          "board_xy_displacement_error_m": 0.2898107998517451,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.18631927508150045,
+          "feet_on_board_ratio": 0.6598055555555555,
+          "full_completion_rate": 0.95,
+          "joint_position_mae_rad": 0.4852078799381852,
+          "joint_velocity_mae_rad_s": 1.60481524848938,
+          "mean_completion_ratio": 0.986,
+          "off_board_ratio": 0.34019444444444447,
+          "root_orientation_geodesic_error_deg": 18.921226096117312,
+          "root_tilt_max_deg": 26.35462369918823,
+          "root_tilt_mean_deg": 13.657254552841186,
+          "termination_rate": 0.05
+        },
+        "push2steer": {
+          "board_heading_error_deg": 20.114504277047736,
+          "board_xy_displacement_error_m": 1.3530490131565869,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.7543705947552274,
+          "feet_on_board_ratio": 0.4064188173152735,
+          "full_completion_rate": 0.8,
+          "joint_position_mae_rad": 0.4557181171957142,
+          "joint_velocity_mae_rad_s": 1.495332657367983,
+          "mean_completion_ratio": 0.8934000000000001,
+          "off_board_ratio": 0.5935811826847265,
+          "root_orientation_geodesic_error_deg": 41.3482143266548,
+          "root_tilt_max_deg": 32.94866495132446,
+          "root_tilt_mean_deg": 11.730194711685181,
+          "termination_rate": 0.2
+        },
+        "steer": {
+          "board_heading_error_deg": 15.977507782481968,
+          "board_xy_displacement_error_m": 0.7495022531729909,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.7830454657846311,
+          "feet_on_board_ratio": 0.3622556497175141,
+          "full_completion_rate": 0.9,
+          "joint_position_mae_rad": 0.43052507709996624,
+          "joint_velocity_mae_rad_s": 1.5127997792370746,
+          "mean_completion_ratio": 0.9654999999999999,
+          "off_board_ratio": 0.637744350282486,
+          "root_orientation_geodesic_error_deg": 23.793729011674326,
+          "root_tilt_max_deg": 24.66922483444214,
+          "root_tilt_mean_deg": 10.351827549934388,
+          "termination_rate": 0.1
+        },
+        "steer2push": {
+          "board_heading_error_deg": 18.87724573369602,
+          "board_xy_displacement_error_m": 2.207615854687756,
+          "case_count": 20,
+          "coupling_xy_error_m": 1.6517800638983027,
+          "feet_on_board_ratio": 0.17860000000000004,
+          "full_completion_rate": 1.0,
+          "joint_position_mae_rad": 0.45069180361628536,
+          "joint_velocity_mae_rad_s": 1.461336317563057,
+          "mean_completion_ratio": 1.0,
+          "off_board_ratio": 0.8214,
+          "root_orientation_geodesic_error_deg": 40.70146604062524,
+          "root_tilt_max_deg": 21.80227360725403,
+          "root_tilt_mean_deg": 11.27325668334961,
+          "termination_rate": 0.0
+        }
+      },
+      "transition_mean_of_case_means": {
+        "push2steer": {
+          "post": {
+            "board_xy_displacement_error_m": 1.779732471092881,
+            "case_count": 19,
+            "coupling_xy_error_m": 0.8849736988232301,
+            "joint_position_mae_rad": 0.4274604367653012,
+            "root_orientation_geodesic_error_deg": 58.33698174413031
+          },
+          "pre": {
+            "board_xy_displacement_error_m": 0.035582228533018435,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.07374136476909351,
+            "joint_position_mae_rad": 0.4862518251854547,
+            "root_orientation_geodesic_error_deg": 10.453243360461181
+          },
+          "transition": {
+            "board_xy_displacement_error_m": 0.34448935128461855,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.21608029544944518,
+            "joint_position_mae_rad": 0.5032745955808041,
+            "root_orientation_geodesic_error_deg": 41.866515385455216
+          }
+        },
+        "steer2push": {
+          "post": {
+            "board_xy_displacement_error_m": 1.9764469816163177,
+            "case_count": 20,
+            "coupling_xy_error_m": 1.673227636758238,
+            "joint_position_mae_rad": 0.4472196907301744,
+            "root_orientation_geodesic_error_deg": 48.82667143041895
+          },
+          "pre": {
+            "board_xy_displacement_error_m": 0.3108501277167864,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.3696486447130007,
+            "joint_position_mae_rad": 0.4565348326855777,
+            "root_orientation_geodesic_error_deg": 13.50180389275672
+          },
+          "transition": {
+            "board_xy_displacement_error_m": 0.7774174782633783,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.8621937062342964,
+            "joint_position_mae_rad": 0.4958173966407776,
+            "root_orientation_geodesic_error_deg": 40.037787196167415
+          }
+        }
+      }
+    },
+    "50k": {
+      "by_behavior": {
+        "push": {
+          "board_heading_error_deg": 3.279270669362365,
+          "board_xy_displacement_error_m": 0.14634691722695953,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.15865905521629936,
+          "feet_on_board_ratio": 0.6728958528081852,
+          "full_completion_rate": 0.15,
+          "joint_position_mae_rad": 0.5993448359609729,
+          "joint_velocity_mae_rad_s": 2.965839367274513,
+          "mean_completion_ratio": 0.5795,
+          "off_board_ratio": 0.3271041471918148,
+          "root_orientation_geodesic_error_deg": 29.6716104195723,
+          "root_tilt_max_deg": 101.75916786193848,
+          "root_tilt_mean_deg": 36.53221635818481,
+          "termination_rate": 0.85
+        },
+        "push2steer": {
+          "board_heading_error_deg": 0.8147281243212399,
+          "board_xy_displacement_error_m": 0.043012693180112464,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.06923354895053939,
+          "feet_on_board_ratio": 0.39521572301507996,
+          "full_completion_rate": 0.0,
+          "joint_position_mae_rad": 0.7074618208590807,
+          "joint_velocity_mae_rad_s": 4.145779905607467,
+          "mean_completion_ratio": 0.12120000000000002,
+          "off_board_ratio": 0.6047842769849201,
+          "root_orientation_geodesic_error_deg": 32.715305544141096,
+          "root_tilt_max_deg": 92.55344619750977,
+          "root_tilt_mean_deg": 48.96621112823486,
+          "termination_rate": 1.0
+        },
+        "steer": {
+          "board_heading_error_deg": 10.628006155707299,
+          "board_xy_displacement_error_m": 0.24271475303058948,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.3603361456627509,
+          "feet_on_board_ratio": 0.6936436160169854,
+          "full_completion_rate": 0.2,
+          "joint_position_mae_rad": 0.4561129781306058,
+          "joint_velocity_mae_rad_s": 1.912618333177378,
+          "mean_completion_ratio": 0.7300000000000001,
+          "off_board_ratio": 0.30635638398301457,
+          "root_orientation_geodesic_error_deg": 22.756531150945314,
+          "root_tilt_max_deg": 82.97004442214966,
+          "root_tilt_mean_deg": 21.893510866165162,
+          "termination_rate": 0.8
+        },
+        "steer2push": {
+          "board_heading_error_deg": 5.626967620020583,
+          "board_xy_displacement_error_m": 0.1117525549598652,
+          "case_count": 20,
+          "coupling_xy_error_m": 0.18383547665650765,
+          "feet_on_board_ratio": 0.7275344683020025,
+          "full_completion_rate": 0.0,
+          "joint_position_mae_rad": 0.5031638248317758,
+          "joint_velocity_mae_rad_s": 2.3826257956742505,
+          "mean_completion_ratio": 0.22240000000000001,
+          "off_board_ratio": 0.27246553169799753,
+          "root_orientation_geodesic_error_deg": 25.44528055241432,
+          "root_tilt_max_deg": 104.15727806091309,
+          "root_tilt_mean_deg": 27.473755359649658,
+          "termination_rate": 1.0
+        }
+      },
+      "transition_mean_of_case_means": {
+        "push2steer": {
+          "post": {
+            "board_xy_displacement_error_m": null,
+            "case_count": 0,
+            "coupling_xy_error_m": null,
+            "joint_position_mae_rad": null,
+            "root_orientation_geodesic_error_deg": null
+          },
+          "pre": {
+            "board_xy_displacement_error_m": 0.043012693180112464,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.06923354895053939,
+            "joint_position_mae_rad": 0.7074618208590807,
+            "root_orientation_geodesic_error_deg": 32.715305544141096
+          },
+          "transition": {
+            "board_xy_displacement_error_m": null,
+            "case_count": 0,
+            "coupling_xy_error_m": null,
+            "joint_position_mae_rad": null,
+            "root_orientation_geodesic_error_deg": null
+          }
+        },
+        "steer2push": {
+          "post": {
+            "board_xy_displacement_error_m": 0.3249990829140753,
+            "case_count": 2,
+            "coupling_xy_error_m": 0.42702333145850413,
+            "joint_position_mae_rad": 0.8153995607350324,
+            "root_orientation_geodesic_error_deg": 54.75702791902214
+          },
+          "pre": {
+            "board_xy_displacement_error_m": 0.0872412432748725,
+            "case_count": 20,
+            "coupling_xy_error_m": 0.15091468099364594,
+            "joint_position_mae_rad": 0.4492773901031112,
+            "root_orientation_geodesic_error_deg": 18.426618307582025
+          },
+          "transition": {
+            "board_xy_displacement_error_m": 0.2587791061313361,
+            "case_count": 14,
+            "coupling_xy_error_m": 0.4019954752363611,
+            "joint_position_mae_rad": 0.8844552326359976,
+            "root_orientation_geodesic_error_deg": 85.74556700579429
+          }
+        }
+      }
+    }
+  },
+  "frozen_contract": {
+    "backward": false,
+    "evaluator_modified": false,
+    "optimizer_update": false,
+    "physics_evaluation_rerun": false,
+    "raw_eval_artifacts_modified": false,
+    "training": false
+  },
+  "git_head": "275426f",
+  "latent": {
+    "comparison_figure": "train/eval_res/2026-08-20/20k-50k-100k-s20b/latent_space_compare.png",
+    "per_checkpoint": {
+      "100k": {
+        "checkpoint": "model/motion_library/m2.6-p1-phase-100k-seed4728/checkpoint_100000",
+        "checkpoint_sha256": "ab8ef719d613ce988a173ad8734ce655c3b564045d616d1ce01416b070129434",
+        "expected_norm": 16.0,
+        "frozen_mutation_check": "PASS",
+        "phase_labeling": "future_start=t+1 maps to canonical Raw reset_raw_frame+t+1. Saved case frame_phase labels are used when present; bridge-context frames beyond them use the authoritative source raw phase_id mapping. steer_left/forward/right are rendered as steer.",
+        "tracking_source": "Raw Phase/Raw window -> temporary MotionLib -> AlignedSkateTrackingContext.encode -> tracking_inference",
+        "visited_counts": {
+          "push": 3407,
+          "push2steer": 288,
+          "steer": 2974,
+          "steer2push": 313
+        },
+        "visited_norm": {
+          "count": 6982,
+          "max": 16.000001227097666,
+          "mean": 16.00000000006243,
+          "min": 15.999998689341941,
+          "std": 4.118152345051876e-07
+        },
+        "z_dim": 256
+      },
+      "20k": {
+        "checkpoint": "model/motion_library/m2.6-p1-phase-100k-seed4728/checkpoint_20000",
+        "checkpoint_sha256": "b758f01fd9600f9d175344ea3da2aeeedcbbace70aabacd2a82cfac67dff5612",
+        "expected_norm": 16.0,
+        "frozen_mutation_check": "PASS",
+        "phase_labeling": "future_start=t+1 maps to canonical Raw reset_raw_frame+t+1. Saved case frame_phase labels are used when present; bridge-context frames beyond them use the authoritative source raw phase_id mapping. steer_left/forward/right are rendered as steer.",
+        "tracking_source": "Raw Phase/Raw window -> temporary MotionLib -> AlignedSkateTrackingContext.encode -> tracking_inference",
+        "visited_counts": {
+          "push": 5688,
+          "push2steer": 1183,
+          "steer": 5959,
+          "steer2push": 540
+        },
+        "visited_norm": {
+          "count": 13370,
+          "max": 16.00000132039482,
+          "mean": 15.99999999412121,
+          "min": 15.999998774106283,
+          "std": 3.978067642508941e-07
+        },
+        "z_dim": 256
+      },
+      "50k": {
+        "checkpoint": "model/motion_library/m2.6-p1-phase-100k-seed4728/checkpoint_50000",
+        "checkpoint_sha256": "b1f16d00ae80f567d4046b983177bce09b33ea5e78f6f9588a99c61b24c90050",
+        "expected_norm": 16.0,
+        "frozen_mutation_check": "PASS",
+        "phase_labeling": "future_start=t+1 maps to canonical Raw reset_raw_frame+t+1. Saved case frame_phase labels are used when present; bridge-context frames beyond them use the authoritative source raw phase_id mapping. steer_left/forward/right are rendered as steer.",
+        "tracking_source": "Raw Phase/Raw window -> temporary MotionLib -> AlignedSkateTrackingContext.encode -> tracking_inference",
+        "visited_counts": {
+          "push": 1807,
+          "push2steer": 0,
+          "steer": 2412,
+          "steer2push": 118
+        },
+        "visited_norm": {
+          "count": 4337,
+          "max": 16.00000128498506,
+          "mean": 15.999999993397967,
+          "min": 15.999998814850569,
+          "std": 4.0221475492317257e-07
+        },
+        "z_dim": 256
+      }
+    },
+    "projection_artifact": "train/eval_res/2026-08-20/20k-50k-100k-s20b/latent_projection.json",
+    "reference_norm": {
+      "count": 4096,
+      "max": 16.00000184700696,
+      "mean": 15.999999999837177,
+      "min": 15.9999981725606,
+      "std": 5.363465486046718e-07
+    }
+  },
+  "paired_comparison": {
+    "comparisons": {
+      "20k_vs_100k": {
+        "push": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.2898107998517451,
+            "preference": "lower",
+            "right_improved": 16,
+            "right_mean": 0.12910749190869214,
+            "right_minus_left_mean": -0.16070330794305304,
+            "right_worsened": 4,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.986,
+            "preference": "higher",
+            "right_improved": 0,
+            "right_mean": 0.7605,
+            "right_minus_left_mean": -0.22549999999999998,
+            "right_worsened": 15,
+            "tie": 5
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.18631927508150045,
+            "preference": "lower",
+            "right_improved": 9,
+            "right_mean": 0.18092176211284206,
+            "right_minus_left_mean": -0.005397512968658422,
+            "right_worsened": 11,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.4852078799381852,
+            "preference": "lower",
+            "right_improved": 3,
+            "right_mean": 0.5362651954302191,
+            "right_minus_left_mean": 0.051057315492034,
+            "right_worsened": 17,
+            "tie": 0
+          }
+        },
+        "push2steer": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 1.3530490131565869,
+            "preference": "lower",
+            "right_improved": 18,
+            "right_mean": 0.2643364579646162,
+            "right_minus_left_mean": -1.088712555191971,
+            "right_worsened": 2,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.8934000000000001,
+            "preference": "higher",
+            "right_improved": 1,
+            "right_mean": 0.301,
+            "right_minus_left_mean": -0.5924,
+            "right_worsened": 18,
+            "tie": 1
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.7543705947552274,
+            "preference": "lower",
+            "right_improved": 19,
+            "right_mean": 0.1470005108065459,
+            "right_minus_left_mean": -0.6073700839486815,
+            "right_worsened": 1,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.4557181171957142,
+            "preference": "lower",
+            "right_improved": 2,
+            "right_mean": 0.5262327080772,
+            "right_minus_left_mean": 0.0705145908814859,
+            "right_worsened": 18,
+            "tie": 0
+          }
+        },
+        "steer": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.7495022531729909,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.1603281360645722,
+            "right_minus_left_mean": -0.5891741171084186,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.9654999999999999,
+            "preference": "higher",
+            "right_improved": 2,
+            "right_mean": 0.8940000000000001,
+            "right_minus_left_mean": -0.07149999999999998,
+            "right_worsened": 5,
+            "tie": 13
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.7830454657846311,
+            "preference": "lower",
+            "right_improved": 19,
+            "right_mean": 0.15138628787157404,
+            "right_minus_left_mean": -0.6316591779130569,
+            "right_worsened": 1,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.43052507709996624,
+            "preference": "lower",
+            "right_improved": 12,
+            "right_mean": 0.4307290119341164,
+            "right_minus_left_mean": 0.00020393483415013237,
+            "right_worsened": 8,
+            "tie": 0
+          }
+        },
+        "steer2push": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 2.207615854687756,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.19462832405782263,
+            "right_minus_left_mean": -2.0129875306299327,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 1.0,
+            "preference": "higher",
+            "right_improved": 0,
+            "right_mean": 0.43360000000000004,
+            "right_minus_left_mean": -0.5664,
+            "right_worsened": 20,
+            "tie": 0
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 1.6517800638983027,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.19418025379808618,
+            "right_minus_left_mean": -1.4575998101002163,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.45069180361628536,
+            "preference": "lower",
+            "right_improved": 5,
+            "right_mean": 0.4607794124624219,
+            "right_minus_left_mean": 0.010087608846136567,
+            "right_worsened": 15,
+            "tie": 0
+          }
+        }
+      },
+      "20k_vs_50k": {
+        "push": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.2898107998517451,
+            "preference": "lower",
+            "right_improved": 16,
+            "right_mean": 0.14634691722695953,
+            "right_minus_left_mean": -0.14346388262478565,
+            "right_worsened": 4,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.986,
+            "preference": "higher",
+            "right_improved": 1,
+            "right_mean": 0.5795,
+            "right_minus_left_mean": -0.4065,
+            "right_worsened": 16,
+            "tie": 3
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.18631927508150045,
+            "preference": "lower",
+            "right_improved": 12,
+            "right_mean": 0.15865905521629936,
+            "right_minus_left_mean": -0.0276602198652011,
+            "right_worsened": 8,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.4852078799381852,
+            "preference": "lower",
+            "right_improved": 2,
+            "right_mean": 0.5993448359609729,
+            "right_minus_left_mean": 0.11413695602278755,
+            "right_worsened": 18,
+            "tie": 0
+          }
+        },
+        "push2steer": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 1.3530490131565869,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.043012693180112464,
+            "right_minus_left_mean": -1.3100363199764746,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.8934000000000001,
+            "preference": "higher",
+            "right_improved": 0,
+            "right_mean": 0.12120000000000002,
+            "right_minus_left_mean": -0.7722,
+            "right_worsened": 20,
+            "tie": 0
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.7543705947552274,
+            "preference": "lower",
+            "right_improved": 19,
+            "right_mean": 0.06923354895053939,
+            "right_minus_left_mean": -0.685137045804688,
+            "right_worsened": 1,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.4557181171957142,
+            "preference": "lower",
+            "right_improved": 0,
+            "right_mean": 0.7074618208590807,
+            "right_minus_left_mean": 0.25174370366336657,
+            "right_worsened": 20,
+            "tie": 0
+          }
+        },
+        "steer": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.7495022531729909,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.24271475303058948,
+            "right_minus_left_mean": -0.5067875001424014,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.9654999999999999,
+            "preference": "higher",
+            "right_improved": 2,
+            "right_mean": 0.7300000000000001,
+            "right_minus_left_mean": -0.2355,
+            "right_worsened": 14,
+            "tie": 4
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.7830454657846311,
+            "preference": "lower",
+            "right_improved": 17,
+            "right_mean": 0.3603361456627509,
+            "right_minus_left_mean": -0.42270932012188006,
+            "right_worsened": 3,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.43052507709996624,
+            "preference": "lower",
+            "right_improved": 9,
+            "right_mean": 0.4561129781306058,
+            "right_minus_left_mean": 0.02558790103063959,
+            "right_worsened": 11,
+            "tie": 0
+          }
+        },
+        "steer2push": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 2.207615854687756,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.1117525549598652,
+            "right_minus_left_mean": -2.095863299727891,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 1.0,
+            "preference": "higher",
+            "right_improved": 0,
+            "right_mean": 0.22240000000000001,
+            "right_minus_left_mean": -0.7776000000000002,
+            "right_worsened": 20,
+            "tie": 0
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 1.6517800638983027,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.18383547665650765,
+            "right_minus_left_mean": -1.4679445872417949,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.45069180361628536,
+            "preference": "lower",
+            "right_improved": 2,
+            "right_mean": 0.5031638248317758,
+            "right_minus_left_mean": 0.05247202121549046,
+            "right_worsened": 18,
+            "tie": 0
+          }
+        }
+      },
+      "50k_vs_100k": {
+        "push": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.14634691722695953,
+            "preference": "lower",
+            "right_improved": 13,
+            "right_mean": 0.12910749190869214,
+            "right_minus_left_mean": -0.017239425318267398,
+            "right_worsened": 7,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.5795,
+            "preference": "higher",
+            "right_improved": 15,
+            "right_mean": 0.7605,
+            "right_minus_left_mean": 0.181,
+            "right_worsened": 2,
+            "tie": 3
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.15865905521629936,
+            "preference": "lower",
+            "right_improved": 7,
+            "right_mean": 0.18092176211284206,
+            "right_minus_left_mean": 0.022262706896542674,
+            "right_worsened": 13,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.5993448359609729,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.5362651954302191,
+            "right_minus_left_mean": -0.06307964053075354,
+            "right_worsened": 0,
+            "tie": 0
+          }
+        },
+        "push2steer": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.043012693180112464,
+            "preference": "lower",
+            "right_improved": 1,
+            "right_mean": 0.2643364579646162,
+            "right_minus_left_mean": 0.22132376478450366,
+            "right_worsened": 19,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.12120000000000002,
+            "preference": "higher",
+            "right_improved": 20,
+            "right_mean": 0.301,
+            "right_minus_left_mean": 0.17980000000000002,
+            "right_worsened": 0,
+            "tie": 0
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.06923354895053939,
+            "preference": "lower",
+            "right_improved": 3,
+            "right_mean": 0.1470005108065459,
+            "right_minus_left_mean": 0.07776696185600651,
+            "right_worsened": 17,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.7074618208590807,
+            "preference": "lower",
+            "right_improved": 20,
+            "right_mean": 0.5262327080772,
+            "right_minus_left_mean": -0.18122911278188067,
+            "right_worsened": 0,
+            "tie": 0
+          }
+        },
+        "steer": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.24271475303058948,
+            "preference": "lower",
+            "right_improved": 14,
+            "right_mean": 0.1603281360645722,
+            "right_minus_left_mean": -0.08238661696601729,
+            "right_worsened": 6,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.7300000000000001,
+            "preference": "higher",
+            "right_improved": 13,
+            "right_mean": 0.8940000000000001,
+            "right_minus_left_mean": 0.164,
+            "right_worsened": 3,
+            "tie": 4
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.3603361456627509,
+            "preference": "lower",
+            "right_improved": 18,
+            "right_mean": 0.15138628787157404,
+            "right_minus_left_mean": -0.20894985779117686,
+            "right_worsened": 2,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.4561129781306058,
+            "preference": "lower",
+            "right_improved": 12,
+            "right_mean": 0.4307290119341164,
+            "right_minus_left_mean": -0.02538396619648946,
+            "right_worsened": 8,
+            "tie": 0
+          }
+        },
+        "steer2push": {
+          "board_xy_displacement_error_m": {
+            "left_mean": 0.1117525549598652,
+            "preference": "lower",
+            "right_improved": 5,
+            "right_mean": 0.19462832405782263,
+            "right_minus_left_mean": 0.08287576909795742,
+            "right_worsened": 15,
+            "tie": 0
+          },
+          "completion_ratio": {
+            "left_mean": 0.22240000000000001,
+            "preference": "higher",
+            "right_improved": 19,
+            "right_mean": 0.43360000000000004,
+            "right_minus_left_mean": 0.2112,
+            "right_worsened": 1,
+            "tie": 0
+          },
+          "coupling_xy_error_m": {
+            "left_mean": 0.18383547665650765,
+            "preference": "lower",
+            "right_improved": 7,
+            "right_mean": 0.19418025379808618,
+            "right_minus_left_mean": 0.010344777141578505,
+            "right_worsened": 13,
+            "tie": 0
+          },
+          "joint_position_mae_rad": {
+            "left_mean": 0.5031638248317758,
+            "preference": "lower",
+            "right_improved": 15,
+            "right_mean": 0.4607794124624219,
+            "right_minus_left_mean": -0.04238441236935388,
+            "right_worsened": 5,
+            "tie": 0
+          }
+        }
+      }
+    },
+    "tie_tolerance": "tie when abs(right-left) <= 1e-9 + 1e-6*max(abs(left),abs(right)); otherwise higher completion is improve and lower error is improve."
+  },
+  "status": "PASS",
+  "training_diagnostics": {
+    "checkpoints": {
+      "100k": {
+        "block_index": 198,
+        "episodes": 1917,
+        "falls": 1893,
+        "metrics": {
+          "B": {
+            "checkpoint_block_mean": 0.008179610846564173,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.008617114475928247,
+              "mean": 0.008364320449531079,
+              "min": 0.008179610846564173,
+              "std": 0.00014147176500840748
+            }
+          },
+          "B_norm": {
+            "checkpoint_block_mean": 16.0,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 16.0,
+              "mean": 16.0,
+              "min": 16.0,
+              "std": 0.0
+            }
+          },
+          "F1": {
+            "checkpoint_block_mean": 0.4025491523742676,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.4025491523742676,
+              "mean": 0.39203119516372675,
+              "min": 0.3858045947551727,
+              "std": 0.006267148789437173
+            }
+          },
+          "Q1": {
+            "checkpoint_block_mean": -105.18996444702148,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -105.18996444702148,
+              "mean": -105.50901391601562,
+              "min": -105.71286529541015,
+              "std": 0.18403031245113863
+            }
+          },
+          "Q_aux": {
+            "checkpoint_block_mean": -30.622324295043946,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -30.48163719177246,
+              "mean": -30.55704778289795,
+              "min": -30.63116184234619,
+              "std": 0.061188868496511145
+            }
+          },
+          "actor_loss": {
+            "checkpoint_block_mean": 2467.1113159179686,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 2546.0479443359377,
+              "mean": 2482.5371928710942,
+              "min": 2440.921799316406,
+              "std": 34.88540543967441
+            }
+          },
+          "aux_critic_loss": {
+            "checkpoint_block_mean": 1.7443842053413392,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 1.7443842053413392,
+              "mean": 1.6693559079170228,
+              "min": 1.5873999881744385,
+              "std": 0.06797145038765921
+            }
+          },
+          "critic_loss": {
+            "checkpoint_block_mean": 4.175078353881836,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 4.377533040046692,
+              "mean": 4.11083298110962,
+              "min": 3.8471138191223146,
+              "std": 0.18987335038337497
+            }
+          },
+          "disc_loss": {
+            "checkpoint_block_mean": 0.10335605576634407,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.10573710918426514,
+              "mean": 0.10370332050323487,
+              "min": 0.10247738793492317,
+              "std": 0.0012518788794094813
+            }
+          },
+          "fb_loss": {
+            "checkpoint_block_mean": -10463.11021484375,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -10342.16599609375,
+              "mean": -10410.41891796875,
+              "min": -10463.11021484375,
+              "std": 43.5897693048179
+            }
+          },
+          "mean_aux_reward": {
+            "checkpoint_block_mean": -0.8117806625366211,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -0.8090162885189056,
+              "mean": -0.8117232747077943,
+              "min": -0.8146587800979614,
+              "std": 0.002217228808237657
+            }
+          }
+        },
+        "native_updates": 9900,
+        "nearest_env_transitions": 100000,
+        "optimizer_steps": {
+          "actor": [
+            9900.0
+          ],
+          "aux_critic": [
+            9900.0
+          ],
+          "critic": [
+            9900.0
+          ],
+          "discriminator": [
+            9900.0
+          ],
+          "forward": [
+            9900.0
+          ]
+        },
+        "replay_size": 100000,
+        "rollout_latent": {
+          "background_random_samples": 16,
+          "background_zbuffer_samples": 2353,
+          "expert_percentage": 0.5,
+          "expert_rollout_env_indices": [
+            0,
+            3
+          ],
+          "expert_tracking_resets": 769,
+          "free_transitions": 81140,
+          "post_tracking_free_transitions": 28650,
+          "realized_tracking_transition_ratio": 0.1886,
+          "tracking_lengths": {
+            "max": 133,
+            "mean": 38.2925877763329,
+            "median": 22.0,
+            "min": 1
+          },
+          "tracking_max_length": 250,
+          "tracking_transitions": 18860,
+          "tracking_unavailable_resets": 47,
+          "update_z_every_step": 100,
+          "use_mix_rollout": true,
+          "z_buffer": {
+            "capacity": 8192,
+            "occupancy": 8192
+          },
+          "z_buffer_size": 8192,
+          "z_norm": {
+            "count": 100000,
+            "max": 16.000001907348633,
+            "mean": 15.999999991645813
+          }
+        },
+        "target_env_transitions": 100000
+      },
+      "20k": {
+        "block_index": 38,
+        "episodes": 17,
+        "falls": 1,
+        "metrics": {
+          "B": {
+            "checkpoint_block_mean": 0.004664796161232516,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.005080871535465121,
+              "mean": 0.004580267281387933,
+              "min": 0.003999910865677521,
+              "std": 0.0003989916718443747
+            }
+          },
+          "B_norm": {
+            "checkpoint_block_mean": 16.0,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 16.0,
+              "mean": 16.0,
+              "min": 16.0,
+              "std": 0.0
+            }
+          },
+          "F1": {
+            "checkpoint_block_mean": 0.014401153456419706,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.035300899390131237,
+              "mean": 0.020863266203552486,
+              "min": 0.008613190073519945,
+              "std": 0.00960326106621191
+            }
+          },
+          "Q1": {
+            "checkpoint_block_mean": -267.25775756835935,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -267.25306823730466,
+              "mean": -267.69254223632817,
+              "min": -268.3240124511719,
+              "std": 0.4807223002717235
+            }
+          },
+          "Q_aux": {
+            "checkpoint_block_mean": -70.44694000244141,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -70.44694000244141,
+              "mean": -70.60715237426759,
+              "min": -70.74841674804688,
+              "std": 0.10598739698063242
+            }
+          },
+          "actor_loss": {
+            "checkpoint_block_mean": 42843.36640625,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 44731.54171875,
+              "mean": 43763.8395625,
+              "min": 42843.36640625,
+              "std": 684.566937938704
+            }
+          },
+          "aux_critic_loss": {
+            "checkpoint_block_mean": 1.3021822571754456,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 1.3505561184883117,
+              "mean": 1.323798297405243,
+              "min": 1.3021822571754456,
+              "std": 0.015584086614687158
+            }
+          },
+          "critic_loss": {
+            "checkpoint_block_mean": 1.108913185596466,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 1.185259051322937,
+              "mean": 1.134685089588165,
+              "min": 1.0980646896362305,
+              "std": 0.030481141119486816
+            }
+          },
+          "disc_loss": {
+            "checkpoint_block_mean": 0.2658559417724609,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.28149892896413803,
+              "mean": 0.27514019691944125,
+              "min": 0.2658559417724609,
+              "std": 0.005678703193585747
+            }
+          },
+          "fb_loss": {
+            "checkpoint_block_mean": -245.12972412109374,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 608.2036010742188,
+              "mean": 17.014544921875,
+              "min": -338.4227453613281,
+              "std": 344.9209556071718
+            }
+          },
+          "mean_aux_reward": {
+            "checkpoint_block_mean": -0.7082443022727967,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -0.7082443022727967,
+              "mean": -0.7117424764633179,
+              "min": -0.7223380625247955,
+              "std": 0.005360109971105198
+            }
+          }
+        },
+        "native_updates": 1900,
+        "nearest_env_transitions": 20000,
+        "optimizer_steps": {
+          "actor": [
+            1900.0
+          ],
+          "aux_critic": [
+            1900.0
+          ],
+          "critic": [
+            1900.0
+          ],
+          "discriminator": [
+            1900.0
+          ],
+          "forward": [
+            1900.0
+          ]
+        },
+        "replay_size": 20000,
+        "rollout_latent": {
+          "background_random_samples": 16,
+          "background_zbuffer_samples": 200,
+          "expert_percentage": 0.5,
+          "expert_rollout_env_indices": [
+            0,
+            3
+          ],
+          "expert_tracking_resets": 10,
+          "free_transitions": 19545,
+          "post_tracking_free_transitions": 8521,
+          "realized_tracking_transition_ratio": 0.02275,
+          "tracking_lengths": {
+            "max": 123,
+            "mean": 45.5,
+            "median": 18.0,
+            "min": 1
+          },
+          "tracking_max_length": 250,
+          "tracking_transitions": 455,
+          "tracking_unavailable_resets": 1,
+          "update_z_every_step": 100,
+          "use_mix_rollout": true,
+          "z_buffer": {
+            "capacity": 8192,
+            "occupancy": 8192
+          },
+          "z_buffer_size": 8192,
+          "z_norm": {
+            "count": 20000,
+            "max": 16.000001907348633,
+            "mean": 15.99999999923706
+          }
+        },
+        "target_env_transitions": 20000
+      },
+      "50k": {
+        "block_index": 98,
+        "episodes": 236,
+        "falls": 212,
+        "metrics": {
+          "B": {
+            "checkpoint_block_mean": 0.007709583165124058,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.009387357402592897,
+              "mean": 0.00854263679124415,
+              "min": 0.007709583165124058,
+              "std": 0.0005784119404287013
+            }
+          },
+          "B_norm": {
+            "checkpoint_block_mean": 16.0,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 16.0,
+              "mean": 16.0,
+              "min": 16.0,
+              "std": 0.0
+            }
+          },
+          "F1": {
+            "checkpoint_block_mean": -0.1812503631412983,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -0.1215293044783175,
+              "mean": -0.14878673508390783,
+              "min": -0.1812503631412983,
+              "std": 0.02035702099733012
+            }
+          },
+          "Q1": {
+            "checkpoint_block_mean": -191.87187896728517,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -191.87187896728517,
+              "mean": -200.85664855957032,
+              "min": -210.3582421875,
+              "std": 6.782274094657727
+            }
+          },
+          "Q_aux": {
+            "checkpoint_block_mean": -93.71366653442382,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -93.71366653442382,
+              "mean": -94.84635052490235,
+              "min": -96.07600219726562,
+              "std": 0.7953322613751997
+            }
+          },
+          "actor_loss": {
+            "checkpoint_block_mean": 9395.310888671875,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 11878.3341015625,
+              "mean": 10598.35664453125,
+              "min": 9395.310888671875,
+              "std": 1019.7429666322357
+            }
+          },
+          "aux_critic_loss": {
+            "checkpoint_block_mean": 29.257774543762206,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 33.413432922363285,
+              "mean": 30.01007383728027,
+              "min": 27.403807678222655,
+              "std": 2.07455746987185
+            }
+          },
+          "critic_loss": {
+            "checkpoint_block_mean": 39.37415927886963,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 39.47788505554199,
+              "mean": 37.35388530731201,
+              "min": 34.233749542236325,
+              "std": 2.1093340900739204
+            }
+          },
+          "disc_loss": {
+            "checkpoint_block_mean": 0.1385558034479618,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": 0.14498881876468658,
+              "mean": 0.14072340410947798,
+              "min": 0.13816709339618682,
+              "std": 0.002484039359923246
+            }
+          },
+          "fb_loss": {
+            "checkpoint_block_mean": -5135.211147460937,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -4712.605151367187,
+              "mean": -4992.9454345703125,
+              "min": -5298.498916015625,
+              "std": 205.86319142912714
+            }
+          },
+          "mean_aux_reward": {
+            "checkpoint_block_mean": -0.5893370807170868,
+            "preceding_5_blocks": {
+              "count": 5,
+              "max": -0.5892621910572052,
+              "mean": -0.5933839037418366,
+              "min": -0.6019365763664246,
+              "std": 0.004731492462394549
+            }
+          }
+        },
+        "native_updates": 4900,
+        "nearest_env_transitions": 50000,
+        "optimizer_steps": {
+          "actor": [
+            4900.0
+          ],
+          "aux_critic": [
+            4900.0
+          ],
+          "critic": [
+            4900.0
+          ],
+          "discriminator": [
+            4900.0
+          ],
+          "forward": [
+            4900.0
+          ]
+        },
+        "replay_size": 50000,
+        "rollout_latent": {
+          "background_random_samples": 16,
+          "background_zbuffer_samples": 636,
+          "expert_percentage": 0.5,
+          "expert_rollout_env_indices": [
+            0,
+            3
+          ],
+          "expert_tracking_resets": 101,
+          "free_transitions": 46941,
+          "post_tracking_free_transitions": 20352,
+          "realized_tracking_transition_ratio": 0.06118,
+          "tracking_lengths": {
+            "max": 123,
+            "mean": 33.18811881188119,
+            "median": 20.0,
+            "min": 1
+          },
+          "tracking_max_length": 250,
+          "tracking_transitions": 3059,
+          "tracking_unavailable_resets": 8,
+          "update_z_every_step": 100,
+          "use_mix_rollout": true,
+          "z_buffer": {
+            "capacity": 8192,
+            "occupancy": 8192
+          },
+          "z_buffer_size": 8192,
+          "z_norm": {
+            "count": 50000,
+            "max": 16.000001907348633,
+            "mean": 15.999999991378784
+          }
+        },
+        "target_env_transitions": 50000
+      }
+    },
+    "diagnostics_path": "results/m2.6-p1-phase-100k-seed4728/training_diagnostics.jsonl",
+    "summary_path": "results/m2.6-p1-phase-100k-seed4728/training_summary.json"
+  }
+}

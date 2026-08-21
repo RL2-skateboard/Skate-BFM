@@ -214,25 +214,25 @@ evaluation episode fell; physical performance was inconclusive.
 |---|---:|
 | Online transitions | 100,000 |
 | Update blocks / native updates | 198 / 9,900 |
-| Normal transitions | 96,891 |
-| Fall terminations | 3,109 |
-| Horizon completions | 0 |
-| Expert resets | 3,113 |
+| Normal transitions | 98,083 |
+| Fall terminations | 1,893 |
+| Horizon completions | 24 |
+| Expert tracking resets | 769 |
 | Model/optimizer/normalizer finite | PASS |
 
 **Caption.** `Normal transitions` neither terminate nor truncate; `fall
 terminations` end an episode by the persistent fall detector; `horizon
-completions` are time-limit truncations; `expert resets` reset to selected
-expert source frames. For stability, fewer falls and more horizon completions
-are preferable.
+completions` are time-limit truncations; `expert tracking resets` are resets
+that received the aligned future-expert latent. For stability, fewer falls and
+more horizon completions are preferable.
 
 Checkpoint integrity:
 
 | Checkpoint | Model SHA256 prefix | Optimizer step | Reload |
 |---|---|---:|---|
-| 20k | `6c76f0a6ba20` | 1,900 | PASS |
-| 50k | `4e7eda31be77` | 4,900 | PASS |
-| 100k | `04c51a9bc938` | 9,900 | PASS |
+| 20k | `b758f01fd960` | 1,900 | PASS |
+| 50k | `b1f16d00ae80` | 4,900 | PASS |
+| 100k | `ab8ef719d613` | 9,900 | PASS |
 
 **Caption.** `SHA256 prefix` is a shortened checkpoint content hash,
 `optimizer step` is the number of saved update calls, and `reload` verifies
@@ -271,8 +271,60 @@ mean and minimum are better. `Min / max` are the observed episode range, and
 `Falls` is terminated episodes over the fixed 32-episode evaluation set;
 lower is better.
 
-**Conclusion.** Numerical execution passed, but every trained checkpoint was
-less stable than official BFM0. Behavioral adaptation failed.
+**Historical conclusion.** This earlier 32-case matched evaluation established
+that finite numerical execution did not establish behavioral success. The
+current R5 held-out comparison below is the authoritative per-checkpoint
+comparison for this formal P1 run.
+
+**Formal R5 held-out checkpoint comparison**
+
+All checkpoints replayed the exact same 80 Test cases: 20 rollout-balanced
+cases each for `push`, `steer`, `push2steer`, and `steer2push`, selected
+without replacement with seed 4728. The complete fixed-case identity hash is
+`ff7a290d384d00ae34ff2ccd8c5765227df711bca0fab5e668532234aa12e3ad`;
+tracking parity, frozen mutation checks, and representative video replay
+passed for all three checkpoints.
+
+| Checkpoint | Push completion | Steer completion | Push2steer completion | Steer2push completion |
+|---|---:|---:|---:|---:|
+| 20k | 0.986 | 0.965 | 0.893 | 1.000 |
+| 50k | 0.580 | 0.730 | 0.121 | 0.222 |
+| 100k | 0.760 | 0.894 | 0.301 | 0.434 |
+
+**Caption.** Completion is executed control steps divided by the planned
+horizon, averaged over 20 cases per behavior; it ranges from 0 to 1 and
+higher is better. Steady skills use 2.0 s / 100 steps and transitions 5.0 s /
+250 steps. The shared cases make columns comparable by checkpoint, but this
+is a limited held-out Test subset rather than the full Test set.
+
+The 20k checkpoint survived most selected horizons but had poor board
+retention/tracking in several behaviors; 50k terminated before every
+`push2steer` transition; 100k recovered some completion and retention but
+still terminated in 75%, 25%, 95%, and 100% of push, steer, push2steer, and
+steer2push cases respectively. Lower board/coupling error for an early-falling
+checkpoint is not evidence of better behavior because it is measured only
+over its shorter executed prefix.
+
+![Shared 20k, 50k, 100k tracking latent direction view](eval_res/2026-08-20/20k-50k-100k-s20b/latent_space_compare.png)
+
+**Caption.** Each panel shows actual frozen-evaluation tracking `z_t` values:
+blue push, green steer, orange push2steer, red steer2push, and faint gray
+official-prior reference samples. `z_t` is 256D with norm 16; points use
+`u=z/||z||`, one shared PCA-to-3D basis, then normalized 3D directions.
+Lines are the first three lexical case trajectories per shown phase and large
+markers are high-dimensional direction centroids. The 50k orange category has
+zero executed points because all its push2steer cases terminated before the
+transition. This figure shows accessed latent directions only; it does not
+prove latent coverage, separation, or behavioral causality.
+
+Detailed fixed-case metrics, transition PRE/TRANSITION/POST means, paired
+case improve/worsen/tie counts, latent norms, and projection metadata are in
+[the comparison report](eval_res/2026-08-20/20k-50k-100k-s20b/comparison.md)
+and [machine-readable comparison](eval_res/2026-08-20/20k-50k-100k-s20b/comparison.json).
+The three per-checkpoint latent views are
+[20k](eval_res/2026-08-20/20k-s20b_test_phase_eval/latent_space.png),
+[50k](eval_res/2026-08-20/50k-s20b_test_phase_eval/latent_space.png), and
+[100k](eval_res/2026-08-20/100k-s20b_test_phase_eval/latent_space.png).
 
 ### Failure Diagnosis and Semantics Correction Results
 
@@ -432,8 +484,10 @@ Verified:
 - [x] Fixed-replay and closed-loop optimization remain finite through the
   completed 20k and 100k runs.
 - [x] Checkpoints reload with model, optimizer, and normalizer state.
-- [x] The 100k trained checkpoints are less stable than official BFM0 under
-  matched frozen evaluation.
+- [x] The historical 32-case matched evaluation found the 100k checkpoints
+  less stable than official BFM0.
+- [x] The current 80-case held-out Test subset found no checkpoint with robust
+  completion across all four phase behaviors.
 - [x] Source physics, robot-board state, active action subspace, and pre-D2.7
   P0 structural contracts pass.
 - [x] Source action timing, target reconstruction, and authoritative
@@ -450,15 +504,16 @@ Unverified:
   are fully resolved.
 - [ ] A single action translation reproduces every source physical target.
 - [ ] The projected source action is a valid universal BFM expert action.
-- [ ] A post-alignment retraining improves policy survival.
+- [ ] A revised post-alignment training run improves robust phase behavior.
 - [ ] The current checkpoint is a usable Skate motion library.
-- [ ] Held-out validation/test generalization.
+- [x] A fixed 80-case held-out Test subset was replayed identically for 20k,
+  50k, and 100k, with frozen mutation and tracking-parity checks passing.
+- [ ] Full held-out Test coverage and generalization.
 
 - [ ] Periodic training-loss curves committed to the repository.
 - [ ] Parameter and gradient norm curves.
 - [ ] Phase-conditioned frozen evaluation during training.
 - [ ] Formal training rollout videos.
-- [ ] Held-out validation/test evaluation.
 
 Available dataset QC videos remain under the Phase and Continuous Hugging Face
 directories. Missing training evidence is not reconstructed from smoke output.

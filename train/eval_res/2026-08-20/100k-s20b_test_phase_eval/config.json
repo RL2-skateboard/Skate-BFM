@@ -1,0 +1,815 @@
+{
+  "candidate_counts": {
+    "push": 306,
+    "push2steer": 275,
+    "steer": 302,
+    "steer2push": 270
+  },
+  "case_selection": {
+    "eligible_counts": {
+      "push": 306,
+      "push2steer": 275,
+      "steer": 302,
+      "steer2push": 270
+    },
+    "eligible_source_groups": {
+      "push": 32,
+      "push2steer": 32,
+      "steer": 32,
+      "steer2push": 32
+    },
+    "excluded_reasons": {
+      "push2steer:raw_reset_or_fall": 1,
+      "push2steer:raw_window": 27,
+      "push:too_short": 2,
+      "steer2push:raw_reset_or_fall": 1,
+      "steer2push:raw_window": 5,
+      "steer:too_short": 1
+    },
+    "max_cases_per_behavior": 20,
+    "mode": "rollout_balanced_without_replacement",
+    "seed": 4728,
+    "selected_counts": {
+      "push": 20,
+      "push2steer": 20,
+      "steer": 20,
+      "steer2push": 20
+    },
+    "selected_direction_counts": {
+      "push2steer": {
+        "forward": 1,
+        "left": 8,
+        "right": 11
+      },
+      "steer": {
+        "forward": 1,
+        "left": 8,
+        "right": 11
+      },
+      "steer2push": {
+        "forward": 1,
+        "left": 9,
+        "right": 10
+      }
+    },
+    "selected_unique_source_groups": {
+      "push": 20,
+      "push2steer": 20,
+      "steer": 20,
+      "steer2push": 20
+    },
+    "selection_fingerprint": "d1211f85f17765de93f75c22dc36b10135ddad1663de176556f99f226f5c2a03",
+    "warnings": []
+  },
+  "checkpoint": {
+    "label": "100k-s20b",
+    "path": "/home/hm/workspace/skate-bfm/model/motion_library/m2.6-p1-phase-100k-seed4728/checkpoint_100000",
+    "sha256": "ab8ef719d613ce988a173ad8734ce655c3b564045d616d1ce01416b070129434"
+  },
+  "command": "eval",
+  "continuous_dataset_dependency": false,
+  "control_dt": 0.02,
+  "eval_behaviors": "all",
+  "evaluation_only": true,
+  "evaluator_sha256": "23fae2ce941625a26667bb77bf6a7fe68b513f897696d2a294a1619b6ab4117a",
+  "excluded_reasons": {
+    "push2steer:raw_reset_or_fall": 1,
+    "push2steer:raw_window": 27,
+    "push:too_short": 2,
+    "steer2push:raw_reset_or_fall": 1,
+    "steer2push:raw_window": 5,
+    "steer:too_short": 1
+  },
+  "formal_full_behavior": {
+    "push": false,
+    "push2steer": false,
+    "steer": false,
+    "steer2push": false
+  },
+  "formal_full_test": false,
+  "git_head": "275426fc45283aee2a047ec559aabde15dd37293",
+  "phase_boundary_convention": "exact source_end_frame == next source_start_frame",
+  "phase_manifest": "/home/hm/workspace/skate-bfm/train/dataset/sim_collected/test/phase/motion_library/manifest.json",
+  "phase_manifest_sha256": "aaefa35ba8c00c415840990eb11df7eed08b2ea03818968b8c05be29b08e6908",
+  "phase_motionlib": "/home/hm/workspace/skate-bfm/train/dataset/sim_collected/test/phase/motion_library/skate_expert_phase.pkl",
+  "phase_motionlib_sha256": "d7a4342e8314cafc7e4a11ef0f07311e41c61dda49c2c187934c5618c8551c82",
+  "protocol": {
+    "push": {
+      "duration_s": 2.0,
+      "duration_steps": 100
+    },
+    "push2steer": {
+      "duration_s": 5.0,
+      "duration_steps": 250,
+      "lead_s": 1.0,
+      "lead_steps": 50
+    },
+    "steer": {
+      "duration_s": 2.0,
+      "duration_steps": 100
+    },
+    "steer2push": {
+      "duration_s": 5.0,
+      "duration_steps": 250,
+      "lead_s": 1.0,
+      "lead_steps": 50
+    }
+  },
+  "raw_root": "/home/hm/workspace/skate-bfm/train/dataset/sim_collected/test/raw",
+  "raw_to_bfm_converter": "data_collection.convert_continuous.convert_record",
+  "steady_duration_s": 2.0,
+  "steady_steps": 100,
+  "test": true,
+  "tracking_bridge": {
+    "converter": "/home/hm/workspace/skate-bfm/train/scripts/data_collection/convert_continuous.py",
+    "converter_sha256": "699532a859afebccc59f65e52bd4e0cb19dc9b0892d8828026a9c42cb61d72a7",
+    "coverage": {
+      "push2steer_000": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_023": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_028": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_037": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_049": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_060": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_076": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_086": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_088": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_130": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_143": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_157": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_164": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_189": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_198": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_215": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_222": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_227": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_258": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push2steer_270": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "push_008": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_014": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_026": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_031": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_055": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_088": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_117": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_118": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_126": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_136": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_151": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_163": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_169": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_179": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_198": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_219": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_260": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_283": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_288": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "push_302": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer2push_006": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_009": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_022": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_059": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_070": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_105": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_111": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_122": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_144": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_147": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_160": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_175": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_178": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_194": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_215": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_225": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_235": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_240": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_250": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer2push_261": {
+        "final_future_context": 8,
+        "gap_free": true,
+        "observation_rows": 258,
+        "raw_frames": 259,
+        "required_policy_steps": 250,
+        "seq_length": 8
+      },
+      "steer_007": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_044": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_055": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_095": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_100": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_121": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_136": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_143": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_150": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_157": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_166": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_179": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_195": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_200": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_213": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_233": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_247": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_266": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_283": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      },
+      "steer_286": {
+        "final_future_context": 9,
+        "gap_free": true,
+        "observation_rows": 109,
+        "raw_frames": 109,
+        "required_policy_steps": 100,
+        "seq_length": 8
+      }
+    },
+    "reference": "/home/hm/workspace/skate-bfm/train/dataset/base/lafan_29dof_10s-clipped.pkl",
+    "reference_sha256": "7f5aa36957808ee2e972472b18add8510533742710ba312d8b8c6e6014f1c010",
+    "robot_xml": "/home/hm/workspace/skate-bfm/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml",
+    "robot_xml_sha256": "439c1ec0806583d73b492da9484b0cb9e9eae215e0d9506e3c2fa69016733532",
+    "temporary_motionlib_sha256": "0224e0fe743308c21747169d3a86b672a6b4bc9d620c1233f28f3b044f6e77bf"
+  },
+  "tracking_parity": {
+    "first_action_match": true,
+    "first_action_max_abs_diff": 2.1010637283325195e-05,
+    "last_action_zero": true,
+    "max_abs_diff": {
+      "last_action": 0.0,
+      "privileged_state": 9.5367431640625e-07,
+      "state": 0.0
+    },
+    "selected": [
+      {
+        "motion_key": "skate/push/r015_rollout001_seg000",
+        "phase": "push",
+        "rows_compared": 120
+      },
+      {
+        "motion_key": "skate/push2steer/r015_rollout001_seg001",
+        "phase": "push2steer",
+        "rows_compared": 29
+      },
+      {
+        "motion_key": "skate/steer_left/r015_rollout001_seg002",
+        "phase": "steer_left",
+        "rows_compared": 134
+      },
+      {
+        "motion_key": "skate/steer2push/r015_rollout001_seg003",
+        "phase": "steer2push",
+        "rows_compared": 14
+      }
+    ],
+    "status": "PASS",
+    "z_max_abs_diff": 0.0002434849739074707
+  },
+  "training": false,
+  "training_date": "2026-08-20",
+  "training_summary": "/home/hm/workspace/skate-bfm/results/m2.6-p1-phase-100k-seed4728/training_summary.json",
+  "transition_duration_s": 5.0,
+  "transition_lead_s": 1.0,
+  "transition_lead_steps": 50,
+  "transition_steps": 250
+}

@@ -1,0 +1,43 @@
+{
+  "benchmark_case_identity_sha256": "ff7a290d384d00ae34ff2ccd8c5765227df711bca0fab5e668532234aa12e3ad",
+  "checkpoint": "model/motion_library/m2.6-p1-phase-100k-seed4728/checkpoint_20000",
+  "checkpoint_sha256": "b758f01fd9600f9d175344ea3da2aeeedcbbace70aabacd2a82cfac67dff5612",
+  "expected_norm": 16.0,
+  "frozen_mutation_check": "PASS",
+  "phase_labeling": "future_start=t+1 maps to canonical Raw reset_raw_frame+t+1. Saved case frame_phase labels are used when present; bridge-context frames beyond them use the authoritative source raw phase_id mapping. steer_left/forward/right are rendered as steer.",
+  "projection": {
+    "artifact": "train/eval_res/2026-08-20/20k-50k-100k-s20b/latent_projection.json",
+    "explained_variance_ratio": [
+      0.10177066184960698,
+      0.06914426318888517,
+      0.055419903761173755
+    ],
+    "fingerprint": "e7982e69994c7334d2e0515d6ff448cc982898ffbb7ab5009732a4d515cbd729",
+    "meaning": "Shared 3D spherical PCA-direction visualization only; it is not lossless 256D geometry or a Euclidean-distance plot.",
+    "method": "u=z/||z||; shared PCA(n_components=3) over reference plus all checkpoints/phases; v=PCA(u)/||PCA(u)|| for unit-sphere display."
+  },
+  "reference_norm": {
+    "count": 4096,
+    "max": 16.00000184700696,
+    "mean": 15.999999999837177,
+    "min": 15.9999981725606,
+    "std": 5.363465486046718e-07
+  },
+  "reference_sampler": "official model.sample_z(4096), seed=4728; standard-normal draw followed by project_z=sqrt(z_dim)*normalize because norm_z=True.",
+  "tracking_source": "Raw Phase/Raw window -> temporary MotionLib -> AlignedSkateTrackingContext.encode -> tracking_inference",
+  "trajectory_lines": "First three lexical case_id paths per shown phase; scatter/counts include all actually executed z_t.",
+  "visited_counts": {
+    "push": 5688,
+    "push2steer": 1183,
+    "steer": 5959,
+    "steer2push": 540
+  },
+  "visited_norm": {
+    "count": 13370,
+    "max": 16.00000132039482,
+    "mean": 15.99999999412121,
+    "min": 15.999998774106283,
+    "std": 3.978067642508941e-07
+  },
+  "z_dim": 256
+}

@@ -72,3 +72,7 @@ Unified data and runtime paths under `train/dataset/` and published the named 10
 ### 2026-08-19
 
 Restored and validated the official BFM hard-waist control contract in the HUSKY runtime.
+
+### 2026-08-21
+
+Compared the 20k, 50k, and 100k formal Phase checkpoints on one fixed 80-case held-out Test benchmark and reconstructed their tracking-latent directions.
