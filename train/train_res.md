@@ -538,6 +538,62 @@ Unverified:
 Available dataset QC videos remain under the Phase and Continuous Hugging Face
 directories. Missing training evidence is not reconstructed from smoke output.
 
+### Continuous Formal 100k
+
+The fresh Continuous run used 890 train-only 500-frame clips (445,000 frames,
+158 canonical Raw rollouts), official BFM0 SHA
+`33f410c190877a1348dc3fafa3f0e97b277ad0251b39615ff98e5bd26369e361`,
+and the Phase-formal 100k schedule unchanged. It completed 100,000
+transitions, 198 update blocks, and 9,900 native updates. Checkpoint reload
+passed at 20k, 50k, and 100k; all model, optimizer, normalizer, and logged
+native metrics remained finite.
+
+| Continuous checkpoint | Complete push / steer / push2steer / steer2push | Mean completion ratio, same order |
+|---|---:|---:|
+| 20k | 1.00 / 1.00 / 1.00 / 1.00 | 1.000 / 1.000 / 1.000 / 1.000 |
+| 50k | 0.10 / 0.00 / 0.00 / 0.00 | 0.371 / 0.277 / 0.104 / 0.157 |
+| 100k | 0.25 / 0.70 / 0.00 / 0.00 | 0.654 / 0.888 / 0.258 / 0.372 |
+
+**Caption.** `Complete` is the fraction of the 20 fixed cases per behavior
+reaching the protocol horizon; completion ratio is executed steps divided by
+100 for steady skills or 250 for transitions. Higher is better. These are the
+same 80 Phase-Test + canonical Raw scenarios used by Phase, but checkpoint
+tracking latents are recomputed from each Continuous checkpoint.
+
+| Continuous checkpoint | Push joint MAE / board XY / coupling | Steer joint MAE / board XY / coupling | Push2steer joint MAE / board XY / coupling | Steer2push joint MAE / board XY / coupling |
+|---|---:|---:|---:|---:|
+| 20k | 0.471 / 0.281 / 0.186 | 0.440 / 0.423 / 0.433 | 0.435 / 2.267 / 0.971 | 0.452 / 2.152 / 1.770 |
+| 50k | 0.612 / 0.124 / 0.171 | 0.559 / 0.073 / 0.162 | 0.625 / 0.049 / 0.095 | 0.492 / 0.055 / 0.101 |
+| 100k | 0.526 / 0.113 / 0.158 | 0.402 / 0.125 / 0.103 | 0.532 / 0.201 / 0.213 | 0.461 / 0.150 / 0.171 |
+
+**Caption.** Joint MAE is radians; board XY and coupling error are metres;
+all are evaluator means over executed frames and lower is better. Low
+board/coupling errors after early termination do not establish successful
+transition reproduction, so these columns must be read with completion.
+
+![Continuous shared tracking-latent direction view](eval_res/2026-08-24/c20k-c50k-c100k-s20b/latent_space_compare.png)
+
+**Caption.** Gray points are 4,096 official-prior directions; colors are
+actual executed evaluator tracking `z_t`, labeled by the corresponding Raw
+phase. Unit 256D directions from all three checkpoints share one PCA basis
+before visualization. This figure describes accessed latent directions, not
+behavior quality or complete action-space coverage.
+
+Artifacts: [training summary](../results/m2.6-c1-continuous-100k-seed4728/training_summary.json),
+[diagnostics](../results/m2.6-c1-continuous-100k-seed4728/training_diagnostics.jsonl),
+[20k eval](eval_res/2026-08-24/c20k-s20b_test_phase_eval/summary.md),
+[50k eval](eval_res/2026-08-24/c50k-s20b_test_phase_eval/summary.md),
+[100k eval](eval_res/2026-08-24/c100k-s20b_test_phase_eval/summary.md), and
+[paired comparison](eval_res/2026-08-24/c20k-c50k-c100k-s20b/comparison.md).
+
+**Conclusion.** The Continuous pipeline and fixed benchmark protocol pass.
+Continuous does not demonstrate a monotonic training benefit: 20k remains
+short-horizon stable but tracks transitions poorly in board/coupling space;
+50k regresses strongly; 100k recovers steer but both transition behaviors
+still terminate in all sampled cases. Phase-vs-Continuous paired deltas are
+available in the linked comparison and cannot be attributed solely to
+cross-phase context because the MotionLib sampling distribution also differs.
+
 ## Experiment 4 (Planned): BFB/RFB Dynamics-Conditioned Training
 
 No BFB/RFB implementation or training result has been produced. The planned

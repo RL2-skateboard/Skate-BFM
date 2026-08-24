@@ -84,3 +84,5 @@ Archived the complete `train/eval_res/2026-08-20/` checkpoint-evaluation results
 ### 2026-08-24
 
 Completed the fresh Continuous 10k training-health run with finite diagnostics and a reloadable checkpoint; no performance conclusion was drawn.
+
+Completed fresh Continuous formal 100k training and the fixed 80-case 20k/50k/100k frozen checkpoint evaluation.

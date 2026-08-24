@@ -987,6 +987,36 @@ Relevant implementation:
 - [`../src/skate_bfm/integration/actions.py`](../src/skate_bfm/integration/actions.py)
 - [`../src/skate_bfm/integration/online.py`](../src/skate_bfm/integration/online.py)
 
+### Continuous Formal Controlled Comparison
+
+On 2026-08-24, the Phase MotionLib was replaced by the Continuous MotionLib
+as the sole training-data organization change. The run started fresh from
+official BFM0, not from the Continuous 10k or any Phase checkpoint.
+
+| Item | Continuous formal value |
+|---|---:|
+| Motion clips / frames / source rollouts | 890 / 445,000 / 158 |
+| Clip organization | 500 contiguous Raw frames, 10 s at 50 Hz, phase crossing retained |
+| Online transitions / update blocks / native updates | 100,000 / 198 / 9,900 |
+| Checkpoint optimizer steps | 20k: 1,900; 50k: 4,900; 100k: 9,900 |
+| Reset and physics | canonical Raw robot-board `qpos/qvel` with source-conditioned physics |
+| Test protocol | same fixed 80 Phase-Test + Raw cases as Phase; deterministic actor and checkpoint-specific tracking `z` |
+
+**Caption.** Continuous preserves every source frame transition inside a clip,
+but differs from Phase in MotionLib/reset sampling distribution as well as
+cross-phase sequence availability. Thus this is a dataset-organization
+comparison, not an isolated “Seq8 crossing” causal ablation.
+
+All checkpoints and training state were finite and reloadable. The frozen
+80-case outputs are retained under
+[`eval_res/2026-08-24/`](eval_res/2026-08-24/); the shared paired and latent
+analysis is
+[`c20k-c50k-c100k-s20b/comparison.md`](eval_res/2026-08-24/c20k-c50k-c100k-s20b/comparison.md).
+The result verifies pipeline correctness, but not robust Skate behavior:
+Continuous 20k completes all sampled cases but has large transition board and
+coupling errors; 50k collapses; 100k recovers steer more than either
+transition behavior.
+
 ## Experiment 4 (Planned): BFB/RFB Dynamics-Conditioned Training
 
 ### Experiment Goal

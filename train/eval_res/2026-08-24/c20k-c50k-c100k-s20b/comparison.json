@@ -1,0 +1,873 @@
+{
+  "benchmark_case_identity": "b3074e47aa2f48a8287832ef8c9d60d5b84cfb4d58f0bf60bf77e664bfef1597",
+  "continuous_internal_paired": {
+    "20k_vs_100k": {
+      "push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 13,
+          "right_minus_left_mean": -0.16805692656374574,
+          "right_worsened": 7,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.34600000000000003,
+          "right_worsened": 15,
+          "tie": 5
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 12,
+          "right_minus_left_mean": -0.027649515888667632,
+          "right_worsened": 8,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 0,
+          "right_minus_left_mean": 0.05456169553159951,
+          "right_worsened": 20,
+          "tie": 0
+        }
+      },
+      "push2steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -2.0664036769829925,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.7422,
+          "right_worsened": 20,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 18,
+          "right_minus_left_mean": -0.7571786421345787,
+          "right_worsened": 2,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 0,
+          "right_minus_left_mean": 0.0975409746194104,
+          "right_worsened": 20,
+          "tie": 0
+        }
+      },
+      "steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 19,
+          "right_minus_left_mean": -0.2979340992396001,
+          "right_worsened": 1,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.1125,
+          "right_worsened": 6,
+          "tie": 14
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 18,
+          "right_minus_left_mean": -0.3298476490058599,
+          "right_worsened": 2,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 17,
+          "right_minus_left_mean": -0.03722160220530141,
+          "right_worsened": 3,
+          "tie": 0
+        }
+      },
+      "steer2push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -2.001730893796279,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.6281999999999999,
+          "right_worsened": 20,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -1.598372029337314,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 12,
+          "right_minus_left_mean": 0.009709060166118966,
+          "right_worsened": 8,
+          "tie": 0
+        }
+      }
+    },
+    "20k_vs_50k": {
+      "push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 16,
+          "right_minus_left_mean": -0.15629340678863518,
+          "right_worsened": 4,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.6295,
+          "right_worsened": 18,
+          "tie": 2
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 9,
+          "right_minus_left_mean": -0.014551196781094025,
+          "right_worsened": 11,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 0,
+          "right_minus_left_mean": 0.14135563167585063,
+          "right_worsened": 20,
+          "tie": 0
+        }
+      },
+      "push2steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -2.2183711559497743,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.8956000000000003,
+          "right_worsened": 20,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 18,
+          "right_minus_left_mean": -0.8755837367747981,
+          "right_worsened": 2,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 0,
+          "right_minus_left_mean": 0.1899565122769898,
+          "right_worsened": 20,
+          "tie": 0
+        }
+      },
+      "steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -0.3500118130308346,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.7230000000000001,
+          "right_worsened": 20,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 17,
+          "right_minus_left_mean": -0.2710544779705485,
+          "right_worsened": 3,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 2,
+          "right_minus_left_mean": 0.11977514585947532,
+          "right_worsened": 18,
+          "tie": 0
+        }
+      },
+      "steer2push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -2.096523766118234,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": -0.8427999999999999,
+          "right_worsened": 20,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -1.668310713437934,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 8,
+          "right_minus_left_mean": 0.040513626375122,
+          "right_worsened": 12,
+          "tie": 0
+        }
+      }
+    },
+    "50k_vs_100k": {
+      "push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 9,
+          "right_minus_left_mean": -0.011763519775110582,
+          "right_worsened": 11,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 17,
+          "right_minus_left_mean": 0.2835,
+          "right_worsened": 1,
+          "tie": 2
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 10,
+          "right_minus_left_mean": -0.01309831910757361,
+          "right_worsened": 10,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 18,
+          "right_minus_left_mean": -0.0867939361442511,
+          "right_worsened": 2,
+          "tie": 0
+        }
+      },
+      "push2steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 1,
+          "right_minus_left_mean": 0.15196747896678214,
+          "right_worsened": 19,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 20,
+          "right_minus_left_mean": 0.15340000000000004,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 3,
+          "right_minus_left_mean": 0.11840509464021923,
+          "right_worsened": 17,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 19,
+          "right_minus_left_mean": -0.0924155376575794,
+          "right_worsened": 1,
+          "tie": 0
+        }
+      },
+      "steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 5,
+          "right_minus_left_mean": 0.05207771379123459,
+          "right_worsened": 15,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 20,
+          "right_minus_left_mean": 0.6105000000000002,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 16,
+          "right_minus_left_mean": -0.05879317103531147,
+          "right_worsened": 4,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 17,
+          "right_minus_left_mean": -0.15699674806477676,
+          "right_worsened": 3,
+          "tie": 0
+        }
+      },
+      "steer2push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 3,
+          "right_minus_left_mean": 0.09479287232195485,
+          "right_worsened": 17,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 19,
+          "right_minus_left_mean": 0.21459999999999999,
+          "right_worsened": 1,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 6,
+          "right_minus_left_mean": 0.06993868410062007,
+          "right_worsened": 14,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 12,
+          "right_minus_left_mean": -0.030804566209003036,
+          "right_worsened": 8,
+          "tie": 0
+        }
+      }
+    }
+  },
+  "continuous_latent": {
+    "100k": {
+      "centroid_angular_distance_deg": {
+        "push2steer__steer": 67.75279235839844,
+        "push__push2steer": 63.000553131103516,
+        "push__steer": 54.881919860839844,
+        "steer2push__push": 60.910640716552734,
+        "steer__steer2push": 63.15650177001953
+      },
+      "counts": {
+        "push": 2912,
+        "push2steer": 308,
+        "steer": 2726,
+        "steer2push": 285
+      },
+      "within_class_angular_dispersion_deg": {
+        "push": 54.17491149902344,
+        "push2steer": 35.56111526489258,
+        "steer": 54.53765869140625,
+        "steer2push": 37.8442497253418
+      }
+    },
+    "20k": {
+      "centroid_angular_distance_deg": {
+        "push2steer__steer": 38.42998123168945,
+        "push__push2steer": 27.442508697509766,
+        "push__steer": 44.717193603515625,
+        "steer2push__push": 37.934627532958984,
+        "steer__steer2push": 25.139781951904297
+      },
+      "counts": {
+        "push": 5380,
+        "push2steer": 1320,
+        "steer": 5680,
+        "steer2push": 1620
+      },
+      "within_class_angular_dispersion_deg": {
+        "push": 37.30851364135742,
+        "push2steer": 40.53886795043945,
+        "steer": 42.890724182128906,
+        "steer2push": 45.475284576416016
+      }
+    },
+    "50k": {
+      "centroid_angular_distance_deg": {
+        "push__steer": 52.30812072753906,
+        "steer2push__push": 61.45689010620117,
+        "steer__steer2push": 60.964515686035156
+      },
+      "counts": {
+        "push": 1263,
+        "push2steer": 0,
+        "steer": 1306,
+        "steer2push": 34
+      },
+      "within_class_angular_dispersion_deg": {
+        "push": 48.26344299316406,
+        "push2steer": null,
+        "steer": 50.82387161254883,
+        "steer2push": 24.475908279418945
+      }
+    }
+  },
+  "phase_vs_continuous_paired": {
+    "100k": {
+      "push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 12,
+          "right_minus_left_mean": -0.016528653361713254,
+          "right_worsened": 8,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 6,
+          "right_minus_left_mean": -0.1065,
+          "right_worsened": 10,
+          "tie": 4
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 11,
+          "right_minus_left_mean": -0.022584186947126474,
+          "right_worsened": 9,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 11,
+          "right_minus_left_mean": -0.01064585612744814,
+          "right_worsened": 9,
+          "tie": 0
+        }
+      },
+      "push2steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 6,
+          "right_minus_left_mean": -0.06352585261780894,
+          "right_worsened": 14,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 11,
+          "right_minus_left_mean": -0.043199999999999995,
+          "right_worsened": 8,
+          "tie": 1
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 5,
+          "right_minus_left_mean": 0.06628748811594834,
+          "right_worsened": 15,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 9,
+          "right_minus_left_mean": 0.006029050872578439,
+          "right_worsened": 11,
+          "tie": 0
+        }
+      },
+      "steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 12,
+          "right_minus_left_mean": -0.035386194656347264,
+          "right_worsened": 8,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 3,
+          "right_minus_left_mean": -0.0064999999999999945,
+          "right_worsened": 4,
+          "tie": 13
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 15,
+          "right_minus_left_mean": -0.048616352194549364,
+          "right_worsened": 5,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 14,
+          "right_minus_left_mean": -0.02828964634237683,
+          "right_worsened": 6,
+          "tie": 0
+        }
+      },
+      "steer2push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 10,
+          "right_minus_left_mean": -0.04485458158875223,
+          "right_worsened": 10,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 6,
+          "right_minus_left_mean": -0.06179999999999999,
+          "right_worsened": 14,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 12,
+          "right_minus_left_mean": -0.022993912776830435,
+          "right_worsened": 8,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 14,
+          "right_minus_left_mean": 0.0006582516389387671,
+          "right_worsened": 6,
+          "tie": 0
+        }
+      }
+    },
+    "20k": {
+      "push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 11,
+          "right_minus_left_mean": -0.00917503474102058,
+          "right_worsened": 9,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 1,
+          "right_minus_left_mean": 0.014000000000000002,
+          "right_worsened": 0,
+          "tie": 19
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 11,
+          "right_minus_left_mean": -0.0003321840271172646,
+          "right_worsened": 9,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 10,
+          "right_minus_left_mean": -0.01415023616701365,
+          "right_worsened": 10,
+          "tie": 0
+        }
+      },
+      "push2steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 3,
+          "right_minus_left_mean": 0.9141652691732126,
+          "right_worsened": 17,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 4,
+          "right_minus_left_mean": 0.1066,
+          "right_worsened": 0,
+          "tie": 16
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 9,
+          "right_minus_left_mean": 0.2160960463018457,
+          "right_worsened": 11,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 15,
+          "right_minus_left_mean": -0.02099733286534608,
+          "right_worsened": 5,
+          "tie": 0
+        }
+      },
+      "steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 18,
+          "right_minus_left_mean": -0.3266262125251659,
+          "right_worsened": 2,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 2,
+          "right_minus_left_mean": 0.0345,
+          "right_worsened": 0,
+          "tie": 18
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 18,
+          "right_minus_left_mean": -0.35042788110174633,
+          "right_worsened": 2,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 6,
+          "right_minus_left_mean": 0.009135890697074711,
+          "right_worsened": 14,
+          "tie": 0
+        }
+      },
+      "steer2push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 12,
+          "right_minus_left_mean": -0.05611121842240681,
+          "right_worsened": 8,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 0,
+          "right_minus_left_mean": 0.0,
+          "right_worsened": 0,
+          "tie": 20
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 12,
+          "right_minus_left_mean": 0.11777830646026706,
+          "right_worsened": 8,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 9,
+          "right_minus_left_mean": 0.0010368003189563685,
+          "right_worsened": 11,
+          "tie": 0
+        }
+      }
+    },
+    "50k": {
+      "push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 13,
+          "right_minus_left_mean": -0.022004558904870075,
+          "right_worsened": 7,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 2,
+          "right_minus_left_mean": -0.20900000000000002,
+          "right_worsened": 16,
+          "tie": 2
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 9,
+          "right_minus_left_mean": 0.01277683905698981,
+          "right_worsened": 11,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 6,
+          "right_minus_left_mean": 0.013068439486049415,
+          "right_worsened": 14,
+          "tie": 0
+        }
+      },
+      "push2steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 11,
+          "right_minus_left_mean": 0.005830433199912641,
+          "right_worsened": 9,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 7,
+          "right_minus_left_mean": -0.0168,
+          "right_worsened": 13,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 10,
+          "right_minus_left_mean": 0.02564935533173565,
+          "right_worsened": 10,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 15,
+          "right_minus_left_mean": -0.08278452425172284,
+          "right_worsened": 5,
+          "tie": 0
+        }
+      },
+      "steer": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 20,
+          "right_minus_left_mean": -0.16985052541359913,
+          "right_worsened": 0,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 1,
+          "right_minus_left_mean": -0.45299999999999996,
+          "right_worsened": 19,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 16,
+          "right_minus_left_mean": -0.19877303895041473,
+          "right_worsened": 4,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 4,
+          "right_minus_left_mean": 0.10332313552591046,
+          "right_worsened": 16,
+          "tie": 0
+        }
+      },
+      "steer2push": {
+        "board_xy_displacement_error_m": {
+          "right_improved": 15,
+          "right_minus_left_mean": -0.05677168481274967,
+          "right_worsened": 5,
+          "tie": 0
+        },
+        "completion_ratio": {
+          "right_improved": 4,
+          "right_minus_left_mean": -0.06520000000000001,
+          "right_worsened": 16,
+          "tie": 0
+        },
+        "coupling_xy_error_m": {
+          "right_improved": 16,
+          "right_minus_left_mean": -0.082587819735872,
+          "right_worsened": 4,
+          "tie": 0
+        },
+        "joint_position_mae_rad": {
+          "right_improved": 13,
+          "right_minus_left_mean": -0.010921594521412082,
+          "right_worsened": 7,
+          "tie": 0
+        }
+      }
+    }
+  },
+  "status": "PASS",
+  "training_artifacts": {
+    "diagnostics": "results/m2.6-c1-continuous-100k-seed4728/training_diagnostics.jsonl",
+    "summary": "results/m2.6-c1-continuous-100k-seed4728/training_summary.json",
+    "train_log": "results/m2.6-c1-continuous-100k-seed4728/train.log"
+  },
+  "training_checkpoint_metrics": {
+    "100000": {
+      "episodes_falls_cumulative": null,
+      "metrics": {
+        "actor_loss": {
+          "first": 2468.4169921875,
+          "last": 2527.804443359375,
+          "max": 3046.857421875,
+          "mean": 2536.4372875976565,
+          "min": 2023.9483642578125
+        },
+        "aux_critic_loss": {
+          "first": 3.412551164627075,
+          "last": 3.0419185161590576,
+          "max": 4.197336196899414,
+          "mean": 3.3299734783172608,
+          "min": 2.6463260650634766
+        },
+        "critic_loss": {
+          "first": 4.4127726554870605,
+          "last": 4.435455322265625,
+          "max": 6.582633018493652,
+          "mean": 4.743007960319519,
+          "min": 3.797858715057373
+        },
+        "disc_loss": {
+          "first": 0.13456778228282928,
+          "last": 0.11373147368431091,
+          "max": 0.1430998146533966,
+          "mean": 0.11508008196949959,
+          "min": 0.09173675626516342
+        },
+        "fb_loss": {
+          "first": -10722.6005859375,
+          "last": -10846.9541015625,
+          "max": -10212.916015625,
+          "mean": -10617.87572265625,
+          "min": -10848.271484375
+        }
+      },
+      "native_updates": 9900,
+      "rollout_latent_final": {
+        "background_random_samples": 16,
+        "background_zbuffer_samples": 2358,
+        "expert_percentage": 0.5,
+        "expert_rollout_env_indices": [
+          0,
+          3
+        ],
+        "expert_tracking_resets": 810,
+        "free_transitions": 62903,
+        "post_tracking_free_transitions": 12903,
+        "realized_tracking_transition_ratio": 0.37097,
+        "tracking_lengths": {
+          "max": 250,
+          "mean": 182.6567901234568,
+          "median": 248.0,
+          "min": 1
+        },
+        "tracking_max_length": 250,
+        "tracking_transitions": 37097,
+        "tracking_unavailable_resets": 0,
+        "update_z_every_step": 100,
+        "use_mix_rollout": true,
+        "z_buffer": {
+          "capacity": 8192,
+          "occupancy": 8192
+        },
+        "z_buffer_size": 8192,
+        "z_norm": {
+          "count": 100000,
+          "max": 16.000001907348633,
+          "mean": 15.999999995765686
+        }
+      }
+    },
+    "20000": {
+      "episodes_falls_cumulative": null,
+      "metrics": {
+        "actor_loss": {
+          "first": 45208.80859375,
+          "last": 45038.9296875,
+          "max": 45253.5859375,
+          "mean": 43769.9728125,
+          "min": 42224.94140625
+        },
+        "aux_critic_loss": {
+          "first": 2.003749370574951,
+          "last": 1.6611013412475586,
+          "max": 8.530881881713867,
+          "mean": 2.302186803817749,
+          "min": 1.518519401550293
+        },
+        "critic_loss": {
+          "first": 3.915764808654785,
+          "last": 3.4073104858398438,
+          "max": 15.569175720214844,
+          "mean": 4.205558815002441,
+          "min": 2.0148420333862305
+        },
+        "disc_loss": {
+          "first": 0.2775454819202423,
+          "last": 0.2404543161392212,
+          "max": 0.3985324203968048,
+          "mean": 0.2644065153598785,
+          "min": 0.18596181273460388
+        },
+        "fb_loss": {
+          "first": -2537.84814453125,
+          "last": -2330.26806640625,
+          "max": -858.6737670898438,
+          "mean": -2132.4117883300783,
+          "min": -2898.3291015625
+        }
+      },
+      "native_updates": 1900,
+      "rollout_latent_final": null
+    },
+    "50000": {
+      "episodes_falls_cumulative": null,
+      "metrics": {
+        "actor_loss": {
+          "first": 5940.08740234375,
+          "last": 5474.5966796875,
+          "max": 7310.3466796875,
+          "mean": 6136.85130859375,
+          "min": 4464.45751953125
+        },
+        "aux_critic_loss": {
+          "first": 14.267882347106934,
+          "last": 11.570727348327637,
+          "max": 24.322500228881836,
+          "mean": 13.22092170715332,
+          "min": 7.5773820877075195
+        },
+        "critic_loss": {
+          "first": 28.413904190063477,
+          "last": 30.352766036987305,
+          "max": 50.14690399169922,
+          "mean": 31.893959617614748,
+          "min": 17.514253616333008
+        },
+        "disc_loss": {
+          "first": 0.12417595088481903,
+          "last": 0.13859160244464874,
+          "max": 0.3312823176383972,
+          "mean": 0.15322548568248748,
+          "min": 0.11185181140899658
+        },
+        "fb_loss": {
+          "first": -5594.1298828125,
+          "last": -5108.345703125,
+          "max": -3940.357421875,
+          "mean": -5479.60171875,
+          "min": -6901.1083984375
+        }
+      },
+      "native_updates": 4900,
+      "rollout_latent_final": null
+    }
+  }
+}
