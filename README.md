@@ -1,10 +1,9 @@
 # Skate-BFM
 
 Skate-BFM adapts the official BFM-Zero motion prior to one HUSKY MuJoCo
-skateboard environment. The current repository has completed the first formal
-M2.6 Phase 100k training run: strict BFM0 initialization, Base plus Skate
-expert sampling, native FB-CPR-Aux updates, frozen-policy rollout evaluation,
-and MuJoCo visual inspection.
+skateboard environment. The current repository has completed the formal M2.6
+Phase 100k run and a frozen 20k/50k/100k checkpoint comparison on one fixed
+80-case Test benchmark, including MuJoCo videos and latent-space diagnostics.
 
 ![Project progress](docs/assets/project_progress.svg)
 
@@ -25,20 +24,22 @@ and MuJoCo visual inspection.
   500 transitions for 50 updates per block.
 - Reset: uniform expert motion and local frame sampling, followed by direct
   raw HUSKY robot-board `qpos/qvel` injection.
-- Latent lifecycle: random BFM latent with refresh every 100 transitions.
-- Physics: formal training uses nominal HUSKY parameters and no domain
-  randomization.
+- Latent lifecycle: expert rollout slots use reset-aligned tracking latents;
+  background latents refresh every 100 transitions from the z-buffer or the
+  official prior sampler.
+- Physics: formal training restores the selected source rollout's physics
+  realization; no additional online physics randomization is applied.
 - Checkpoints: `20k`, `50k`, and `100k`, stored under
-  `model/motion_library/2026-08-15_143013/`.
+  `model/motion_library/m2.6-p1-phase-100k-seed4728/`.
 - Published checkpoint:
   [`m2.6-phase-100k-seed4728`](https://huggingface.co/Yak9Ce3teeh/skate-bfm/tree/main/motion_library/m2.6-phase-100k-seed4728).
 
 Training and checkpoint integrity passed: replay size, optimizer state,
-normalizers, model finiteness, and checkpoint reloads are valid. Behavioral
-evaluation did not pass: all 32 frozen-policy episodes for each trained
-checkpoint ended in fall before the 1024-step horizon, and trained
-checkpoints were less stable than the official BFM0 on the same reset seeds.
-Continuous 100k training is therefore paused pending diagnosis.
+normalizers, model finiteness, and checkpoint reloads are valid. The current
+80-case frozen comparison shows that `push` and `steer` improve at later
+checkpoints, while `push2steer` and `steer2push` remain weak transition
+behaviors. Further training is paused while the transition semantics and the
+planned dynamics-conditioned BFB/RFB stage are addressed.
 
 ## Setup
 

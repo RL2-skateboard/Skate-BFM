@@ -76,3 +76,11 @@ Restored and validated the official BFM hard-waist control contract in the HUSKY
 ### 2026-08-21
 
 Compared the 20k, 50k, and 100k formal Phase checkpoints on one fixed 80-case held-out Test benchmark and reconstructed their tracking-latent directions.
+
+### 2026-08-22
+
+Archived the complete `train/eval_res/2026-08-20/` checkpoint-evaluation results and representative videos for the 20k, 50k, and 100k comparison.
+
+### 2026-08-24
+
+Completed the fresh Continuous 10k training-health run with finite diagnostics and a reloadable checkpoint; no performance conclusion was drawn.
