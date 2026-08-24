@@ -1,6 +1,6 @@
 # Skate-BFM Training Experiments
 
-This document contains three conducted/current project experiments and one
+This document contains four conducted/current project experiments and one
 planned next experiment. Every audit, preflight, smoke run, and diagnostic
 belongs to its parent experiment; it is not a separate experiment.
 
@@ -375,7 +375,7 @@ Unverified:
 - [ ] Dynamic Skate skill quality; data validity does not prove that every
   expert segment is equally useful for BFM training.
 
-## Experiment 3: BFM + Skate Expert Training and Semantics Alignment
+## Experiment 3: Phase BFM + Skate Expert Training and Semantics Alignment
 
 ### Experiment Goal
 
@@ -679,9 +679,10 @@ checkpoint reloads.
 
 #### Formal held-out checkpoint evaluation
 
-The current evaluator uses Test Phase semantics and Test Raw physical ground
-truth only; it has no Continuous-data dependency. A fixed benchmark contains
-80 rollout-balanced, without-replacement cases (`seed=4728`): 20 each for
+The historical R5 checkpoint comparison used Test Phase semantics and Test
+Raw physical ground truth only; it had no Continuous-data dependency. That
+fixed benchmark contains 80 rollout-balanced, without-replacement cases
+(`seed=4728`): 20 each for
 `push`, `steer`, `push2steer`, and `steer2push`. The same
 `cases.json` identity, including source rollout, source physics, reset Raw
 frame, step count, and phase ranges, is replayed by 20k, 50k, and 100k:
@@ -724,6 +725,45 @@ One shared three-component PCA is fitted over the prior bank plus all
 checkpoint/phase directions. This is a common 3D spherical direction view,
 not a lossless 256D geometry, an action-space coverage result, or a causal
 behavior explanation.
+
+#### Task-oriented Val model selection
+
+The formal task is command-conditioned skateboard locomotion: the policy must
+track the expert board trajectory while maintaining robot-board coupling,
+stability, and reasonable control. Humanoid pose tracking is secondary and
+does not define success by itself. `command_v` is the source policy's forward
+speed condition and `command_h` is a heading offset relative to the board
+heading captured when the source command is sampled. They are rollout-level
+conditions, not measured board speed or absolute world yaw. Metrics therefore
+compare the policy with the same-command canonical Raw expert trajectory:
+
+```text
+e_planar(t) = ||v_board,policy,xy(t) - v_board,expert,xy(t)||_2
+e_speed(t)  = abs(||v_board,policy,xy(t)||_2 - ||v_board,expert,xy(t)||_2)
+e_dir(t)    = |wrap(atan2(v_policy,y,v_policy,x)
+                         - atan2(v_expert,y,v_expert,x))|
+```
+
+Direction is valid only when both planar speeds exceed `0.05 m/s`; invalid
+frames remain null and `board_velocity_direction_valid_fraction` reports the
+usable fraction. The threshold is numerical, not a task-success threshold:
+only 0.127% of Val Raw frames are at or below it, while median board speed is
+1.422 m/s. Final heading and XY displacement compare the same executed Raw
+index, so an early fall is explicitly marked `final_is_horizon=false`.
+The retained `feet_on_board` predicate is true when any left/right foot
+collision geom contacts the deck. A brief frame with neither foot touching
+affects retention ratio and off-board streak, but does not itself terminate
+the episode; termination still uses the persistent shared fall detector.
+
+The fixed Val bank uses Phase-Val plus its canonical Raw trajectories only:
+20 rollout-balanced cases without replacement for each of `push`, `steer`,
+`push2steer`, and `steer2push`, seed 4728. The eligible counts are
+309/304/277/274, and every selected category covers 20 unique source
+rollouts. Its identity SHA256 is
+`e6101d4fcd7d9f55a77cf6334c493123a3ce6b22dc2bcb36962632136094f9bc`.
+Future 120k/150k/200k checkpoint selection must replay this case bank rather
+than sample Test. Binary task success remains `NOT_YET_CALIBRATED`; proposed
+thresholds are recorded with the Val results and are not frozen in code.
 
 #### Semantics mismatch diagnosis and fixes
 
@@ -987,7 +1027,16 @@ Relevant implementation:
 - [`../src/skate_bfm/integration/actions.py`](../src/skate_bfm/integration/actions.py)
 - [`../src/skate_bfm/integration/online.py`](../src/skate_bfm/integration/online.py)
 
-### Continuous Formal Controlled Comparison
+## Experiment 4: Continuous BFM + Skate Expert Training and Matched Comparison
+
+### Experiment Goal
+
+Measure the effect of replacing the Phase MotionLib organization with the
+Continuous MotionLib organization while keeping the official BFM0
+initialization, trainer, HUSKY controller, source-physics reset, schedule, and
+fixed Test case bank unchanged.
+
+### Experiment Process and Method
 
 On 2026-08-24, the Phase MotionLib was replaced by the Continuous MotionLib
 as the sole training-data organization change. The run started fresh from
@@ -1017,11 +1066,44 @@ Continuous 20k completes all sampled cases but has large transition board and
 coupling errors; 50k collapses; 100k recovers steer more than either
 transition behavior.
 
-## Experiment 4 (Planned): BFB/RFB Dynamics-Conditioned Training
+### Problems and Solutions
+
+| Continuous-specific issue | Control or interpretation |
+|---|---|
+| Longer clips could accidentally alter simulator reset semantics | Continue resetting only from the selected canonical Raw robot-board frame and its recorded physics, not from BFM MotionLib pose. |
+| A new MotionLib could create an unfair benchmark | Replay the identical frozen Phase Test + Raw 80-case spec at every checkpoint. |
+| A lower prefix error can follow an early fall | Treat completion and termination as primary; interpret board/coupling error together with executed horizon. |
+| Phase and Continuous differ in more than one statistical property | Report the result as a MotionLib-organization comparison, not a causal cross-boundary-context-only claim. |
+
+### Verified and Unverified Conclusions
+
+Verified:
+
+- [x] Continuous 10k and fresh formal 100k both load the train-only Continuous
+  MotionLib and source Raw provenance.
+- [x] The formal run completed 100,000 transitions, 198 update blocks, 9,900
+  native updates, and reloadable 20k/50k/100k checkpoints.
+- [x] Continuous checkpoints replayed the exact Phase fixed 80-case Test
+  case-spec with checkpoint-specific tracking z, tracking parity, and no
+  model mutation.
+- [x] Continuous 100k recovers steer completion relative to Continuous 50k,
+  while the sampled transition behaviors remain incomplete.
+- [x] Continuous 100k exactly replayed the fixed Phase-Val 80-case bank under
+  the task-oriented metric schema with no model mutation.
+
+Unverified:
+
+- [ ] Continuous organization improves robust transition behavior over Phase.
+- [ ] Any Phase-vs-Continuous difference is caused only by cross-phase
+  context rather than the changed MotionLib/reset sampling distribution.
+- [ ] The Continuous checkpoint is a usable general Skate motion library.
+
+## Experiment 5 (Planned): BFB/RFB Dynamics-Conditioned Training
 
 ### Experiment Goal
 
-After the Experiment 3 state, action, reset, and controller semantics are
+After the Experiment 3 and Experiment 4 state, action, reset, controller, and
+matched-evaluation contracts are
 controlled, integrate **Belief-FB (BFB)** and **Rotation-FB (RFB)** into
 Skate-BFM. The experiment will test whether conditioning the FB policy on
 recent transition dynamics improves adaptation across HUSKY physics
@@ -1054,13 +1136,15 @@ context length, BFB/RFB mixing ratio, vMF concentration, training budget, and
 seed set will be frozen before the first run rather than inferred from the
 current BFM0 configuration.
 
-Experiment 4 may start only after these Experiment 3 preconditions pass:
+Experiment 5 may start only after these Experiment 3 and Experiment 4
+preconditions pass:
 
 - source-matched robot, skateboard, and physics reset;
 - one consistent expert/online observation scale;
 - the 23DoF physical action contract at every model boundary;
 - explicit handling of non-representable hip-pitch targets;
-- a frozen evaluator that reproduces the official BFM0 and Experiment 3
+- a frozen evaluator that reproduces the official BFM0, Experiment 3, and
+  Experiment 4
   baselines.
 
 ### Experiment Process and Method
@@ -1224,5 +1308,6 @@ Unverified:
 - [ ] BFB improves held-out dynamics adaptation over the post-alignment
   FB-CPR-Aux baseline.
 - [ ] RFB improves Skate latent coverage without reducing stability.
-- [ ] BFB/RFB training resolves any Experiment 3 semantics mismatch.
+- [ ] BFB/RFB training resolves the remaining Experiment 3 or Experiment 4
+  semantics mismatch.
 - [ ] BFB/RFB produces a stable and diverse Skate motion library.

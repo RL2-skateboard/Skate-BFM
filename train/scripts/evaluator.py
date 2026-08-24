@@ -54,6 +54,8 @@ EVAL_SECONDS = 5.0
 EVAL_STEPS = 250
 LEAD_SECONDS = 1.0
 LEAD_STEPS = 50
+DIRECTION_SPEED_EPS_MPS = 0.05
+NET_DISPLACEMENT_EPS_M = 0.05
 PHASE_LABELS = {
     0: "push",
     1: "push2steer",
@@ -94,6 +96,13 @@ REFERENCE_METRICS = (
     "coupling_xy_error_m",
     "coupling_z_error_m",
 )
+TASK_SERIES_METRICS = (
+    "board_planar_velocity_error_mps",
+    "board_speed_error_mps",
+    "board_velocity_direction_error_deg",
+    "board_velocity_direction_valid_fraction",
+    "feet_on_board_ratio",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,8 +116,9 @@ def parse_args() -> argparse.Namespace:
         subparser.add_argument("--training-summary", required=True, type=Path)
         subparser.add_argument("--seed", type=int, default=4728)
 
-    evaluate = subparsers.add_parser("eval", help="Formal Test Phase + Raw evaluation.")
+    evaluate = subparsers.add_parser("eval", help="Formal Phase + Raw evaluation.")
     common(evaluate)
+    evaluate.add_argument("--split", choices=("val", "test"), default="test")
     evaluate.add_argument(
         "--behavior",
         choices=(*BEHAVIORS, "all"),
@@ -197,6 +207,18 @@ def summarize(values: np.ndarray) -> dict[str, float]:
         "max": float(values.max()),
         "rmse": float(np.sqrt(np.mean(values * values))),
     }
+
+
+def summarize_valid(values: np.ndarray) -> dict[str, float] | None:
+    """Summarize finite values while retaining low-speed direction invalidity."""
+    values = np.asarray(values, dtype=np.float64)
+    valid = np.isfinite(values)
+    if not valid.any():
+        return None
+    result = summarize(values[valid])
+    result["valid_count"] = int(valid.sum())
+    result["valid_fraction"] = float(valid.mean())
+    return result
 
 
 class RawResolver:
@@ -379,6 +401,9 @@ def transition_candidates(
                         "source_round": str(transition_record["source_round"]),
                         "source_rollout": str(transition_record["source_rollout"]),
                         "source_episode": str(transition_record["source_episode"]),
+                        "dataset_split": str(transition_record["dataset_split"]),
+                        "command_v": float(transition_record["command_v"]),
+                        "command_h": float(transition_record["command_h"]),
                         "physics_seed": int(transition_record["physics_seed"]),
                         "reset_raw_frame": reset,
                         "transition_start_raw": start,
@@ -452,6 +477,9 @@ def steady_candidates(
                 "source_round": str(record["source_round"]),
                 "source_rollout": str(record["source_rollout"]),
                 "source_episode": str(record["source_episode"]),
+                "dataset_split": str(record["dataset_split"]),
+                "command_v": float(record["command_v"]),
+                "command_h": float(record["command_h"]),
                 "physics_seed": int(record["physics_seed"]),
                 "reset_raw_frame": reset,
                 "steps": steps,
@@ -529,12 +557,14 @@ def case_identity(case: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "case_id": str(case["case_id"]),
         "behavior": str(case["behavior"]),
+        "dataset_split": str(case["dataset_split"]),
         "source_raw_npz": str(case["source_raw_npz"]),
         "source_round": str(case["source_round"]).zfill(3),
         "source_rollout": str(case["source_rollout"]).zfill(3),
         "source_episode": str(case["source_episode"]),
         "physics_seed": int(case["physics_seed"]),
         "reset_raw_frame": int(case["reset_raw_frame"]),
+        "steps": int(case["steps"]),
     }
 
 
@@ -987,6 +1017,24 @@ def metric_series(
     board_ang = np.asarray([row["board_angular_velocity"] for row in actual])
     raw_root = raw["root_pos"][ref]
     raw_board = raw["board_root_pos"][ref]
+    board_planar_velocity = board_lin[:, :2]
+    raw_board_planar_velocity = raw["board_root_lin_vel"][ref, :2]
+    board_speed = np.linalg.norm(board_planar_velocity, axis=1)
+    raw_board_speed = np.linalg.norm(raw_board_planar_velocity, axis=1)
+    direction_valid = (board_speed > DIRECTION_SPEED_EPS_MPS) & (
+        raw_board_speed > DIRECTION_SPEED_EPS_MPS
+    )
+    direction_error = np.full(len(actual), np.nan, dtype=np.float64)
+    direction_error[direction_valid] = wrapped_angle_deg(
+        np.arctan2(
+            board_planar_velocity[direction_valid, 1],
+            board_planar_velocity[direction_valid, 0],
+        ),
+        np.arctan2(
+            raw_board_planar_velocity[direction_valid, 1],
+            raw_board_planar_velocity[direction_valid, 0],
+        ),
+    )
     return {
         "joint_position_mae_rad": np.mean(np.abs(joint - raw["dof_pos"][ref]), axis=1),
         "joint_velocity_mae_rad_s": np.mean(np.abs(velocity - raw["dof_vel"][ref]), axis=1),
@@ -1009,6 +1057,15 @@ def metric_series(
         ),
         "board_linear_velocity_error_mps": np.linalg.norm(
             board_lin - raw["board_root_lin_vel"][ref], axis=1
+        ),
+        "board_planar_velocity_error_mps": np.linalg.norm(
+            board_planar_velocity - raw_board_planar_velocity, axis=1
+        ),
+        "board_speed_error_mps": np.abs(board_speed - raw_board_speed),
+        "board_velocity_direction_error_deg": direction_error,
+        "board_velocity_direction_valid_fraction": direction_valid.astype(np.float64),
+        "feet_on_board_ratio": np.asarray(
+            [float(bool(row["feet_on_board"])) for row in actual], dtype=np.float64
         ),
         "board_angular_velocity_error_rad_s": np.linalg.norm(
             board_ang - raw["board_root_ang_vel"][ref], axis=1
@@ -1058,6 +1115,7 @@ def retention_stability(
         "time_to_first_off_board_s": None
         if first_index is None
         else (first_index + 1) * CONTROL_DT,
+        "longest_off_board_streak_steps": int(streak),
         "longest_off_board_streak_s": streak * CONTROL_DT,
         "robot_board_separation_mean_m": float(separation.mean()),
         "robot_board_separation_final_m": float(separation[-1]),
@@ -1079,13 +1137,105 @@ def retention_stability(
 
 def section_metrics(
     series: Mapping[str, np.ndarray], phases: Sequence[str], wanted: str
-) -> dict[str, dict[str, float]] | None:
+) -> dict[str, dict[str, float] | None] | None:
     indices = np.asarray([i for i, phase in enumerate(phases) if phase == wanted], dtype=np.int64)
     return (
         None
         if not indices.size
-        else {name: summarize(values[indices]) for name, values in series.items()}
+        else {name: summarize_valid(values[indices]) for name, values in series.items()}
     )
+
+
+def task_metric_values(
+    series: Mapping[str, np.ndarray],
+    actual: Sequence[Mapping[str, Any]],
+    raw: Mapping[str, np.ndarray],
+    reset: int,
+    retention: Mapping[str, Any],
+    stability: Mapping[str, Any],
+    full_completion: bool,
+    terminated: bool,
+    completion_ratio: float,
+    control: Mapping[str, Any],
+) -> dict[str, Any]:
+    board_start = np.asarray(raw["board_root_pos"][reset, :2], dtype=np.float64)
+    board_policy_final = np.asarray(actual[-1]["board_position"], dtype=np.float64)[:2]
+    board_reference_final = np.asarray(
+        raw["board_root_pos"][reset + len(actual), :2], dtype=np.float64
+    )
+    policy_displacement = board_policy_final - board_start
+    reference_displacement = board_reference_final - board_start
+    net_valid = (
+        np.linalg.norm(policy_displacement) > NET_DISPLACEMENT_EPS_M
+        and np.linalg.norm(reference_displacement) > NET_DISPLACEMENT_EPS_M
+    )
+    return {
+        "binary_success": "NOT_YET_CALIBRATED",
+        "board_trajectory": {
+            "board_planar_velocity_error_mps": float(
+                series["board_planar_velocity_error_mps"].mean()
+            ),
+            "board_speed_error_mps": float(series["board_speed_error_mps"].mean()),
+            "board_velocity_direction_error_deg": (
+                float(np.nanmean(series["board_velocity_direction_error_deg"]))
+                if np.isfinite(series["board_velocity_direction_error_deg"]).any()
+                else None
+            ),
+            "board_velocity_direction_valid_fraction": float(
+                series["board_velocity_direction_valid_fraction"].mean()
+            ),
+            "board_heading_error_deg": float(series["board_heading_error_deg"].mean()),
+            "board_xy_displacement_error_m": float(
+                series["board_xy_displacement_error_m"].mean()
+            ),
+            "board_final_heading_error_deg": float(series["board_heading_error_deg"][-1]),
+            "board_final_xy_error_m": float(
+                np.linalg.norm(policy_displacement - reference_displacement)
+            ),
+            "board_net_displacement_direction_error_deg": (
+                float(
+                    wrapped_angle_deg(
+                        np.asarray([math.atan2(policy_displacement[1], policy_displacement[0])]),
+                        np.asarray(
+                            [math.atan2(reference_displacement[1], reference_displacement[0])]
+                        ),
+                    )[0]
+                )
+                if net_valid
+                else None
+            ),
+            "board_net_displacement_direction_valid": bool(net_valid),
+        },
+        "coupling": {
+            "feet_on_board_ratio": float(retention["feet_on_board_ratio"]),
+            "longest_off_board_streak_steps": int(retention["longest_off_board_streak_steps"]),
+            "longest_off_board_streak_s": float(retention["longest_off_board_streak_s"]),
+            "coupling_xy_error_m": float(series["coupling_xy_error_m"].mean()),
+        },
+        "stability_plausibility": {
+            "horizon_completion": float(completion_ratio),
+            "terminated": bool(terminated),
+            "root_tilt_p95_deg": float(stability["root_tilt_p95_deg"]),
+            "root_tilt_max_deg": float(stability["root_tilt_max_deg"]),
+            "root_height_min_m": float(stability["root_height_min_m"]),
+            "illegal_contact_ratio": float(stability["illegal_contact_ratio"]),
+            "action_soft_saturation_fraction": float(
+                control["action_soft_saturation_fraction"]
+            ),
+            "action_hard_saturation_fraction": float(
+                control["action_hard_saturation_fraction"]
+            ),
+            "torque_utilization_p95": float(control["torque_utilization_p95"]),
+        },
+        "humanoid_motion_quality": {
+            "joint_position_mae_rad": float(series["joint_position_mae_rad"].mean()),
+            "joint_velocity_mae_rad_s": float(series["joint_velocity_mae_rad_s"].mean()),
+            "root_orientation_geodesic_error_deg": float(
+                series["root_orientation_geodesic_error_deg"].mean()
+            ),
+        },
+        "final_is_horizon": bool(full_completion),
+    }
 
 
 def open_writer(path: Path, env: HuskyBfmOnlineEnv) -> tuple[Any, mujoco.Renderer]:
@@ -1170,27 +1320,44 @@ def run_policy(
     phases = []
     for index in range(reset + 1, reset + len(actual) + 1):
         phases.append(str(case.get("frame_phase", {}).get(str(index), "")))
+    retention, stability = retention_stability(actual)
+    control = diagnostics.summary()
+    full_completion = len(actual) == steps and not terminated
+    completion_ratio = len(actual) / steps
     result = {
         "case": dict(case),
         "evaluation": {
             "control_dt": CONTROL_DT,
             "T_eval": steps,
             "T_exec": len(actual),
-            "completion_ratio": len(actual) / steps,
-            "full_completion": len(actual) == steps and not terminated,
+            "completion_ratio": completion_ratio,
+            "full_completion": full_completion,
+            "final_is_horizon": full_completion,
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "fall_reason": str(actual[-1].get("fall_reason", "")) if terminated else "",
         },
         "metrics": {
-            "full": {name: summarize(values) for name, values in series.items()},
+            "full": {name: summarize_valid(values) for name, values in series.items()},
             "pre": section_metrics(series, phases, case.get("pre_phase", "")),
             "transition": section_metrics(series, phases, case.get("transition_phase", "")),
             "post": section_metrics(series, phases, case.get("post_phase", "")),
         },
-        "retention": retention_stability(actual)[0],
-        "stability": retention_stability(actual)[1],
-        "control": diagnostics.summary(),
+        "retention": retention,
+        "stability": stability,
+        "task_metrics": task_metric_values(
+            series,
+            actual,
+            raw,
+            reset,
+            retention,
+            stability,
+            full_completion,
+            bool(terminated),
+            completion_ratio,
+            control,
+        ),
+        "control": control,
         "tracking": {
             "z_shape": list(z.shape),
             "finite": True,
@@ -1269,6 +1436,7 @@ def prepare_case(
         raise RuntimeError(f"Case raw window is too short: {case['case_id']}")
     result["source_raw_npz"] = str(path)
     result["source_physics"] = metadata["physics_randomization"]
+    result["dataset_split"] = resolver.metadata_split
     result["steps"] = steps
     result["frame_phase"] = {}
     for item in case.get("phase_ranges", []):
@@ -1295,6 +1463,20 @@ def make_cases(
             if args.max_cases_per_behavior is not None:
                 raise RuntimeError("case-spec already fixes case selection.")
             payload = json.loads(args.case_spec.read_text())
+            spec_split = payload.get("split")
+            if spec_split is None:
+                raw_marker = f"/{args.split}/raw/"
+                if any(
+                    raw_marker not in str(case.get("source_raw_npz", ""))
+                    for case in payload.get("cases", [])
+                ):
+                    raise RuntimeError("Legacy case spec raw paths do not match --split.")
+                spec_split = args.split
+            if spec_split != args.split:
+                raise RuntimeError(
+                    f"Case spec split {spec_split!r} does not match "
+                    f"--split {args.split!r}."
+                )
             cases = payload.get("cases", [])
             if not cases:
                 raise RuntimeError("Case spec has no cases.")
@@ -1305,10 +1487,24 @@ def make_cases(
                     item["behavior"] = item["transition"]
                 if item.get("behavior") not in BEHAVIORS:
                     raise RuntimeError(f"Case spec has invalid behavior: {item}")
+                if "dataset_split" not in item:
+                    item["dataset_split"] = resolver.metadata_split
+                if item["dataset_split"] != resolver.metadata_split:
+                    raise RuntimeError("Case spec provenance split does not match evaluator split.")
                 steps = int(item.get("steps", EVAL_STEPS))
-                normalized.append(
-                    prepare_case(item, records, resolver, steps, seq_length)
-                )
+                prepared = prepare_case(item, records, resolver, steps, seq_length)
+                for name in (
+                    "source_raw_npz",
+                    "source_round",
+                    "source_rollout",
+                    "source_episode",
+                    "physics_seed",
+                    "reset_raw_frame",
+                    "steps",
+                ):
+                    if str(prepared[name]) != str(item[name]):
+                        raise RuntimeError(f"Case spec provenance mismatch for {name}.")
+                normalized.append(prepared)
             selected_by_behavior = {
                 behavior: sorted(
                     [
@@ -1424,7 +1620,7 @@ def training_date(summary_path: Path) -> str:
 def output_root(args: argparse.Namespace) -> Path:
     date = training_date(args.training_summary)
     suffix = (
-        "test_phase_eval"
+        f"{args.split}_phase_eval"
         if args.command == "eval"
         else "videos"
         if args.command == "video"
@@ -1450,6 +1646,7 @@ def invocation_config(
 ) -> dict[str, Any]:
     return {
         "command": args.command,
+        "split": args.split if args.command == "eval" else "val",
         "git_head": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True
         ).strip(),
@@ -1505,7 +1702,7 @@ def invocation_config(
         ),
         "evaluation_only": True,
         "training": False,
-        "test": args.command == "eval",
+        "test": args.command == "eval" and args.split == "test",
         "continuous_dataset_dependency": False,
         "raw_to_bfm_converter": "data_collection.convert_continuous.convert_record",
     }
@@ -1617,7 +1814,7 @@ def write_summary_markdown(
 
     def value(behavior: str, metric: str) -> str:
         group = aggregation.get(behavior, {})
-        metric_data = group.get(metric)
+        metric_data = group.get(metric) or group.get("task", {}).get(metric)
         return "-" if not metric_data else f"{metric_data['mean']:.5g}"
 
     def completion(behavior: str) -> str:
@@ -1627,11 +1824,12 @@ def write_summary_markdown(
         return f"{data['full_completion_rate']:.3f}"
 
     lines = [
-        "# Formal Phase Evaluation",
+        f"# Formal {summary['split'].title()} Phase Evaluation",
         "",
-        "| Behavior | Cases | Full completion | Joint MAE | Root Ori | "
-        "Board XY | Coupling XY | Feet on board |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Behavior | Cases | Full completion | Board planar velocity | Board speed | "
+        "Board direction | Board heading | Final board XY | Feet on board | "
+        "Coupling XY | Joint MAE |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for behavior in BEHAVIORS:
         group = aggregation.get(behavior, {})
@@ -1639,11 +1837,14 @@ def write_summary_markdown(
         retention = group.get("retention", {}).get("feet_on_board_ratio", {}).get("mean")
         lines.append(
             f"| {behavior} | {count} | {completion(behavior)} | "
-            f"{value(behavior, 'joint_position_mae_rad')} | "
-            f"{value(behavior, 'root_orientation_geodesic_error_deg')} | "
-            f"{value(behavior, 'board_xy_displacement_error_m')} | "
+            f"{value(behavior, 'board_planar_velocity_error_mps')} | "
+            f"{value(behavior, 'board_speed_error_mps')} | "
+            f"{value(behavior, 'board_velocity_direction_error_deg')} | "
+            f"{value(behavior, 'board_heading_error_deg')} | "
+            f"{value(behavior, 'board_final_xy_error_m')} | "
+            f"{'-' if retention is None else f'{retention:.3f}'} | "
             f"{value(behavior, 'coupling_xy_error_m')} | "
-            f"{'-' if retention is None else f'{retention:.3f}'} |"
+            f"{value(behavior, 'joint_position_mae_rad')} | "
         )
     lines.extend(
         [
@@ -1675,18 +1876,31 @@ def write_summary_markdown(
                 for row in rows
                 if row["case"]["behavior"] == behavior and row["metrics"].get(section)
             ]
-            metric_values = [
-                item["joint_position_mae_rad"]["mean"] for item in section_rows
-            ]
+
+            def section_value(name: str) -> str:
+                values = [
+                    item[name]["mean"] for item in section_rows if item.get(name) is not None
+                ]
+                return "-" if not values else f"{np.mean(values):.5g}"
+
             section_lines.append(
                 f"| {section} | {len(section_rows)} | "
-                f"{'-' if not metric_values else f'{np.mean(metric_values):.5g}'} |"
+                f"{section_value('board_planar_velocity_error_mps')} | "
+                f"{section_value('board_speed_error_mps')} | "
+                f"{section_value('board_velocity_direction_error_deg')} | "
+                f"{section_value('board_heading_error_deg')} | "
+                f"{section_value('coupling_xy_error_m')} | "
+                f"{section_value('board_velocity_direction_valid_fraction')} | "
+                f"{section_value('feet_on_board_ratio')} | "
+                f"{section_value('joint_position_mae_rad')} |"
             )
         lines.extend(
             [
                 "",
-                "| Section | Cases | Joint MAE |",
-                "|---|---:|---:|",
+                "| Section | Cases | Board planar velocity | Board speed | Board direction | "
+                "Board heading | Coupling XY | Direction valid fraction | Feet on board | "
+                "Joint MAE |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
                 *section_lines,
             ]
         )
@@ -1695,8 +1909,10 @@ def write_summary_markdown(
         [
             "## Protocol",
             "",
+            f"- Split: `{summary['split']}`",
             f"- Full test: `{summary.get('formal_full_test', False)}`",
             f"- Tracking parity: `{summary.get('tracking_parity', {}).get('status', 'UNKNOWN')}`",
+            f"- Binary task success: `{summary['task_metrics']['binary_success']}`",
             f"- Training: `{summary.get('training', False)}`",
             "",
         ]
@@ -1709,9 +1925,17 @@ def aggregate_results(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if not items:
             return {"count": 0}
         result = {}
-        for metric in REFERENCE_METRICS:
-            values = np.asarray([item["metrics"]["full"][metric]["mean"] for item in items])
-            result[metric] = summarize(values)
+        for metric in (*REFERENCE_METRICS, *TASK_SERIES_METRICS):
+            values = np.asarray(
+                [
+                    item["metrics"]["full"][metric]["mean"]
+                    for item in items
+                    if item["metrics"]["full"][metric] is not None
+                ],
+                dtype=np.float64,
+            )
+            if values.size:
+                result[metric] = summarize(values)
         completion = np.asarray([item["evaluation"]["completion_ratio"] for item in items])
         result["completion"] = {
             "case_count": len(items),
@@ -1727,17 +1951,33 @@ def aggregate_results(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 np.mean([item["evaluation"]["terminated"] for item in items])
             ),
         }
-        for section in ("retention", "stability"):
+        for section in ("retention", "stability", "control"):
             keys = set().union(*(item[section] for item in items))
             result[section] = {
                 key: summarize(np.asarray([item[section][key] for item in items]))
                 for key in sorted(keys)
                 if all(
                     item[section].get(key) is not None
+                    and not isinstance(item[section].get(key), (dict, list, str))
                     and np.isfinite(float(item[section][key]))
                     for item in items
                 )
             }
+        task_values: dict[str, list[float]] = {}
+        for item in items:
+            for group, values in item["task_metrics"].items():
+                if group in ("binary_success", "final_is_horizon") or not isinstance(
+                    values, Mapping
+                ):
+                    continue
+                for name, value in values.items():
+                    if isinstance(value, bool) or value is None:
+                        continue
+                    task_values.setdefault(name, []).append(float(value))
+        result["task"] = {
+            name: summarize(np.asarray(values, dtype=np.float64))
+            for name, values in sorted(task_values.items())
+        }
         return result
 
     result = {"all": aggregate(rows)}
@@ -1756,6 +1996,67 @@ def aggregate_results(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         )
         for direction in ("left", "forward", "right")
     }
+    return result
+
+
+def task_metric_summary(aggregation: Mapping[str, Any]) -> dict[str, Any]:
+    groups = {
+        "board_trajectory": (
+            "board_planar_velocity_error_mps",
+            "board_speed_error_mps",
+            "board_velocity_direction_error_deg",
+            "board_velocity_direction_valid_fraction",
+            "board_heading_error_deg",
+            "board_final_heading_error_deg",
+            "board_xy_displacement_error_m",
+            "board_final_xy_error_m",
+            "board_net_displacement_direction_error_deg",
+        ),
+        "coupling": (
+            "feet_on_board_ratio",
+            "longest_off_board_streak_steps",
+            "longest_off_board_streak_s",
+            "coupling_xy_error_m",
+        ),
+        "stability_plausibility": (
+            "horizon_completion",
+            "termination_rate",
+            "root_tilt_mean_deg",
+            "root_tilt_p95_deg",
+            "root_tilt_max_deg",
+            "root_height_min_m",
+            "illegal_contact_ratio",
+            "action_soft_saturation_fraction",
+            "action_hard_saturation_fraction",
+            "torque_utilization_p95",
+        ),
+        "humanoid_motion_quality": (
+            "joint_position_mae_rad",
+            "joint_velocity_mae_rad_s",
+            "root_orientation_geodesic_error_deg",
+        ),
+    }
+    result: dict[str, Any] = {"binary_success": "NOT_YET_CALIBRATED"}
+    for group, names in groups.items():
+        result[group] = {}
+        for behavior in ("all", *BEHAVIORS):
+            aggregate = aggregation.get(behavior, {})
+            values = {}
+            for name in names:
+                if name == "termination_rate":
+                    rate = aggregate.get("completion", {}).get("termination_rate")
+                    source = None if rate is None else {"mean": rate}
+                else:
+                    source = (
+                        aggregate.get("task", {}).get(name)
+                        or aggregate.get(name)
+                        or aggregate.get("retention", {}).get(name)
+                        or aggregate.get("stability", {}).get(name)
+                        or aggregate.get("control", {}).get(name)
+                    )
+                if source is not None:
+                    values[name] = source
+            result[group][behavior] = values
     return result
 
 
@@ -1793,8 +2094,8 @@ def select_representatives(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mappi
 
 
 def run_eval(args: argparse.Namespace) -> int:
-    records, manifest, phase_path, manifest_path = load_phase_records("test")
-    resolver = RawResolver("test")
+    records, manifest, phase_path, manifest_path = load_phase_records(args.split)
+    resolver = RawResolver(args.split)
     agent, load_report = load_frozen_agent(args.checkpoint.resolve())
     seq_length = tracking_seq_length(agent)
     if agent._model.training or any(
@@ -1823,7 +2124,12 @@ def run_eval(args: argparse.Namespace) -> int:
         )
         for name in BEHAVIORS
     }
-    formal_full_test = args.behavior == "all" and limit is None and args.case_spec is None
+    formal_full_test = (
+        args.split == "test"
+        and args.behavior == "all"
+        and limit is None
+        and args.case_spec is None
+    )
     with tempfile.TemporaryDirectory(prefix="skate_bfm_eval_") as temp:
         temp_dir = Path(temp)
         temp_cases = []
@@ -1905,6 +2211,7 @@ def run_eval(args: argparse.Namespace) -> int:
         write_json(
             root / "cases.json",
             {
+                "split": args.split,
                 "protocol": {
                     "steady_duration_s": args.steady_duration_s,
                     "steady_steps": steady_steps,
@@ -1940,6 +2247,7 @@ def run_eval(args: argparse.Namespace) -> int:
                 handle.write(json.dumps(row, sort_keys=True) + "\n")
         summary = {
             "aggregation": aggregate_results(rows),
+            "split": args.split,
             "candidate_counts": candidate_counts,
             "excluded_reasons": excluded,
             "selection": {
@@ -1984,6 +2292,7 @@ def run_eval(args: argparse.Namespace) -> int:
             "formal_full_test": formal_full_test,
             "formal_full_behavior": full_behavior,
         }
+        summary["task_metrics"] = task_metric_summary(summary["aggregation"])
         selected = select_representatives(rows)
         summary["representative_selection_rule"] = (
             "full completion first; closest joint MAE to category median; "

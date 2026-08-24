@@ -1,0 +1,70 @@
+{
+  "binary_success": "NOT_YET_CALIBRATED",
+  "case_identity_sha256": "e6101d4fcd7d9f55a77cf6334c493123a3ce6b22dc2bcb36962632136094f9bc",
+  "case_spec": "train/eval_res/2026-08-20/p100k-v20b_val_phase_eval/cases.json",
+  "cases": {
+    "push": 20,
+    "push2steer": 20,
+    "steer": 20,
+    "steer2push": 20
+  },
+  "command_target": "same-command canonical Raw expert skateboard trajectory",
+  "continuous": {
+    "checkpoint_sha256": "7e6ad90de732d085317d600a9e52b2e3010d4d80a551d8736bc6d0a03fdeb338",
+    "result": "train/eval_res/2026-08-24/c100k-v20b_val_phase_eval"
+  },
+  "direction_speed_epsilon_mps": 0.05,
+  "evaluation_only": true,
+  "exact_case_replay": true,
+  "metrics": {
+    "continuous100k": {
+      "push": [0.679, 0.345744, 0.270621, 13.827053, 5.985942, 0.277635, 0.773035, 0.154, 0.151797],
+      "push2steer": [0.2526, 0.635949, 0.457989, 30.381071, 7.810903, 0.734944, 0.93007, 0.071, 0.194266],
+      "steer": [0.744, 0.299217, 0.174676, 8.552508, 6.905702, 0.282994, 0.909089, 0.063, 0.116183],
+      "steer2push": [0.3624, 0.388356, 0.232444, 17.918116, 8.660468, 0.544358, 0.927226, 0.108, 0.152737]
+    },
+    "field_order": [
+      "completion_ratio",
+      "board_planar_velocity_error_mps",
+      "board_speed_error_mps",
+      "board_velocity_direction_error_deg",
+      "board_heading_error_deg",
+      "board_final_xy_error_m",
+      "feet_on_board_ratio",
+      "longest_off_board_streak_s",
+      "coupling_xy_error_m"
+    ],
+    "phase100k": {
+      "push": [0.813, 0.371288, 0.310053, 8.894476, 6.198, 0.274243, 0.807504, 0.227, 0.196411],
+      "push2steer": [0.2912, 0.670078, 0.462585, 25.362296, 3.155864, 0.757952, 0.854197, 0.284, 0.214304],
+      "steer": [0.7805, 0.498869, 0.307087, 12.723172, 10.948876, 0.479677, 0.863634, 0.095, 0.168581],
+      "steer2push": [0.449, 0.495796, 0.33639, 21.710524, 15.09957, 0.797268, 0.839541, 0.335, 0.255519]
+    }
+  },
+  "phase": {
+    "checkpoint_sha256": "ab8ef719d613ce988a173ad8734ce655c3b564045d616d1ce01416b070129434",
+    "result": "train/eval_res/2026-08-20/p100k-v20b_val_phase_eval"
+  },
+  "proposed_thresholds": {
+    "action_hard_saturation_fraction_max": 0.05,
+    "board_final_xy_error_m_max": 0.5,
+    "board_heading_error_deg_max": 15.0,
+    "board_speed_error_mps_max": 0.3,
+    "board_velocity_direction_error_deg_max": 15.0,
+    "board_velocity_direction_valid_fraction_min": 0.95,
+    "coupling_xy_error_m_max": 0.2,
+    "feet_on_board_ratio_min": 0.85,
+    "full_horizon_required": true,
+    "longest_off_board_streak_s_max": 0.2,
+    "root_tilt_p95_deg_max": 60.0,
+    "status": "PROPOSED_ONLY_NOT_FROZEN"
+  },
+  "selection": {
+    "mode": "rollout_balanced_without_replacement",
+    "seed": 4728,
+    "unique_source_groups_per_behavior": 20
+  },
+  "split": "val",
+  "test_model_selection": false,
+  "training": false
+}

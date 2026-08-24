@@ -1,6 +1,6 @@
 # Training Log
 
-The outer level follows the same three experiment stages as `train.md` and
+The outer level follows the same five experiment stages as `train.md` and
 `train_res.md`; dates are short records inside their owning stage.
 
 ## Experiment 1: Training Workspace and BFM-HUSKY Integration
@@ -35,7 +35,7 @@ Completed the 150-minute formal collection and Phase MotionLib conversion/QC.
 
 Built and published the Continuous dataset and organized raw, Phase, and Continuous Hugging Face artifacts.
 
-## Experiment 3: BFM + Skate Expert Training and Semantics Alignment
+## Experiment 3: Phase BFM + Skate Expert Training and Semantics Alignment
 
 ### 2026-08-10
 
@@ -83,4 +83,12 @@ Archived the complete `train/eval_res/2026-08-20/` checkpoint-evaluation results
 
 ### 2026-08-24
 
+Added task-oriented board/coupling/stability metrics and established the fixed rollout-balanced 80-case Val model-selection benchmark.
+
+## Experiment 4: Continuous BFM + Skate Expert Training and Matched Comparison
+
+### 2026-08-24
+
 Completed the fresh Continuous 10k health run, formal 100k training, and fixed 80-case 20k/50k/100k frozen evaluation, with finite reloadable artifacts and no performance conclusion from the 10k health result.
+
+Evaluated Continuous100k against Phase100k by exact replay of the same fixed Phase-Val case bank.

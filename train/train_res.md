@@ -1,6 +1,6 @@
 # Skate-BFM Training Results
 
-Results use the same three experiment names as [`train.md`](train.md).
+Results use the same five experiment names as [`train.md`](train.md).
 `[x]` marks completed verification; `[ ]` marks an unverified conclusion.
 
 ## Experiment 1: Training Workspace and BFM-HUSKY Integration
@@ -135,7 +135,7 @@ The linked Phase QC videos visualize robot-plus-skateboard replays for 10
 samples per phase; Continuous QC visualizes 10 fixed 500-frame clips. These
 are dataset-quality checks, not trained-policy performance videos.
 
-## Experiment 3: BFM + Skate Expert Training and Semantics Alignment
+## Experiment 3: Phase BFM + Skate Expert Training and Semantics Alignment
 
 ### Current Formal Summary
 
@@ -346,6 +346,35 @@ The three per-checkpoint latent views are
 [50k](eval_res/2026-08-20/50k-s20b_test_phase_eval/latent_space.png), and
 [100k](eval_res/2026-08-20/100k-s20b_test_phase_eval/latent_space.png).
 
+### Fixed Val Task Benchmark
+
+Phase100k generated the fixed 80-case Phase-Val bank, and Continuous100k
+replayed the same identities. Selection used seed 4728, 20 cases and 20 unique
+source rollouts per behavior; the case identity hash is
+`e6101d4fcd7d9f55a77cf6334c493123a3ce6b22dc2bcb36962632136094f9bc`.
+
+| Behavior | Complete | Planar velocity | Speed | Direction | Heading | Final XY | Feet on board | Off-board streak | Coupling XY |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| push | 0.400 | 0.371 | 0.310 | 8.89 | 6.20 | 0.274 | 0.808 | 0.227 | 0.196 |
+| steer | 0.500 | 0.499 | 0.307 | 12.72 | 10.95 | 0.480 | 0.864 | 0.095 | 0.169 |
+| push2steer | 0.000 | 0.670 | 0.463 | 25.36 | 3.16 | 0.758 | 0.854 | 0.284 | 0.214 |
+| steer2push | 0.000 | 0.496 | 0.336 | 21.71 | 15.10 | 0.797 | 0.840 | 0.335 | 0.256 |
+
+**Caption.** These are Phase100k means over 20 Val cases per behavior.
+`Complete` is full-horizon fraction (higher is better); planar velocity and
+speed errors are m/s, direction/heading errors are degrees, final XY and
+coupling are metres, and off-board streak is seconds (all lower is better).
+Direction-valid fractions are 0.990-1.000, so direction means are not based on
+a sparse low-speed subset. Completion is 0 for both transitions, therefore
+their short-prefix errors do not establish task success. Feet-on-board is the
+fraction of executed frames with at least one foot collision geom contacting
+the deck; a short two-foot contact gap is measured, not treated as immediate
+failure.
+
+Artifacts: [Phase100k summary](eval_res/2026-08-20/p100k-v20b_val_phase_eval/summary.md),
+[fixed case bank](eval_res/2026-08-20/p100k-v20b_val_phase_eval/cases.json),
+and [task-oriented comparison](eval_res/2026-08-24/p100k-c100k-v20b/comparison.md).
+
 ### Historical Failure Diagnosis and Semantics Correction Results
 
 These rows are diagnostic steps within Experiment 3:
@@ -538,6 +567,8 @@ Unverified:
 Available dataset QC videos remain under the Phase and Continuous Hugging Face
 directories. Missing training evidence is not reconstructed from smoke output.
 
+## Experiment 4: Continuous BFM + Skate Expert Training and Matched Comparison
+
 ### Continuous Formal 100k
 
 The fresh Continuous run used 890 train-only 500-frame clips (445,000 frames,
@@ -594,7 +625,38 @@ still terminate in all sampled cases. Phase-vs-Continuous paired deltas are
 available in the linked comparison and cannot be attributed solely to
 cross-phase context because the MotionLib sampling distribution also differs.
 
-## Experiment 4 (Planned): BFB/RFB Dynamics-Conditioned Training
+### Phase100k vs Continuous100k Val
+
+| Behavior | Model | Completion | Planar velocity | Speed | Direction | Heading | Final XY | Feet on board | Coupling XY |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| push | Phase / Continuous | 0.813 / 0.679 | 0.371 / 0.346 | 0.310 / 0.271 | 8.89 / 13.83 | 6.20 / 5.99 | 0.274 / 0.278 | 0.808 / 0.773 | 0.196 / 0.152 |
+| steer | Phase / Continuous | 0.780 / 0.744 | 0.499 / 0.299 | 0.307 / 0.175 | 12.72 / 8.55 | 10.95 / 6.91 | 0.480 / 0.283 | 0.864 / 0.909 | 0.169 / 0.116 |
+| push2steer | Phase / Continuous | 0.291 / 0.253 | 0.670 / 0.636 | 0.463 / 0.458 | 25.36 / 30.38 | 3.16 / 7.81 | 0.758 / 0.735 | 0.854 / 0.930 | 0.214 / 0.194 |
+| steer2push | Phase / Continuous | 0.449 / 0.362 | 0.496 / 0.388 | 0.336 / 0.232 | 21.71 / 17.92 | 15.10 / 8.66 | 0.797 / 0.544 | 0.840 / 0.927 | 0.256 / 0.153 |
+
+**Caption.** Every pair uses the same 20 Val scenarios. Completion is executed
+horizon fraction; board errors, direction, retention, and coupling use the
+units and preferences defined above. Continuous improves most steer and
+steer2push trajectory/coupling means, but completion is lower and all 20
+transition cases terminate for both models. Neither checkpoint is therefore
+a calibrated successful task policy.
+
+Binary success remains `NOT_YET_CALIBRATED`. Proposed thresholds in the
+linked comparison are model-selection candidates only and require human
+approval before code freezing.
+
+### Verified and Unverified Conclusions
+
+- [x] Fresh Continuous training and all three fixed-case evaluations satisfy
+  the frozen initialization, checkpoint, tracking-parity, and no-mutation
+  contracts.
+- [x] Continuous 100k improves its own steer result over Continuous 50k, but
+  does not complete sampled `push2steer` or `steer2push` cases.
+- [ ] Continuous is better than Phase on robust transition reproduction.
+- [ ] The observed paired differences isolate cross-phase history rather than
+  the broader MotionLib/reset sampling distribution.
+
+## Experiment 5 (Planned): BFB/RFB Dynamics-Conditioned Training
 
 No BFB/RFB implementation or training result has been produced. The planned
 comparison is: current post-alignment FB-CPR-Aux baseline, baseline plus BFB
