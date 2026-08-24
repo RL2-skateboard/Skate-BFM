@@ -104,7 +104,8 @@ def training_update_steps(
 
 
 def training_checkpoint_steps(max_steps: int) -> tuple[int, ...]:
-    return tuple(sorted({step for step in (20_000, 50_000, 100_000, max_steps) if step <= max_steps}))
+    candidates = (20_000, 50_000, 100_000, 120_000, 150_000, 200_000, max_steps)
+    return tuple(sorted({step for step in candidates if step <= max_steps}))
 
 
 def resolve_expert_dataset(
