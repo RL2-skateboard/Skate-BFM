@@ -1,0 +1,103 @@
+compile False
+cudagraphs False
+/home/hm/workspace/skate-bfm/train/scripts/train_skate_bfm.py:258: UserWarning: 
+The version_base parameter is not specified.
+Please specify a compatability version level, or None.
+Will assume defaults for version 1.1
+  with hydra.initialize_config_dir(config_dir=HYDRA_CONFIG_DIR):
+/home/hm/.conda/envs/skatebfm/lib/python3.12/site-packages/hydra/_internal/defaults_list.py:251: UserWarning: In 'exp/bfm_zero/bfm_zero': Defaults list is missing `_self_`. See https://hydra.cc/docs/1.2/upgrades/1.0_to_1.1/default_composition_order for more information
+  warnings.warn(msg, UserWarning)
+2026-08-25 01:04:45.188 | INFO     | humanoidverse.utils.helpers:pre_process_config:49 - obs_dims: {'base_lin_vel': 3, 'base_ang_vel': 3, 'projected_gravity': 3, 'dof_pos': 29, 'dof_vel': 29, 'actions': 29, 'max_local_self': 462}
+2026-08-25 01:04:45.189 | INFO     | humanoidverse.utils.helpers:pre_process_config:60 - auxiliary_obs_dims: {'history_actor': 372}
+2026-08-25 01:04:45.189 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: base_ang_vel has dim: 3
+2026-08-25 01:04:45.189 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: projected_gravity has dim: 3
+2026-08-25 01:04:45.189 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: dof_pos has dim: 29
+2026-08-25 01:04:45.190 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: dof_vel has dim: 29
+2026-08-25 01:04:45.190 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: actions has dim: 29
+2026-08-25 01:04:45.190 | INFO     | humanoidverse.utils.helpers:pre_process_config:70 - actor_obs: history_actor has dim: 372
+2026-08-25 01:04:45.190 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: max_local_self has dim: 462
+2026-08-25 01:04:45.191 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - critic_obs: max_local_self has dim: 462
+2026-08-25 01:04:45.191 | INFO     | humanoidverse.utils.helpers:pre_process_config:76 - algo_obs_dim_dict: {'actor_obs': 927, 'critic_obs': 462}
+2026-08-25 01:04:45.191 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:60 - Loaded skeleton from /home/hm/workspace/skate-bfm/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml
+2026-08-25 01:04:45.192 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:61 - Loading motion data from /home/hm/workspace/skate-bfm/train/dataset/base/lafan_29dof_10s-clipped.pkl...
+2026-08-25 01:04:45.334 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_data:99 - Loaded 862 motions
+Loading Meshes ... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Loading Geoms... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:04:45.662 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:370 - Loading 862 motions...
+2026-08-25 01:04:45.663 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:371 - Sampling motion: tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], device='cuda:0'), ....
+2026-08-25 01:04:45.663 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:372 - Current motion keys: ['fallAndGetUp1_subject4_clip0', 'fallAndGetUp1_subject4_clip1', 'fallAndGetUp1_subject4_clip2', 'fallAndGetUp1_subject4_clip3', 'fallAndGetUp1_subject4_clip4', 'fallAndGetUp1_subject4_clip5', 'fallAndGetUp1_subject4_clip6', 'fallAndGetUp1_subject4_clip7', 'fallAndGetUp1_subject4_clip8', 'fallAndGetUp1_subject4_clip9'], ....
+Loading motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:04
+Gathering results... ━━━━━━━━━          ━━━━━━━━━━          ━   
+Processing motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:04:51.025 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:471 - Loaded 862 motions with a total length of 8591.303s and 258600 frames.
+2026-08-25 01:04:51.290 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:60 - Loaded skeleton from /home/hm/workspace/skate-bfm/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml
+2026-08-25 01:04:51.290 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:61 - Loading motion data from /tmp/skate_bfm_eval_t6hlhwoy/raw_window_motionlib.pkl...
+2026-08-25 01:04:51.306 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_data:99 - Loaded 84 motions
+Loading Meshes ... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Loading Geoms... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:04:51.601 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:370 - Loading 84 motions...
+2026-08-25 01:04:51.602 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:371 - Sampling motion: tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], device='cuda:0'), ....
+2026-08-25 01:04:51.602 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:372 - Current motion keys: ['push_008', 'push_017', 'push_020', 'push_033', 'push_056', 'push_090', 'push_117', 'push_120', 'push_132', 'push_137'], ....
+Loading motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Gathering results...    ━━━━━━━━━━          ━━━━━━━━━━          
+Processing motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:04:52.033 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:471 - Loaded 84 motions with a total length of 298.720s and 15020 frames.
+2026-08-25 01:04:52.228 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:25 - History Handler Initialized
+2026-08-25 01:04:52.228 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: base_ang_vel, Value: 4
+2026-08-25 01:04:52.228 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: projected_gravity, Value: 4
+2026-08-25 01:04:52.228 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: dof_pos, Value: 4
+2026-08-25 01:04:52.228 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: dof_vel, Value: 4
+2026-08-25 01:04:52.228 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: actions, Value: 4
+/home/hm/workspace/skate-bfm/train/scripts/train_skate_bfm.py:258: UserWarning: 
+The version_base parameter is not specified.
+Please specify a compatability version level, or None.
+Will assume defaults for version 1.1
+  with hydra.initialize_config_dir(config_dir=HYDRA_CONFIG_DIR):
+2026-08-25 01:04:54.183 | INFO     | humanoidverse.utils.helpers:pre_process_config:49 - obs_dims: {'base_lin_vel': 3, 'base_ang_vel': 3, 'projected_gravity': 3, 'dof_pos': 29, 'dof_vel': 29, 'actions': 29, 'max_local_self': 462}
+2026-08-25 01:04:54.184 | INFO     | humanoidverse.utils.helpers:pre_process_config:60 - auxiliary_obs_dims: {'history_actor': 372}
+2026-08-25 01:04:54.185 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: base_ang_vel has dim: 3
+2026-08-25 01:04:54.185 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: projected_gravity has dim: 3
+2026-08-25 01:04:54.185 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: dof_pos has dim: 29
+2026-08-25 01:04:54.185 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: dof_vel has dim: 29
+2026-08-25 01:04:54.186 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: actions has dim: 29
+2026-08-25 01:04:54.186 | INFO     | humanoidverse.utils.helpers:pre_process_config:70 - actor_obs: history_actor has dim: 372
+2026-08-25 01:04:54.186 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - actor_obs: max_local_self has dim: 462
+2026-08-25 01:04:54.186 | INFO     | humanoidverse.utils.helpers:pre_process_config:67 - critic_obs: max_local_self has dim: 462
+2026-08-25 01:04:54.187 | INFO     | humanoidverse.utils.helpers:pre_process_config:76 - algo_obs_dim_dict: {'actor_obs': 927, 'critic_obs': 462}
+2026-08-25 01:04:54.187 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:60 - Loaded skeleton from /home/hm/workspace/skate-bfm/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml
+2026-08-25 01:04:54.187 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:61 - Loading motion data from /home/hm/workspace/skate-bfm/train/dataset/base/lafan_29dof_10s-clipped.pkl...
+2026-08-25 01:04:54.295 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_data:99 - Loaded 862 motions
+Loading Meshes ... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Loading Geoms... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:04:54.620 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:370 - Loading 862 motions...
+2026-08-25 01:04:54.620 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:371 - Sampling motion: tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], device='cuda:0'), ....
+2026-08-25 01:04:54.620 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:372 - Current motion keys: ['fallAndGetUp1_subject4_clip0', 'fallAndGetUp1_subject4_clip1', 'fallAndGetUp1_subject4_clip2', 'fallAndGetUp1_subject4_clip3', 'fallAndGetUp1_subject4_clip4', 'fallAndGetUp1_subject4_clip5', 'fallAndGetUp1_subject4_clip6', 'fallAndGetUp1_subject4_clip7', 'fallAndGetUp1_subject4_clip8', 'fallAndGetUp1_subject4_clip9'], ....
+Loading motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:05
+Gathering results... ━━━━━━━━━          ━━━━━━━━━━          ━   
+Processing motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:05:00.463 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:471 - Loaded 862 motions with a total length of 8591.303s and 258600 frames.
+2026-08-25 01:05:00.681 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:60 - Loaded skeleton from /home/hm/workspace/skate-bfm/train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml
+2026-08-25 01:05:00.681 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:__init__:61 - Loading motion data from /home/hm/workspace/skate-bfm/train/dataset/sim_collected/val/phase/motion_library/skate_expert_phase.pkl...
+2026-08-25 01:05:00.883 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_data:99 - Loaded 1228 motions
+Loading Meshes ... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Loading Geoms... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:05:01.164 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:370 - Loading 1228 motions...
+2026-08-25 01:05:01.164 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:371 - Sampling motion: tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], device='cuda:0'), ....
+2026-08-25 01:05:01.164 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:372 - Current motion keys: ['skate/push/r012_rollout001_seg000', 'skate/push2steer/r012_rollout001_seg001', 'skate/steer_left/r012_rollout001_seg002', 'skate/steer2push/r012_rollout001_seg003', 'skate/push/r012_rollout001_seg004', 'skate/push2steer/r012_rollout001_seg005', 'skate/steer_left/r012_rollout001_seg006', 'skate/steer2push/r012_rollout001_seg007', 'skate/push/r012_rollout001_seg008', 'skate/push2steer/r012_rollout001_seg009'], ....
+Loading motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:03
+Gathering results...          ━━━━━━━━━━          ━━━━━━━━━━    
+Processing motions... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+2026-08-25 01:05:04.578 | INFO     | humanoidverse.utils.motion_lib.motion_lib_base:load_motions:471 - Loaded 1228 motions with a total length of 1816.649s and 92060 frames.
+2026-08-25 01:05:04.832 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:25 - History Handler Initialized
+2026-08-25 01:05:04.832 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: base_ang_vel, Value: 4
+2026-08-25 01:05:04.832 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: projected_gravity, Value: 4
+2026-08-25 01:05:04.833 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: dof_pos, Value: 4
+2026-08-25 01:05:04.833 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: dof_vel, Value: 4
+2026-08-25 01:05:04.833 | INFO     | humanoidverse.envs.env_utils.history_handler:__init__:27 - Key: actions, Value: 4
+Eval 1/80Eval 2/80Eval 3/80Eval 4/80Eval 5/80Eval 6/80Eval 7/80Eval 8/80Eval 9/80Eval 10/80Eval 11/80Eval 12/80Eval 13/80Eval 14/80Eval 15/80Eval 16/80Eval 17/80Eval 18/80Eval 19/80Eval 20/80Eval 21/80Eval 22/80Eval 23/80Eval 24/80Eval 25/80Eval 26/80Eval 27/80Eval 28/80Eval 29/80Eval 30/80Eval 31/80Eval 32/80Eval 33/80Eval 34/80Eval 35/80Eval 36/80Eval 37/80Eval 38/80Eval 39/80Eval 40/80Eval 41/80Eval 42/80Eval 43/80Eval 44/80Eval 45/80Eval 46/80Eval 47/80Eval 48/80Eval 49/80Eval 50/80Eval 51/80Eval 52/80Eval 53/80Eval 54/80Eval 55/80Eval 56/80Eval 57/80Eval 58/80Eval 59/80Eval 60/80Eval 61/80Eval 62/80Eval 63/80Eval 64/80Eval 65/80Eval 66/80Eval 67/80Eval 68/80Eval 69/80Eval 70/80Eval 71/80Eval 72/80Eval 73/80Eval 74/80Eval 75/80Eval 76/80Eval 77/80Eval 78/80Eval 79/80Eval 80/80
+{
+  "status": "PASS",
+  "formal_full_test": false,
+  "cases": 80,
+  "output": "/home/hm/workspace/skate-bfm/train/eval_res/2026-08-24/p2-100k-v20b_val_phase_eval"
+}

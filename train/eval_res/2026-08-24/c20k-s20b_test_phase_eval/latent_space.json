@@ -1,0 +1,29 @@
+{
+  "centroid_angular_distance_deg": {
+    "push2steer__steer": 38.42998123168945,
+    "push__push2steer": 27.442508697509766,
+    "push__steer": 44.717193603515625,
+    "steer2push__push": 37.934627532958984,
+    "steer__steer2push": 25.139781951904297
+  },
+  "checkpoint": {
+    "model_file": "/home/hm/workspace/skate-bfm/model/motion_library/m2.6-c1-continuous-100k-seed4728/checkpoint_20000/model/model.safetensors",
+    "model_sha256": "e397e0c26762b83f62bf42b40f77762e76cbba79302ee7bac6b3da53e1100cae",
+    "optimizer_policy": "fresh optimizers; pretrained optimizer state is not loaded",
+    "source": "/home/hm/workspace/skate-bfm/model/motion_library/m2.6-c1-continuous-100k-seed4728/checkpoint_20000"
+  },
+  "counts": {
+    "push": 5380,
+    "push2steer": 1320,
+    "steer": 5680,
+    "steer2push": 1620
+  },
+  "shared_projection": "c20k-c50k-c100k-s20b/latent_projection.json",
+  "source": "actual evaluation tracking z_t through Raw-window bridge; truncated at T_exec",
+  "within_class_angular_dispersion_deg": {
+    "push": 37.30851364135742,
+    "push2steer": 40.53886795043945,
+    "steer": 42.890724182128906,
+    "steer2push": 45.475284576416016
+  }
+}
