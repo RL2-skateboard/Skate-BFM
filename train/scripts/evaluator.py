@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import itertools
 import json
 import math
 import signal
@@ -67,6 +68,12 @@ PHASE_LABELS = {
 }
 STEER = frozenset(("steer_left", "steer_forward", "steer_right"))
 BEHAVIORS = ("push", "steer", "push2steer", "steer2push")
+LATENT_COLORS = {
+    "push": "#2563eb",
+    "steer": "#dc2626",
+    "push2steer": "#059669",
+    "steer2push": "#d97706",
+}
 SELECTION_SEED_OFFSETS = {
     "push": 0,
     "steer": 1000,
@@ -127,6 +134,16 @@ def parse_args() -> argparse.Namespace:
     evaluate.add_argument("--steady-duration-s", type=float, default=3.0)
     evaluate.add_argument("--max-cases-per-behavior", type=int)
     evaluate.add_argument("--case-spec", type=Path)
+    evaluate.add_argument(
+        "--latent-analysis",
+        action="store_true",
+        help="Analyze the tracking latents used by the frozen eval rollout.",
+    )
+    evaluate.add_argument(
+        "--latent-inset",
+        action="store_true",
+        help="Overlay the shared latent projection on representative videos.",
+    )
 
     video = subparsers.add_parser("video", help="Val Phase + Raw presentation videos.")
     common(video)
@@ -141,6 +158,11 @@ def parse_args() -> argparse.Namespace:
     video.add_argument("--clip-s", type=float, default=3.0)
     video.add_argument("--context-s", type=float, default=0.5)
     video.add_argument("--with-expert", action="store_true")
+    video.add_argument(
+        "--latent-inset",
+        action="store_true",
+        help="Overlay the shared latent projection on generated videos.",
+    )
 
     view = subparsers.add_parser("viewer", help="Persistent Val Phase + Raw viewer.")
     common(view)
@@ -219,6 +241,391 @@ def summarize_valid(values: np.ndarray) -> dict[str, float] | None:
     result["valid_count"] = int(valid.sum())
     result["valid_fraction"] = float(valid.mean())
     return result
+
+
+def cosine_distance_matrix(left: np.ndarray, right: np.ndarray | None = None) -> np.ndarray:
+    left = left / np.linalg.norm(left, axis=1, keepdims=True)
+    right = left if right is None else right / np.linalg.norm(right, axis=1, keepdims=True)
+    return 1.0 - np.clip(left @ right.T, -1.0, 1.0)
+
+
+def mean_pairwise_cosine_distance(values: np.ndarray) -> float:
+    distances = cosine_distance_matrix(values)
+    if len(values) < 2:
+        return 0.0
+    return float(distances[~np.eye(len(values), dtype=bool)].mean())
+
+
+def latent_phase_label(case: Mapping[str, Any], phase: str) -> str:
+    if case["behavior"] not in ("push2steer", "steer2push"):
+        return "STEADY"
+    if phase == case.get("pre_phase"):
+        return "PRE"
+    if phase == case.get("transition_phase"):
+        return "TRANSITION"
+    if phase == case.get("post_phase"):
+        return "POST"
+    return "UNKNOWN"
+
+
+def deterministic_prior(model: Any, count: int, seed: int) -> np.ndarray:
+    cpu_state = torch.random.get_rng_state()
+    cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        return model.sample_z(count, device=model.device).detach().cpu().numpy()
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
+
+
+def latent_sample_indices(count: int, limit: int = 1024) -> np.ndarray:
+    if count <= limit:
+        return np.arange(count)
+    return np.linspace(0, count - 1, limit, dtype=np.int64)
+
+
+def latent_basic_stats(z: np.ndarray) -> dict[str, Any]:
+    norms = np.linalg.norm(z, axis=1)
+    return {
+        "count": int(len(z)),
+        "norm": summarize(norms),
+    }
+
+
+def latent_render_projection(
+    agent: Any,
+    latent_runs: Sequence[Mapping[str, Any]],
+    seed: int,
+) -> dict[str, Any]:
+    prior = deterministic_prior(agent._model, 4096, seed)
+    points: list[dict[str, Any]] = []
+    for run in latent_runs:
+        case = run["case"]
+        z = np.asarray(run["z"], dtype=np.float64)
+        phases = run["phases"]
+        for index, (value, phase) in enumerate(zip(z, phases)):
+            points.append(
+                {
+                    "behavior": str(case["behavior"]),
+                    "case_id": str(case["case_id"]),
+                    "step": index,
+                    "phase": latent_phase_label(case, str(phase)),
+                    "z": value,
+                }
+            )
+    if not points:
+        raise RuntimeError("Latent analysis received no executed latent points.")
+    actual = np.stack([item["z"] for item in points])
+    all_z = np.concatenate((prior, actual), axis=0)
+    directions = all_z / np.linalg.norm(all_z, axis=1, keepdims=True)
+    centered = directions - directions.mean(axis=0)
+    _, singular, components = np.linalg.svd(centered, full_matrices=False)
+    components = components[:3]
+    eigenvalues = (singular * singular) / max(len(directions) - 1, 1)
+    explained = (eigenvalues / max(eigenvalues.sum(), 1e-12))[:3]
+    projected = centered @ components.T
+    for item, coords in zip(points, projected[len(prior) :]):
+        item["pca"] = coords
+    return {
+        "prior_z": prior,
+        "prior": projected[: len(prior)],
+        "points": points,
+        "explained": explained,
+    }
+
+
+def pca_explained_ratio(values: np.ndarray) -> list[float]:
+    centered = values - values.mean(axis=0)
+    singular = np.linalg.svd(centered, compute_uv=False)
+    variance = singular * singular
+    total = max(float(variance.sum()), 1e-12)
+    return (variance[:3] / total).tolist()
+
+
+def latent_analysis_markdown(
+    path: Path,
+    checkpoint: Path,
+    split: str,
+    cases: Sequence[Mapping[str, Any]],
+    metrics: Mapping[str, Any],
+) -> None:
+    behavior = metrics["behavior"]
+    transition = metrics["transition_continuity"]
+    lines = [
+        "# Latent Space Analysis",
+        "",
+        f"- Checkpoint: `{checkpoint}`",
+        f"- Split: `{split}`",
+        f"- Cases: `{len(cases)}` (" + ", ".join(
+            f"{name}={sum(case['behavior'] == name for case in cases)}" for name in BEHAVIORS
+        ) + ")",
+        "- Latent source: the exact tracking `z_t` returned by `AlignedSkateTrackingContext.encode` and consumed by the frozen actor.",
+        "- Prior reference: 4096 deterministic samples from the checkpoint model's `sample_z`, seed `4728`.",
+        "- Projection: PCA is fitted jointly on normalized directions `u=z/||z||` from prior and evaluated latents.",
+        "- Limitation: the 3D plot shows a direction projection, not lossless 256D geometry and not task success.",
+        "",
+        "![Unified latent space](latent_space_compare.png)",
+        "",
+        "## Behavior Statistics",
+        "",
+        "| Behavior | Count | Norm mean | Norm std | PCA centroid (x, y, z) |",
+        "|---|---:|---:|---:|---|",
+    ]
+    for name in BEHAVIORS:
+        item = behavior[name]
+        centroid = item["pca_centroid"]
+        lines.append(
+            f"| {name} | {item['count']} | {item['norm']['mean']:.5g} | "
+            f"{item['norm']['std']:.5g} | ({centroid[0]:.5g}, {centroid[1]:.5g}, {centroid[2]:.5g}) |"
+        )
+    lines.extend(
+        [
+            "",
+            "The norm columns describe the magnitude of the actual 256D latent. The centroid is in the shared PCA coordinate system.",
+            "",
+            "## Structure",
+            "",
+            f"- Nearest-centroid accuracy: `{metrics['separability']['nearest_centroid_accuracy']:.4f}`.",
+            f"- Silhouette score (cosine, deterministic subsample): `{metrics['separability']['silhouette_score']:.4f}`.",
+            "- Pairwise cosine distances are computed on normalized latent directions; PCA distances are only distances in the displayed 3D projection.",
+            "",
+            "## Transition Continuity",
+            "",
+            "| Behavior | PRE count | TRANSITION count | POST count | PRE -> TRANSITION cosine | TRANSITION -> POST cosine | Adjacent cosine mean | Adjacent cosine p95 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for name in ("push2steer", "steer2push"):
+        item = transition[name]
+        lines.append(
+            f"| {name} | {item['segments']['PRE']['count']} | {item['segments']['TRANSITION']['count']} | "
+            f"{item['segments']['POST']['count']} | {item['pre_to_transition_cosine_distance']:.5g} | "
+            f"{item['transition_to_post_cosine_distance']:.5g} | {item['adjacent_cosine_distance']['mean']:.5g} | "
+            f"{item['adjacent_cosine_distance']['p95']:.5g} |"
+        )
+    lines.extend(
+        [
+            "",
+            "PRE, TRANSITION, and POST are assigned from each case's formal `frame_phase` mapping. Adjacent distances use consecutive latent values within each executed case, including across phase boundaries.",
+            "",
+            "## Interpretation",
+            "",
+            "This analysis describes which latent directions the frozen policy actually visited under the fixed benchmark. Separation or continuity is not evidence of task success; task metrics and completion remain the authoritative performance measures.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines))
+
+
+def run_latent_analysis(
+    root: Path,
+    agent: Any,
+    checkpoint: Path,
+    split: str,
+    cases: Sequence[Mapping[str, Any]],
+    latent_runs: Sequence[Mapping[str, Any]],
+    seed: int,
+    projection: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    colors = LATENT_COLORS
+    projection = (
+        latent_render_projection(agent, latent_runs, seed)
+        if projection is None
+        else projection
+    )
+    prior_projected = projection["prior"]
+    points = projection["points"]
+    explained = projection["explained"]
+    prior = projection["prior_z"]
+    actual = np.stack([item["z"] for item in points])
+    directions = np.concatenate(
+        (
+            prior / np.linalg.norm(prior, axis=1, keepdims=True),
+            actual / np.linalg.norm(actual, axis=1, keepdims=True),
+        ),
+        axis=0,
+    )
+
+    behavior_stats: dict[str, Any] = {}
+    centroids: dict[str, np.ndarray] = {}
+    for name in BEHAVIORS:
+        items = [item for item in points if item["behavior"] == name]
+        z = np.stack([item["z"] for item in items])
+        coords = np.stack([item["pca"] for item in items])
+        unit = z / np.linalg.norm(z, axis=1, keepdims=True)
+        centroid_unit = unit.mean(axis=0)
+        centroid_unit /= np.linalg.norm(centroid_unit)
+        centroids[name] = centroid_unit
+        sample = unit[latent_sample_indices(len(unit))]
+        centroid_coords = coords.mean(axis=0)
+        behavior_stats[name] = {
+            **latent_basic_stats(z),
+            "pca_centroid": centroid_coords.tolist(),
+            "shared_pca_explained_variance_ratio": explained.tolist(),
+            "behavior_pca_explained_variance_ratio_first_3": pca_explained_ratio(unit),
+            "pca_3d_mean_radius": float(np.linalg.norm(coords - centroid_coords, axis=1).mean()),
+            "within_behavior": {
+                "pairwise_cosine_distance": mean_pairwise_cosine_distance(sample),
+                "centroid_cosine_distance": float((1.0 - sample @ centroid_unit).mean()),
+                "pairwise_sample_count": int(len(sample)),
+            },
+        }
+
+    between: dict[str, Any] = {}
+    for left, right in itertools.combinations(BEHAVIORS, 2):
+        left_items = [item for item in points if item["behavior"] == left]
+        right_items = [item for item in points if item["behavior"] == right]
+        left_unit = np.stack([item["z"] for item in left_items])
+        right_unit = np.stack([item["z"] for item in right_items])
+        left_unit /= np.linalg.norm(left_unit, axis=1, keepdims=True)
+        right_unit /= np.linalg.norm(right_unit, axis=1, keepdims=True)
+        key = f"{left}_vs_{right}"
+        between[key] = {
+            "centroid_cosine_distance": float(1.0 - centroids[left] @ centroids[right]),
+            "centroid_euclidean_distance_pca3": float(
+                np.linalg.norm(
+                    np.mean([item["pca"] for item in left_items], axis=0)
+                    - np.mean([item["pca"] for item in right_items], axis=0)
+                )
+            ),
+            "mean_pairwise_cosine_distance": float(
+                cosine_distance_matrix(left_unit[latent_sample_indices(len(left_unit))], right_unit[latent_sample_indices(len(right_unit))]).mean()
+            ),
+        }
+
+    labels = np.asarray([BEHAVIORS.index(item["behavior"]) for item in points])
+    unit_actual = actual / np.linalg.norm(actual, axis=1, keepdims=True)
+    centroid_matrix = np.stack([centroids[name] for name in BEHAVIORS])
+    nearest = np.argmax(unit_actual @ centroid_matrix.T, axis=1)
+    # Keep the silhouette calculation bounded while retaining one deterministic slice per class.
+    silhouette_indices = np.concatenate(
+        [np.flatnonzero(labels == index)[latent_sample_indices(int((labels == index).sum()), 256)] for index in range(len(BEHAVIORS))]
+    )
+    sample_unit = unit_actual[silhouette_indices]
+    sample_labels = labels[silhouette_indices]
+    distances = cosine_distance_matrix(sample_unit)
+    silhouettes = []
+    for index, label in enumerate(sample_labels):
+        same = sample_labels == label
+        same[index] = False
+        a = float(distances[index, same].mean()) if same.any() else 0.0
+        b = min(float(distances[index, sample_labels == other].mean()) for other in range(len(BEHAVIORS)) if other != label)
+        silhouettes.append((b - a) / max(a, b, 1e-12))
+
+    transition_metrics: dict[str, Any] = {}
+    for name in ("push2steer", "steer2push"):
+        name_points = [item for item in points if item["behavior"] == name]
+        segments = {}
+        segment_centroids = {}
+        for segment in ("PRE", "TRANSITION", "POST"):
+            values = np.stack([item["z"] for item in name_points if item["phase"] == segment])
+            unit = values / np.linalg.norm(values, axis=1, keepdims=True)
+            segment_unit = unit.mean(axis=0)
+            segment_unit /= np.linalg.norm(segment_unit)
+            segment_centroids[segment] = segment_unit
+            segments[segment] = {"count": int(len(values)), "centroid": segment_unit.tolist()}
+        adjacent = []
+        for run in latent_runs:
+            if run["case"]["behavior"] != name:
+                continue
+            z = np.asarray(run["z"], dtype=np.float64)
+            adjacent.extend(1.0 - np.sum(
+                z[:-1] / np.linalg.norm(z[:-1], axis=1)[:, None]
+                * (z[1:] / np.linalg.norm(z[1:], axis=1)[:, None]), axis=1
+            ))
+        transition_metrics[name] = {
+            "segments": segments,
+            "pre_to_transition_cosine_distance": float(1.0 - segment_centroids["PRE"] @ segment_centroids["TRANSITION"]),
+            "transition_to_post_cosine_distance": float(1.0 - segment_centroids["TRANSITION"] @ segment_centroids["POST"]),
+            "adjacent_cosine_distance": summarize(np.asarray(adjacent, dtype=np.float64)),
+        }
+
+    fig = plt.figure(figsize=(13, 9))
+    axis = fig.add_subplot(111, projection="3d")
+    axis.scatter(prior_projected[:, 0], prior_projected[:, 1], prior_projected[:, 2], s=3, c="#9ca3af", alpha=0.08, label="prior reference")
+    markers = {"STEADY": "o", "PRE": "^", "TRANSITION": "s", "POST": "v", "UNKNOWN": "x"}
+    for name in BEHAVIORS:
+        for segment, marker in markers.items():
+            values = np.stack([item["pca"] for item in points if item["behavior"] == name and item["phase"] == segment]) if any(item["behavior"] == name and item["phase"] == segment for item in points) else np.empty((0, 3))
+            if len(values):
+                axis.scatter(values[:, 0], values[:, 1], values[:, 2], s=9, alpha=0.48, c=colors[name], marker=marker)
+    axis.set_xlabel("PC1")
+    axis.set_ylabel("PC2")
+    axis.set_zlabel("PC3")
+    axis.set_title("Skate-BFM frozen tracking latent directions\nshared PCA with prior reference")
+    legend = [Line2D([0], [0], marker="o", color="w", label=name, markerfacecolor=color, markersize=8) for name, color in colors.items()]
+    legend.append(Line2D([0], [0], marker="o", color="w", label="prior reference", markerfacecolor="#9ca3af", markersize=6, alpha=0.5))
+    legend.extend(Line2D([0], [0], marker=marker, color="black", label=segment, linestyle="None") for segment, marker in markers.items() if segment != "UNKNOWN")
+    axis.legend(handles=legend, loc="upper left", fontsize=8)
+    fig.tight_layout()
+    root.mkdir(parents=True, exist_ok=True)
+    fig.savefig(root / "latent_space_compare.png", dpi=160)
+    plt.close(fig)
+
+    metrics = {
+        "checkpoint": str(checkpoint.resolve()),
+        "split": split,
+        "case_count": len(cases),
+        "behaviors": list(BEHAVIORS),
+        "latent_source": "actual tracking.encode z_t used by frozen actor, truncated at executed transitions",
+        "prior": {"method": "checkpoint model.sample_z", "count": len(prior), "seed": seed, "norm_z": True},
+        "projection": {
+            "method": "shared PCA on normalized directions u=z/||z|| for prior plus actual latents",
+            "input_count": len(directions),
+            "explained_variance_ratio_first_3": explained.tolist(),
+        },
+        "behavior": behavior_stats,
+        "between_behavior": between,
+        "separability": {
+            "nearest_centroid_accuracy": float(np.mean(nearest == labels)),
+            "silhouette_score": float(np.mean(silhouettes)),
+            "silhouette_sample_count": int(len(silhouettes)),
+            "distance": "cosine distance on normalized latent directions",
+        },
+        "transition_continuity": transition_metrics,
+    }
+    write_json(root / "latent_metrics.json", metrics)
+    write_latent_projection(root / "latent_projection.json", projection)
+    latent_analysis_markdown(root / "latent_metrics.md", checkpoint, split, cases, metrics)
+    return {
+        "image": "latent_space_compare.png",
+        "metrics": "latent_metrics.json",
+        "markdown": "latent_metrics.md",
+        "projection": "latent_projection.json",
+        "actual_latent_count": len(points),
+        "prior_count": len(prior),
+        "pca_explained_variance_ratio_first_3": explained.tolist(),
+    }
+
+
+def write_latent_projection(path: Path, projection: Mapping[str, Any]) -> None:
+    write_json(
+        path,
+        {
+            "projection": "shared PCA on normalized latent directions",
+            "prior": np.asarray(projection["prior"]).tolist(),
+            "points": [
+                {
+                    "behavior": point["behavior"],
+                    "case_id": point["case_id"],
+                    "step": point["step"],
+                    "phase": point["phase"],
+                    "pca": np.asarray(point["pca"]).tolist(),
+                }
+                for point in projection["points"]
+            ],
+        },
+    )
 
 
 class RawResolver:
@@ -1246,9 +1653,143 @@ def open_writer(path: Path, env: HuskyBfmOnlineEnv) -> tuple[Any, mujoco.Rendere
     return writer, mujoco.Renderer(env.env.model, height=720, width=1280)
 
 
-def render(writer: Any, renderer: mujoco.Renderer, env: HuskyBfmOnlineEnv) -> None:
+class LatentInset:
+    """Draw a shared PC1/PC2 view of the formal 3D latent projection."""
+
+    def __init__(self, projection: Mapping[str, Any], width: int = 286, height: int = 214):
+        from PIL import Image, ImageColor, ImageDraw, ImageFont
+
+        self.Image = Image
+        self.ImageColor = ImageColor
+        self.ImageDraw = ImageDraw
+        self.font = ImageFont.load_default()
+        self.width = width
+        self.height = height
+        self.x0, self.y0 = 12, 28
+        self.x1, self.y1 = width - 12, height - 12
+        self.points = list(projection["points"])
+        self.by_case: dict[str, list[Mapping[str, Any]]] = {}
+        for point in self.points:
+            self.by_case.setdefault(str(point["case_id"]), []).append(point)
+        for values in self.by_case.values():
+            values.sort(key=lambda point: int(point["step"]))
+        prior = np.asarray(projection["prior"], dtype=np.float64)
+        actual = np.asarray([point["pca"] for point in self.points], dtype=np.float64)
+        values = np.concatenate((prior, actual), axis=0)
+        self.x_min, self.x_max = self._bounds(values[:, 0])
+        self.y_min, self.y_max = self._bounds(values[:, 1])
+        self.base = Image.new("RGBA", (width, height), (250, 250, 250, 238))
+        draw = ImageDraw.Draw(self.base, "RGBA")
+        draw.rectangle((0, 0, width - 1, height - 1), outline=(55, 65, 81, 235), width=2)
+        draw.text((8, 7), "latent (PCA-3D)", fill=(17, 24, 39, 255), font=self.font)
+        draw.line((self.x0, self.y1, self.x1, self.y1), fill=(156, 163, 175, 180), width=1)
+        draw.line((self.x0, self.y0, self.x0, self.y1), fill=(156, 163, 175, 180), width=1)
+        for point in prior[latent_sample_indices(len(prior), 700)]:
+            self._circle(draw, point, "#9ca3af", 80, 1.5)
+        for behavior in BEHAVIORS:
+            values = np.asarray(
+                [
+                    point["pca"]
+                    for point in self.points
+                    if point["behavior"] == behavior
+                ],
+                dtype=np.float64,
+            )
+            for point in values[latent_sample_indices(len(values), 450)]:
+                self._circle(draw, point, LATENT_COLORS[behavior], 75, 1.5)
+
+    @staticmethod
+    def _bounds(values: np.ndarray) -> tuple[float, float]:
+        low, high = np.percentile(values, (1.0, 99.0))
+        span = max(float(high - low), 1e-6)
+        pad = span * 0.08
+        return float(low - pad), float(high + pad)
+
+    def _pixel(self, point: Sequence[float]) -> tuple[int, int]:
+        x = self.x0 + (float(point[0]) - self.x_min) / (self.x_max - self.x_min) * (
+            self.x1 - self.x0
+        )
+        y = self.y1 - (float(point[1]) - self.y_min) / (self.y_max - self.y_min) * (
+            self.y1 - self.y0
+        )
+        return round(x), round(y)
+
+    def _circle(
+        self,
+        draw: Any,
+        point: Sequence[float],
+        color: str,
+        alpha: int,
+        radius: float,
+        outline: str | None = None,
+    ) -> None:
+        x, y = self._pixel(point)
+        rgb = self.ImageColor.getrgb(color)
+        box = (x - radius, y - radius, x + radius, y + radius)
+        draw.ellipse(box, fill=(*rgb, alpha), outline=outline, width=1)
+
+    def annotate(self, frame: np.ndarray, case_id: str, step: int) -> np.ndarray:
+        overlay = self.base.copy()
+        draw = self.ImageDraw.Draw(overlay, "RGBA")
+        trajectory = self.by_case.get(case_id, [])
+        if trajectory:
+            path = [self._pixel(point["pca"]) for point in trajectory]
+            draw.line(path, fill=(75, 85, 99, 80), width=1)
+            for point in trajectory:
+                self._circle(draw, point["pca"], LATENT_COLORS[point["behavior"]], 42, 1.5)
+        current = next(
+            (point for point in trajectory if int(point["step"]) == step),
+            None,
+        )
+        if current is not None:
+            tail = [
+                point
+                for point in trajectory
+                if step - 19 <= int(point["step"]) <= step
+            ]
+            for index, point in enumerate(tail):
+                self._circle(
+                    draw,
+                    point["pca"],
+                    LATENT_COLORS[point["behavior"]],
+                    70 + round(130 * (index + 1) / len(tail)),
+                    2.0,
+                )
+            x, y = self._pixel(current["pca"])
+            color = LATENT_COLORS[current["behavior"]]
+            if current["phase"] == "PRE":
+                marker = [(x, y - 6), (x - 6, y + 5), (x + 6, y + 5)]
+                draw.polygon(marker, fill=color, outline=(255, 255, 255, 255))
+            elif current["phase"] == "POST":
+                marker = [(x - 6, y - 5), (x + 6, y - 5), (x, y + 6)]
+                draw.polygon(marker, fill=color, outline=(255, 255, 255, 255))
+            else:
+                self._circle(draw, current["pca"], color, 255, 5.0, "#ffffff")
+            draw.text(
+                (8, self.height - 11),
+                str(current["phase"]),
+                fill=(17, 24, 39, 255),
+                font=self.font,
+            )
+        image = self.Image.fromarray(frame).convert("RGBA")
+        x = image.width - self.width - 18
+        image.alpha_composite(overlay, (x, 18))
+        return np.asarray(image.convert("RGB"))
+
+
+def render(
+    writer: Any,
+    renderer: mujoco.Renderer,
+    env: HuskyBfmOnlineEnv,
+    latent_inset: LatentInset | None = None,
+    case_id: str | None = None,
+    step: int | None = None,
+) -> None:
     renderer.update_scene(env.env.data, camera="robot/tracking")
-    writer.append_data(renderer.render())
+    frame = renderer.render()
+    if latent_inset is not None and case_id is not None and step is not None:
+        frame = latent_inset.annotate(frame, case_id, step)
+    writer.append_data(frame)
 
 
 def run_policy(
@@ -1261,6 +1802,8 @@ def run_policy(
     env: HuskyBfmOnlineEnv,
     steps: int,
     model_video: Path | None = None,
+    collect_latent: bool = False,
+    latent_projection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     z, ranges = tracking.encode(agent._model, tracking_key, 0, steps)
     if z.shape != (steps, 256) or not torch.isfinite(z).all():
@@ -1275,6 +1818,7 @@ def run_policy(
     qpos = np.asarray(raw["qpos"][reset], dtype=np.float64)
     qvel = np.asarray(raw["qvel"][reset], dtype=np.float64)
     writer = renderer = None
+    latent_inset = LatentInset(latent_projection) if model_video and latent_projection else None
     actual = []
     first_action = None
     terminated = truncated = False
@@ -1304,7 +1848,7 @@ def run_policy(
             diagnostics.update(transition.action_husky, env.env.data.qfrc_actuator)
             actual.append(dict(transition.raw_metadata))
             if writer:
-                render(writer, renderer, env)
+                render(writer, renderer, env, latent_inset, str(case["case_id"]), step)
             observation = transition.next_observation
             terminated, truncated = transition.terminated, transition.truncated
             if terminated or truncated:
@@ -1378,12 +1922,26 @@ def run_policy(
         "raw": raw,
         "metadata": metadata,
         "source_path": case["source_raw_npz"],
+        "latent": (
+            {
+                "z": z[: len(actual)].detach().cpu().numpy(),
+                "phases": phases,
+            }
+            if collect_latent
+            else None
+        ),
     }
 
 
-def render_expert(path: Path, run: Mapping[str, Any], frames: int) -> None:
+def render_expert(
+    path: Path,
+    run: Mapping[str, Any],
+    frames: int,
+    latent_projection: Mapping[str, Any] | None = None,
+) -> None:
     env = HuskyBfmOnlineEnv()
     writer = renderer = None
+    latent_inset = LatentInset(latent_projection) if latent_projection else None
     raw = run["raw"]
     reset = int(run["result"]["case"]["reset_raw_frame"])
     try:
@@ -1397,7 +1955,14 @@ def render_expert(path: Path, run: Mapping[str, Any], frames: int) -> None:
             env.env.data.qpos[:] = raw["qpos"][frame]
             env.env.data.qvel[:] = raw["qvel"][frame]
             mujoco.mj_forward(env.env.model, env.env.data)
-            render(writer, renderer, env)
+            render(
+                writer,
+                renderer,
+                env,
+                latent_inset,
+                str(run["result"]["case"]["case_id"]),
+                frame - reset - 1,
+            )
     finally:
         if writer:
             writer.close()
@@ -1673,6 +2238,8 @@ def invocation_config(
         "transition_lead_steps": LEAD_STEPS if args.command == "eval" else None,
         "formal_full_test": full_test,
         "formal_full_behavior": dict(full_behavior),
+        "latent_analysis": bool(getattr(args, "latent_analysis", False)),
+        "latent_inset": bool(getattr(args, "latent_inset", False)),
         "case_selection": dict(case_selection or {}),
         "protocol": (
             {
@@ -1803,8 +2370,13 @@ def parity_audit(
     }
 
 
-def write_expert_video(path: Path, run: Mapping[str, Any], steps: int) -> None:
-    render_expert(path, run, steps)
+def write_expert_video(
+    path: Path,
+    run: Mapping[str, Any],
+    steps: int,
+    latent_projection: Mapping[str, Any] | None = None,
+) -> None:
+    render_expert(path, run, steps, latent_projection)
 
 
 def write_summary_markdown(
@@ -2113,6 +2685,10 @@ def run_eval(args: argparse.Namespace) -> int:
             for name in selected_behaviors
         }
         raise RuntimeError(f"No eligible cases for {args.behavior}: {counts}")
+    print(
+        "Latent inset: "
+        + ("enabled (shared PCA over eval cases and prior)." if args.latent_inset else "disabled.")
+    )
     candidate_counts = selection["eligible_counts"]
     excluded = selection["excluded_reasons"]
     limit = args.max_cases_per_behavior
@@ -2176,6 +2752,7 @@ def run_eval(args: argparse.Namespace) -> int:
         env = HuskyBfmOnlineEnv()
         before = checkpoint_mutation(agent)
         rows = []
+        latent_runs = []
         try:
             for index, case in enumerate(cases):
                 source = records[str(case.get("transition_motion_key", case["motion_key"]))]
@@ -2189,6 +2766,7 @@ def run_eval(args: argparse.Namespace) -> int:
                     case,
                     env,
                     int(case["steps"]),
+                    collect_latent=args.latent_analysis or args.latent_inset,
                 )
                 result = run["result"]
                 result["checkpoint"] = {
@@ -2198,6 +2776,14 @@ def run_eval(args: argparse.Namespace) -> int:
                 }
                 result["load_report"] = load_report
                 rows.append(result)
+                if args.latent_analysis or args.latent_inset:
+                    latent_runs.append(
+                        {
+                            "case": dict(case),
+                            "z": run["latent"]["z"],
+                            "phases": run["latent"]["phases"],
+                        }
+                    )
                 print(f"\rEval {index + 1}/{len(cases)}", end="", flush=True)
         finally:
             env.close()
@@ -2293,6 +2879,29 @@ def run_eval(args: argparse.Namespace) -> int:
             "formal_full_behavior": full_behavior,
         }
         summary["task_metrics"] = task_metric_summary(summary["aggregation"])
+        latent_projection = None
+        if args.latent_analysis or args.latent_inset:
+            latent_projection = latent_render_projection(agent, latent_runs, args.seed)
+            if args.latent_analysis:
+                summary["latent_analysis"] = run_latent_analysis(
+                    root,
+                    agent,
+                    args.checkpoint.resolve(),
+                    args.split,
+                    cases,
+                    latent_runs,
+                    args.seed,
+                    latent_projection,
+                )
+            if args.latent_inset:
+                summary["latent_inset"] = {
+                    "enabled": True,
+                    "projection": "latent_projection.json",
+                    "overlay": "representative model.mp4 and expert.mp4",
+                }
+                write_latent_projection(root / "latent_projection.json", latent_projection)
+            if before != checkpoint_mutation(agent):
+                raise RuntimeError("Frozen model mutated during latent projection setup.")
         selected = select_representatives(rows)
         summary["representative_selection_rule"] = (
             "full completion first; closest joint MAE to category median; "
@@ -2317,6 +2926,7 @@ def run_eval(args: argparse.Namespace) -> int:
                     env=replay_env,
                     steps=int(case["steps"]),
                     model_video=videos / behavior / "model.mp4",
+                    latent_projection=latent_projection,
                 )
             finally:
                 replay_env.close()
@@ -2355,6 +2965,7 @@ def run_eval(args: argparse.Namespace) -> int:
                 videos / behavior / "expert.mp4",
                 run,
                 int(case["steps"]),
+                latent_projection,
             )
             write_json(videos / behavior / "case.json", case)
         summary["representative_replay"] = replay_checks
@@ -2370,6 +2981,7 @@ def run_eval(args: argparse.Namespace) -> int:
                 "formal_full_test": formal_full_test,
                 "cases": len(rows),
                 "output": str(output_root(args)),
+                "latent_inset": bool(args.latent_inset),
             },
             indent=2,
         )
@@ -2393,7 +3005,36 @@ def run_video(args: argparse.Namespace) -> int:
         root = output_root(args)
         root.mkdir(parents=True, exist_ok=True)
         videos = []
+        latent_projection = None
         try:
+            if args.latent_inset:
+                print("Latent inset: enabled (shared PCA over video cases and prior).")
+                latent_runs = []
+                for case in cases:
+                    source = records[str(case.get("transition_motion_key", case["motion_key"]))]
+                    raw, metadata, _ = resolver.load(source)
+                    run = run_policy(
+                        agent,
+                        tracking,
+                        case["case_id"],
+                        raw,
+                        metadata,
+                        case,
+                        env,
+                        case["steps"],
+                        collect_latent=True,
+                    )
+                    latent_runs.append(
+                        {
+                            "case": dict(case),
+                            "z": run["latent"]["z"],
+                            "phases": run["latent"]["phases"],
+                        }
+                    )
+                latent_projection = latent_render_projection(agent, latent_runs, args.seed)
+                write_latent_projection(root / "latent_projection.json", latent_projection)
+            else:
+                print("Latent inset: disabled.")
             for case in cases:
                 source = records[str(case.get("transition_motion_key", case["motion_key"]))]
                 raw, metadata, _ = resolver.load(source)
@@ -2408,9 +3049,15 @@ def run_video(args: argparse.Namespace) -> int:
                     env,
                     case["steps"],
                     video_path,
+                    latent_projection=latent_projection,
                 )
                 if args.with_expert:
-                    write_expert_video(root / f"{case['behavior']}_expert.mp4", run, case["steps"])
+                    write_expert_video(
+                        root / f"{case['behavior']}_expert.mp4",
+                        run,
+                        case["steps"],
+                        latent_projection,
+                    )
                 videos.append(
                     {
                         "behavior": case["behavior"],
@@ -2435,6 +3082,7 @@ def run_video(args: argparse.Namespace) -> int:
                 "bridge": bridge,
                 "training": False,
                 "test": False,
+                "latent_inset": bool(args.latent_inset),
             },
         )
     print(
