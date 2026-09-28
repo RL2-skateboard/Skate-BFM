@@ -1,6 +1,6 @@
 # 阶段04：足底—滑板接触、数据与学习实验
 
-版本：2026-09-28 / v4，替换原 `plan/04_contact.md`。
+版本：2026-09-28 / v4.1，替换原 `plan/04_contact.md`。
 项目与conda环境均为 `skate-sim`；开发位置为用户的 `workspace/skate-sim`。
 前置：阶段03已 ACCEPTED。先读 [计划总览](00_overview.md) 与 [公共执行规范](12_execution.md)。所有窗口、交互与可视化回放仍从根目录 `play.py` 启动。
 
@@ -132,7 +132,15 @@ Tanaka等，Spectral wear modelling of rubber friction on a hard substrate with 
 
 ## 4. 数据审计与目标材料补测
 
-用一个manifest记录：SOURCE_VERIFIED、DOWNLOADED、PARSED、QUALIFIED。当前调研支持说明页/字段核查，不能替OpenCode标数据已QUALIFIED。
+接触数据统一放在项目根目录下的 `data/contact/`，即用户的 `workspace/skate-sim/data/contact/`。OpenCode负责创建目录并将下载数据保存到这里，不默认改用外部路径或runs目录。按数据来源组织：
+
+- `data/contact/<source>/raw/`：下载的原始文件，保存后只读，不覆盖原始内容。
+- `data/contact/<source>/processed/`：单位统一、时间对齐后的数据及划分清单。
+- `data/contact/manifest.json`：各来源、版本、文件hash、许可、处理记录与审计状态。
+
+`<source>`使用简短来源标识，例如sens3、contactnets、mit_push。下载与处理数据默认不入Git，配置使用项目相对路径；加入对应忽略规则。拟合参数、模型权重和实验指标仍放在 `runs/04_fit/`，与数据分开保存。
+
+在上述manifest中记录：SOURCE_VERIFIED、DOWNLOADED、PARSED、QUALIFIED。当前调研支持说明页/字段核查，不能替OpenCode标数据已QUALIFIED。
 
 每份数据必须记录：
 - URL/DOI、版本/commit、许可、文件hash、大小、trial数与排除原因；代码许可不自动代表数据许可。
@@ -219,7 +227,7 @@ ContactNets实际学习距离/接触雅可比等隐式结构，并有专门接�
 | 根目录 `play.py` 与共享viewer | 唯一窗口入口，场景/数据/拟合曲线/回放 |
 | `configs/contact.yaml` | 数据源、划分、模型、参数边界、拟合和显示配置 |
 | 现有tests | 针对单位、梯度、泄漏、耗散等风险的短小持久回归 |
-| 外部路径或 `runs/04_data/` | 原始数据和转换缓存，默认不入git |
+| `data/contact/` | 按来源分raw/processed保存接触数据，统一审计清单，下载与处理数据默认不入git |
 | `runs/04_fit/` | 参数、模型权重、指标、manifest |
 
 contact.py建议提供load_trials、predict_contact、rollout_contact、fit_contact、evaluate_contact、ContactModel等少量清楚接口，按实际需要实现，不预造插件框架。
@@ -257,7 +265,7 @@ python -m skate_sim check --stage 04 --backend mujoco --suite native --output ru
 ### 数据与实验：CLI调用contact.py
 
 ```bash
-python -m skate_sim contact audit --config configs/contact.yaml --output runs/04_data
+python -m skate_sim contact audit --config configs/contact.yaml --output data/contact
 python -m skate_sim contact fit --method cem --config configs/contact.yaml --output runs/04_fit/cem
 python -m skate_sim contact fit --method diff --config configs/contact.yaml --output runs/04_fit/diff
 python -m skate_sim contact fit --method neural --config configs/contact.yaml --output runs/04_fit/neural
