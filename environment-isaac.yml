@@ -1,0 +1,11 @@
+name: skate-sim-isaac
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - wheel==0.45.1
+      - torch==2.7.0
+      - torchvision==0.22.0
+      - isaacsim[all,extscache]==5.1.0

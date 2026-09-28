@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skate-sim"
+version = "0.1.0"
+description = "Interactive multi-backend skateboard simulation workbench"
+requires-python = ">=3.11,<3.12"
+dependencies = []
+
+[project.optional-dependencies]
+mujoco = ["mujoco==3.11.0", "numpy>=1.26,<2.0"]
+mjlab = ["mjlab==1.6.0", "mujoco-warp==3.11.0"]
+isaac = ["isaacsim[all,extscache]==5.1.0"]
+
+[project.scripts]
+skate-sim = "skate_sim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

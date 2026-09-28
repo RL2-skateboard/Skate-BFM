@@ -1,0 +1,13 @@
+name: skate-sim-mjlab
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - wheel==0.47.0
+      - torch==2.7.0
+      - torchvision==0.22.0
+      - mujoco==3.11.0
+      - mjlab==1.6.0
+      - -e .
