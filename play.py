@@ -19,6 +19,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--replay")
     p.add_argument("--mode", choices=['visual'], default='visual')
     p.add_argument("--num-envs", type=int, default=1)
+    p.add_argument("--view-env", type=int, default=0)
     p.add_argument("--inspect", action="store_true")
     p.add_argument("--style", choices=["standard", "cruiser", "longboard", "street", "downhill"], default="standard")
     p.add_argument("--model", choices=["reduced", "truck"], default="truck")
@@ -40,8 +41,6 @@ def main() -> int:
         return 0
     if args.scene not in ("bench", "board", "gallery", "contact", "robot", "rider"):
         raise SystemExit("active workbench implements bench, board, gallery, contact, robot and rider scenes")
-    if args.num_envs != 1:
-        raise SystemExit("Current workbench supports --num-envs 1")
     extra = {}
     if args.experiment:
         if args.backend != "mujoco":
@@ -55,7 +54,8 @@ def main() -> int:
     backend = create_backend(args.backend, seed=args.seed, scene=args.scene, style=args.style,
                              inspect=args.inspect, controller=args.controller,
                              checkpoint=args.checkpoint, policy_task=args.policy_task,
-                             latent_name=args.latent_name, preset=args.preset, **extra)
+                             latent_name=args.latent_name, preset=args.preset,
+                             num_envs=args.num_envs, view_env=args.view_env, **extra)
     backend.paused = args.inspect
     recorder = Recorder(args.record, backend=args.backend, scene=args.scene, seed=args.seed)
     recorder.write("mode", controller=args.controller, preset=args.preset, policy_task=args.policy_task)
@@ -84,6 +84,10 @@ def main() -> int:
                     backend.switch_style(requested_style)
                 backend.render_web(board_hash(backend.board_style) if getattr(backend,"board_style",None) else "bench")
                 recorder.write("step",state=backend.get_state())
+                if not backend.paused:
+                    backend.step()
+                if args.duration is not None and backend.get_state()['time'] >= args.duration:
+                    break
                 time.sleep(.01)
         while getattr(backend, "is_running", lambda: backend.viewer is None or backend.viewer.is_running())():
             if getattr(backend, "viewer", None) is None and args.backend != "isaacsim":

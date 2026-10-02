@@ -24,28 +24,53 @@ class MjlabBackend(Backend):
     KEY_F, KEY_E = 70, 69
 
     def __init__(self, *, seed: int = 0, config: SimConfig | None = None,
-                 scene: str = "bench", style: str = "standard", inspect: bool = False):
+                 scene: str = "bench", style: str = "standard", inspect: bool = False,
+                 num_envs: int = 1, view_env: int = 0, controller: str = "none",
+                 checkpoint: str | None = None, policy_task: str = "reward",
+                 preset: str = "separate", **_: Any):
         import torch
         from mjlab.sim import Simulation, SimulationCfg
 
         self.config = config or SimConfig()
         self.scene = scene
         self.style = style
+        self.num_envs = int(num_envs)
+        self.view_env = int(view_env)
+        if self.num_envs < 1 or not 0 <= self.view_env < self.num_envs:
+            raise ValueError("view_env must be within [0, num_envs)")
+        if controller == "policy" and not checkpoint:
+            raise ValueError("mjlab policy controller requires --checkpoint")
+        if scene == "rider" and preset not in ("separate", "push_start", "steer_start"):
+            raise ValueError("unknown rider preset")
+        self.controller, self.preset, self.policy_task = controller, preset, policy_task
         self.board_style = board_styles(style)[style] if scene in ("board", "gallery") else None
         self._torch = torch
-        xml = build_board_xml(self.board_style, gallery=scene == "gallery") if self.board_style else self._xml()
-        self.spec = mujoco.MjSpec.from_string(xml)
+        scene_path = None
+        if self.board_style:
+            xml = build_board_xml(self.board_style, gallery=scene == "gallery")
+        elif scene == "contact":
+            from ..models.contact_scene import contact_xml
+            xml = contact_xml()
+        elif scene in ("robot", "rider"):
+            from ..models.robot import official_robot_scene, rider_scene
+            scene_path = rider_scene(style, preset) if scene == "rider" else official_robot_scene()
+            xml = scene_path.read_text(encoding="utf-8")
+        else:
+            xml = self._xml()
+        self.spec = mujoco.MjSpec.from_file(str(scene_path)) if scene_path else mujoco.MjSpec.from_string(xml)
         sim_cfg = SimulationCfg()
         sim_cfg.mujoco.timestep = self.config.physics_dt
         sim_cfg.nconmax = 256
-        self.sim = Simulation(num_envs=1, cfg=sim_cfg, spec=self.spec, device="cuda:0")
+        self.sim = Simulation(num_envs=self.num_envs, cfg=sim_cfg, spec=self.spec, device="cuda:0")
         self.viewer = None
         self.paused = inspect
         self._force = np.zeros(3, dtype=np.float64)
         self._mouse_force = np.zeros(3, dtype=np.float64)
         self._viewer_data = mujoco.MjData(self.sim.mj_model)
-        body_name = "deck" if self.board_style else "cube"
+        body_name = "deck" if self.board_style else ("pelvis" if scene in ("robot", "rider") else "foot" if scene == "contact" else "cube")
         self._body_id = self.sim.mj_model.body(body_name).id
+        self._nominal_qpos = self.sim.data.qpos.clone()
+        self._nominal_qvel = self.sim.data.qvel.clone()
         self.reset(seed)
         self._viser_server = None
         self._viser_viewer = None
@@ -92,8 +117,8 @@ class MjlabBackend(Backend):
         </mujoco>'''
 
     def _sync_viewer(self) -> None:
-        qpos = self.sim.data.qpos.cpu().numpy()
-        qvel = self.sim.data.qvel.cpu().numpy()
+        qpos = self.sim.data.qpos[self.view_env].cpu().numpy()
+        qvel = self.sim.data.qvel[self.view_env].cpu().numpy()
         self._viewer_data.qpos[:] = qpos
         self._viewer_data.qvel[:] = qvel
         self._viewer_data.xfrc_applied[:] = 0
@@ -103,9 +128,26 @@ class MjlabBackend(Backend):
     def reset(self, seed: int = 0, env_ids: Any = None) -> None:
         del seed
         ids = None if env_ids is None else self._torch.as_tensor(env_ids, dtype=self._torch.int64)
+        old_qpos = self.sim.data.qpos.clone()
+        old_qvel = self.sim.data.qvel.clone()
         self.sim.reset(ids)
         self._force[:] = 0
         self._mouse_force[:] = 0
+        if ids is None:
+            self.sim.data.qpos[:] = self._nominal_qpos
+            self.sim.data.qvel[:] = self._nominal_qvel
+        else:
+            self.sim.data.qpos[ids] = self._nominal_qpos[ids]
+            self.sim.data.qvel[ids] = self._nominal_qvel[ids]
+            mask = self._torch.ones(self.num_envs, dtype=self._torch.bool, device=self.sim.data.qpos.device)
+            mask[ids] = False
+            self.sim.data.qpos[mask] = old_qpos[mask]
+            self.sim.data.qvel[mask] = old_qvel[mask]
+        self.sim.forward()
+        if ids is not None:
+            self.sim.data.qpos[mask] = old_qpos[mask]
+            self.sim.data.qvel[mask] = old_qvel[mask]
+        self.sim.data.xfrc_applied[:] = 0
         self._pulse_steps = 0
         self._sync_viewer()
 
@@ -116,7 +158,7 @@ class MjlabBackend(Backend):
                 self.viewer.sync()
         self._mouse_force[:] = self._viewer_data.xfrc_applied[self._body_id, :3]
         total_force = self._mouse_force + self._force
-        self.sim.data.xfrc_applied[0, 1, :3] = self._torch.as_tensor(total_force, device=self.sim.data.xfrc_applied.device)
+        self.sim.data.xfrc_applied[self.view_env, self._body_id, :3] = self._torch.as_tensor(total_force, device=self.sim.data.xfrc_applied.device)
         self.sim.step()
         if self._pulse_steps > 0:
             self._pulse_steps -= 1
@@ -129,7 +171,7 @@ class MjlabBackend(Backend):
     def get_state(self) -> dict[str, Any]:
         return {"qpos": self.sim.data.qpos.cpu().numpy().copy(),
                 "qvel": self.sim.data.qvel.cpu().numpy().copy(),
-                "time": float(self.sim.data.time.cpu().numpy()[0])}
+                "time": float(self.sim.data.time[self.view_env].cpu().numpy())}
 
     def set_state(self, state: dict[str, Any]) -> None:
         self.sim.data.qpos[:] = self._torch.as_tensor(state["qpos"])
@@ -138,22 +180,23 @@ class MjlabBackend(Backend):
         self._sync_viewer()
 
     def apply_wrench(self, body: str, force: tuple[float, float, float], point=None) -> None:
-        expected = "deck" if self.board_style else "cube"
+        expected = "deck" if self.board_style else ("pelvis" if self.scene in ("robot", "rider") else "cube")
         if body != expected:
             raise ValueError(f"unknown body {body!r}; available: {expected}")
         self._force[:] = force
         self._pulse_steps = 0
 
     def diagnostics(self) -> dict[str, Any]:
-        body_name = "deck" if self.board_style else "cube"
+        body_name = "deck" if self.board_style else ("pelvis" if self.scene in ("robot", "rider") else "foot" if self.scene == "contact" else "cube")
         return {"backend": self.name, "version": mujoco.__version__, "object": body_name,
-                "sim_time": float(self.sim.data.time.cpu().numpy()[0]),
+                "sim_time": float(self.sim.data.time[self.view_env].cpu().numpy()),
+                "num_envs": self.num_envs, "view_env": self.view_env,
                 "cube_pos": self._viewer_data.xpos[1].tolist(),
                 "cube_vel": self._viewer_data.cvel[1, 3:].tolist(),
                 "force_world_N": (self._mouse_force + self._force).tolist(),
                 "keyboard_force_N": self._force.tolist(), "mouse_force_N": self._mouse_force.tolist(),
                 "mouse_body": body_name, "contacts": int(self._viewer_data.ncon),
-                "device": str(self.sim.device)}
+                "device": str(self.sim.device), "physics_owner": "mjlab.mujoco_warp"}
 
     def render(self) -> bool:
         if self.viewer is None:
