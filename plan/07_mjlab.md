@@ -28,7 +28,7 @@ mjlab使用自身环境/实体/场景生命周期；可复用MuJoCo资产与共�
 ```bash
 python play.py --backend mjlab --scene board --num-envs 1 --record runs/07_board
 python play.py --backend mjlab --scene contact --experiment pull --num-envs 1 --record runs/07_contact
-python play.py --backend mjlab --scene rider --controller pose --preset free --num-envs 1 --record runs/07_rider
+python play.py --backend mjlab --scene rider --controller pose --preset steer_start --num-envs 1 --record runs/07_rider
 python play.py --backend mjlab --scene rider --controller policy --checkpoint /absolute/path/model.pt --num-envs 64 --view-env 7 --record runs/07_batch
 python -m skate_sim check --stage 07 --backend mjlab --num-envs 64 --checkpoint /absolute/path/model.pt --output runs/07_check
 ```
@@ -56,4 +56,3 @@ python -m skate_sim check --stage 07 --backend mjlab --num-envs 64 --checkpoint 
 出现差异先依次查模型参数、state indexing、控制时序、接触设置与求解器。修共享逻辑后复测MuJoCo。用户确认后进入08。
 
 参考：[mjlab代码和官方示例](https://github.com/mujocolab/mjlab)、[架构](https://mujocolab.github.io/mjlab/main/source/architecture_overview.html)、[MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/)。
-

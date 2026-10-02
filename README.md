@@ -14,7 +14,9 @@ Isaac Sim 已按用户决定从当前交付范围移除，不是活动依赖，�
 | 01 | ACCEPTED | MuJoCo/mjlab bench、暂停、步进、外力、重置、记录 |
 | 02 | ACCEPTED | 五种参数化滑板、gallery、资产检查、鼠标扰动 |
 | 03 | ACCEPTED | truck/reduced、coast、release、turn、drop、收敛、回放 |
-| 04 | NEXT | 足底—滑板接触实验台 |
+| 04 | WAITING_REVIEW | 足底—滑板接触实验台 |
+| 05 | WAITING_REVIEW | 29DoF contract、官方G1资产、BFM ONNX地面烟测 |
+| 06 | WAITING_REVIEW | G1+真实滑板 MuJoCo rider slice |
 
 阶段记录：
 
@@ -77,8 +79,8 @@ python play.py --backend mjlab --scene bench --seed 0 --record runs/01_mjlab
 自动检查：
 
 ```bash
-python -m skate_sim check --stage 01 --backend mujoco --output runs/01_check_mujoco
-python -m skate_sim check --stage 01 --backend mjlab --output runs/01_check_mjlab
+python -m skate_sim doctor --backend mujoco
+python -m skate_sim doctor --backend mjlab
 ```
 
 ## 阶段 02：资产
@@ -109,7 +111,7 @@ python play.py --backend mujoco --scene gallery --style standard --inspect --rec
 资产检查：
 
 ```bash
-python -m skate_sim check --stage 02 --backend mujoco --output runs/02_check
+python -m skate_sim build --asset board --style all
 ```
 
 资产配置唯一来源是 [board.py](src/skate_sim/models/board.py)。当前模型包含圆角分段板面、前后翘起、前后 truck、四个轮子、wheel/truck/deck anchors 和独立 gallery 障碍。
@@ -162,7 +164,7 @@ python play.py --backend mujoco --scene board --model truck --experiment drop --
 阶段检查：
 
 ```bash
-python -m skate_sim check --stage 03 --backend mujoco --styles all --output runs/03_check
+python play.py --backend mujoco --scene board --model truck --experiment coast --duration 10 --record runs/03_coast
 ```
 
 当前实验参数位于 [dynamics.py](src/skate_sim/physics/dynamics.py)，模型说明位于 [physics.md](docs/physics.md)。窗口显示板面 roll、前后 steer、轮速、接触、机械能、外力做功和轨迹。
@@ -187,7 +189,19 @@ runs/name/events.jsonl
 
 ## 阶段 04
 
-阶段 04 的目标是足底—滑板接触实验台，包含：
+接触实验台命令：
+
+```bash
+python play.py --backend mujoco --scene contact --experiment pull --record runs/04_pull
+python play.py --backend mujoco --scene contact --experiment twist --record runs/04_twist
+python play.py --backend mujoco --scene contact --experiment unload --record runs/04_unload
+python play.py --backend mujoco --scene contact --experiment freeboard --record runs/04_freeboard
+python play.py --backend mujoco --scene contact --experiment pull --duration 5 --record runs/04_pull
+```
+
+窗口中 `A/D` 调整拉力，`T/Y` 调整扭矩，`E` 释放外力，`Space/N/M/R` 保持通用控制。
+
+接触实验台包含：
 
 - 可动足垫
 - 法向加载
@@ -198,7 +212,68 @@ runs/name/events.jsonl
 - 固定板/自由板对照
 - 接触力、相对速度和摩擦功率记录
 
-阶段 04 计划见 [plan/04_contact.md](plan/04_contact.md)。README 中的阶段 04 命令只有在对应代码实现和检查通过后才会加入。
+阶段 04 计划见 [plan/04_contact.md](plan/04_contact.md)，阶段记录见 [docs/stages/04.md](docs/stages/04.md)。当前原生 baseline 已实现，真实数据拟合尚未启用；用户窗口验收后才能进入阶段 05。
+
+## 阶段 05：29DoF ground contract
+
+已实现 checkpoint-independent 的 29DoF joint contract、history/reset 状态、
+PD torque helper 和 ground inspection robot：
+
+```bash
+python play.py --backend mujoco --scene robot --inspect --record runs/05_robot_inspect
+```
+
+Pose baseline（不调用 BFM，使用官方 G1 资产和逐关节 PD）：
+
+```bash
+python play.py --backend mujoco --scene robot --controller pose --duration 10 --record runs/05_pose
+```
+
+真实 BFM ONNX 已下载到 gitignored 的 `checkpoints/bfm-zero/`。推理输入为
+721 维 `float32`，输出为 29 维 action；每个 2 ms 物理步按当前 q/dq
+重新计算逐关节 PD torque，20 ms 控制边界更新一次 action：
+
+```bash
+python play.py --backend mujoco --scene robot --controller policy \
+  --policy-task reward --latent-name move-ego-0-0 \
+  --checkpoint checkpoints/bfm-zero --duration 30 --record runs/05_bfm_reward
+
+python play.py --backend mujoco --scene robot --controller policy \
+  --policy-task tracking --checkpoint checkpoints/bfm-zero \
+  --duration 30 --record runs/05_bfm_tracking
+
+python play.py --backend mujoco --scene robot --controller policy \
+  --policy-task goal --latent-name walk3_subject3_9044 \
+  --checkpoint checkpoints/bfm-zero --duration 30 --record runs/05_bfm_goal
+```
+
+Reward 使用 `move-ego-0-0`；tracking 使用 `zs_walking.pkl` 的单个 256 维
+时间帧；goal 使用 `goal_reaching.pkl` 中显式指定的公开名称。goal 文件没有
+T-pose，T-pose 只能用 pose baseline 验证。
+
+阶段 05 控制链路已通过实际记录验证：pose/reward/tracking/goal 运行均有
+非零 action、非零 qfrc_applied、持续 q/dq 变化，且
+`torque_injection_error=0`。policy 更新 cadence 为 20 ms，PD 在每个 2 ms
+physics substep 重算。自由基座下的最终位移/跌倒仍属于当前策略与初始化
+在新 ground 任务上的表现，不再被报告为接口链路错误。
+
+详见 [docs/robot.md](docs/robot.md) 和 [docs/stages/05.md](docs/stages/05.md)。
+
+## 阶段 06：G1 + 滑板
+
+```bash
+python play.py --backend mujoco --scene rider --controller none --preset separate --duration 5 --record runs/06_separate
+python play.py --backend mujoco --scene rider --controller pose --preset push_start --duration 10 --record runs/06_push_start
+python play.py --backend mujoco --scene rider --controller pose --preset steer_start --duration 10 --record runs/06_steer_start
+python play.py --backend mujoco --scene rider --controller policy --policy-task reward --checkpoint checkpoints/bfm-zero --preset steer_start --duration 30 --record runs/06_policy
+python play.py --replay runs/06_policy --mode visual
+```
+
+`separate`、`push_start`、`steer_start` 是唯一三种 rider 物理初始状态。
+它们不生成支撑杆、支撑弹簧、固定约束或竖直辅助稳定力；启动时会输出
+编译后 pelvis、脚、deck、ground 和接触对证据。
+当前 BFM latent 不是滑板任务策略，摔倒会如实记录，不代表环境接口失败。
+窗口验收见 [docs/stages/06.md](docs/stages/06.md)。
 
 ## 故障排查
 

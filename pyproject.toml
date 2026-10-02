@@ -11,7 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 mujoco = ["mujoco==3.11.0", "numpy>=1.26,<2.0"]
-mjlab = ["mjlab==1.6.0", "mujoco-warp==3.11.0"]
+mjlab = ["mjlab==1.6.0", "mujoco-warp==3.11.0", "onnxruntime>=1.18,<2", "joblib>=1.3,<2"]
 isaac = ["isaacsim[all,extscache]==5.1.0"]
 
 [project.scripts]

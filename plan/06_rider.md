@@ -16,7 +16,7 @@
 2. 检查初始脚底穿透/悬空、板与机器人自碰撞、左右足与板碰撞过滤。
 3. 将阶段04的有效接触对接入真实机器人足底，重新测载荷与滑移；不能因脚的真实名字含ankle而漏掉材料赋值。
 4. 控制模式分离：none（不施机器人驱动力矩）、pose（PD姿态）、policy（加载指定小脑基座checkpoint的真实推理）。动作/事件回放统一通过 `play.py --replay ... --mode dynamics`，不另设replay控制器入口。zero action 不等于 none，零动作可能对应默认姿态PD。
-5. 场景preset分离：free（无辅助）、supported（明确的安全夹具演示）、fixture（隔离微基准）。窗口醒目标注，不允许录像裁掉标识。
+5. 场景preset严格分离为 separate、push_start、steer_start，不生成辅助支撑。
 6. 全局可见量与actor输入分离：board状态、接触诊断不未经模型许可塞进已训练BFM actor。
 7. 定义跌倒/脱板/超范围等条件，区分terminated与时间上限truncated。检视模式允许不自动reset，展示失败原因与接触。
 8. 实现真实记录与回放：状态用于视觉回放；动作、事件、初值用于动力学重放。记录版本和环境参数，不能只存board_speed。
@@ -25,19 +25,20 @@
 ## 测试命令
 
 ```bash
-python play.py --backend mujoco --scene rider --controller pose --preset supported --record runs/06_supported
-python play.py --backend mujoco --scene rider --controller pose --preset free --record runs/06_free
-python play.py --backend mujoco --scene rider --controller policy --preset free --checkpoint /absolute/path/model.pt --record runs/06_policy
+python play.py --backend mujoco --scene rider --controller none --preset separate --record runs/06_separate
+python play.py --backend mujoco --scene rider --controller pose --preset push_start --record runs/06_push_start
+python play.py --backend mujoco --scene rider --controller pose --preset steer_start --record runs/06_steer_start
+python play.py --backend mujoco --scene rider --controller policy --preset steer_start --checkpoint /absolute/path/model.onnx --record runs/06_policy
 python play.py --replay runs/06_free --mode visual
 python play.py --replay runs/06_free --mode dynamics --backend mujoco
 python -m skate_sim check --stage 06 --backend mujoco --checkpoint /absolute/path/model.pt --output runs/06_check
 ```
 
-supported用于便于查看与操作，不计入无辅助动力学通过证据。若无任务策略导致policy不能稳定上板，应展示实际失败并记录策略边界，不虚构成功，也不把训练工程重新塞回本项目。
+若无任务策略导致policy不能稳定上板，应展示实际失败并记录策略边界，不虚构成功，也不把训练工程重新塞回本项目。
 
 ## 用户验收流程
 
-1. supported中看脚与板接触，推板/推躯干分别响应，确认作用对象正确。
+1. 三个 preset 中看脚与板/地面接触，推板/推躯干分别响应，确认作用对象正确。
 2. 释放辅助转为free或重新启动free，窗口清楚显示辅助已撤销。
 3. 给板一个小脉冲，观察板、轮与脚相对运动；修改摩擦后对照滑移变化。
 4. 推机器人看脚板载荷变化；若摔倒，接触/终止诊断指出实际原因。

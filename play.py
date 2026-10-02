@@ -22,7 +22,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--inspect", action="store_true")
     p.add_argument("--style", choices=["standard", "cruiser", "longboard", "street", "downhill"], default="standard")
     p.add_argument("--model", choices=["reduced", "truck"], default="truck")
-    p.add_argument("--experiment", choices=["manual", "coast", "lean", "release", "turn", "drop"])
+    p.add_argument("--experiment", choices=["manual", "coast", "lean", "release", "turn", "drop", "pull", "twist", "unload", "freeboard"])
+    p.add_argument("--contact-model", choices=["native"], default="native")
+    p.add_argument("--controller", choices=["none", "pose", "policy"], default="none")
+    p.add_argument("--checkpoint")
+    p.add_argument("--policy-task", choices=["reward", "tracking", "goal"], default="reward")
+    p.add_argument("--latent-name")
+    p.add_argument("--preset", choices=["separate", "push_start", "steer_start"], default="separate")
     return p
 
 
@@ -32,31 +38,41 @@ def main() -> int:
         from skate_sim.replay import replay
         replay(args.replay)
         return 0
-    if args.scene not in ("bench", "board", "gallery"):
-        raise SystemExit("stage 02 currently implements bench, board, and gallery scenes")
+    if args.scene not in ("bench", "board", "gallery", "contact", "robot", "rider"):
+        raise SystemExit("active workbench implements bench, board, gallery, contact, robot and rider scenes")
     if args.num_envs != 1:
         raise SystemExit("Current workbench supports --num-envs 1")
     extra = {}
     if args.experiment:
-        if args.backend != "mujoco" or args.scene != "board":
-            raise SystemExit("Stage 03 experiments currently require --backend mujoco --scene board")
+        if args.backend != "mujoco":
+            raise SystemExit("active experiments require MuJoCo")
         from skate_sim.physics.dynamics import experiment_config
         from dataclasses import asdict
-        extra = dict(dynamics=asdict(experiment_config(args.model, args.experiment)),
-                     experiment=args.experiment)
+        if args.scene == "contact":
+            extra = dict(experiment=args.experiment, contact_model=args.contact_model)
+        else:
+            extra = dict(dynamics=asdict(experiment_config(args.model, args.experiment)), experiment=args.experiment)
     backend = create_backend(args.backend, seed=args.seed, scene=args.scene, style=args.style,
-                             inspect=args.inspect, **extra)
+                             inspect=args.inspect, controller=args.controller,
+                             checkpoint=args.checkpoint, policy_task=args.policy_task,
+                             latent_name=args.latent_name, preset=args.preset, **extra)
     backend.paused = args.inspect
     recorder = Recorder(args.record, backend=args.backend, scene=args.scene, seed=args.seed)
+    recorder.write("mode", controller=args.controller, preset=args.preset, policy_task=args.policy_task)
     if args.experiment:
         recorder.write("experiment", model=args.model, experiment=args.experiment,
-                       dynamics=extra["dynamics"], initial_state=backend.get_state())
+                       dynamics=extra.get("dynamics", {}), contact_model=args.contact_model,
+                       initial_state=backend.get_state())
+    if args.scene == "rider":
+        recorder.write("mode", controller=args.controller, preset=args.preset,
+                       policy_task=args.policy_task, latent_name=args.latent_name)
+        recorder.write("rider_init", **backend.rider_initial_state())
     if args.scene in ("board", "gallery"):
         from skate_sim.models.board import board_hash
         print(backend.board_style.as_dict(), "hash=", board_hash(backend.board_style), flush=True)
         print("Inspection: Space dynamics/pause; 1/2/3/4 rotate individual wheels while paused; V transparent; J joint axes; R reset", flush=True)
         recorder.write("asset", config=backend.board_style.as_dict(), config_hash=board_hash(backend.board_style))
-    print(f"skate-sim | backend={args.backend} | scene={args.scene} | Space pause, N physics step, M control step, R reset, F: +X 20N for 0.2s (MuJoCo/mjlab), E release")
+    print(f"skate-sim | backend={args.backend} | scene={args.scene} | controller={args.controller} task={args.policy_task} | Space pause, N physics step, M control step, R reset, F push, E release | contact: A/D pull, T/Y twist")
     try:
         next_frame = time.perf_counter()
         if args.backend == "mjlab":

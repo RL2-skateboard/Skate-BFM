@@ -13,6 +13,7 @@
 ## 必须锁定的合同
 
 写 configs/robot.yaml 与 docs/robot.md，包含：
+
 - checkpoint 路径/hash、来源、模型结构、命令/latent 的合法构造方式。
 - 29关节的官方顺序与每后端名称映射，腕部6DoF不裁掉、不补零代替。
 - 默认姿态、action scale/clip、PD gain、effort/velocity/position limits。
@@ -66,4 +67,3 @@ checkpoint 参数为示例占位；交付时须提供实际绝对路径或明确
 用户确认地面可视化与BFM链路后进入06。
 
 参考：[BFM-Zero](https://github.com/LeCAR-Lab/BFM-Zero)、[官方权重](https://huggingface.co/LeCAR-Lab/BFM-Zero)。固定版本历史处理、控制和观测参考路径见 [资料清单](11_references.md)。
-
