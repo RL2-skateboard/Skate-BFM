@@ -60,7 +60,8 @@ class MjlabBackend(Backend):
         self.spec = mujoco.MjSpec.from_file(str(scene_path)) if scene_path else mujoco.MjSpec.from_string(xml)
         sim_cfg = SimulationCfg()
         sim_cfg.mujoco.timestep = self.config.physics_dt
-        sim_cfg.nconmax = 256
+        sim_cfg.nconmax = 512
+        sim_cfg.njmax = 512
         self.sim = Simulation(num_envs=self.num_envs, cfg=sim_cfg, spec=self.spec, device="cuda:0")
         self.viewer = None
         self.paused = inspect
@@ -86,7 +87,7 @@ class MjlabBackend(Backend):
         self.config=config or SimConfig(); self._torch=torch; self.scene=scene; self.style=style
         self.board_style=board_styles(style)[style]
         self.spec=mujoco.MjSpec.from_string(build_board_xml(self.board_style,gallery=scene=="gallery"))
-        sim_cfg=SimulationCfg(nconmax=256); sim_cfg.mujoco.timestep=self.config.physics_dt
+        sim_cfg=SimulationCfg(nconmax=512, njmax=512); sim_cfg.mujoco.timestep=self.config.physics_dt
         self.sim=Simulation(num_envs=1,cfg=sim_cfg,spec=self.spec,device="cuda:0")
         self.viewer=None; self.paused=True; self._force=np.zeros(3); self._mouse_force=np.zeros(3)
         self._pulse_steps=0; self._viewer_data=mujoco.MjData(self.sim.mj_model)
@@ -172,6 +173,33 @@ class MjlabBackend(Backend):
         return {"qpos": self.sim.data.qpos.cpu().numpy().copy(),
                 "qvel": self.sim.data.qvel.cpu().numpy().copy(),
                 "time": float(self.sim.data.time[self.view_env].cpu().numpy())}
+
+    def rider_initial_state(self) -> dict[str, Any]:
+        """Return the selected GPU environment's compiled rider summary."""
+        if self.scene != "rider":
+            raise ValueError("rider_initial_state requires scene=rider")
+        model = self.sim.mj_model
+        data = self._viewer_data
+        pelvis = model.body("pelvis").id
+        deck = model.body("deck").id
+        left = model.body("left_ankle_roll_link").id
+        right = model.body("right_ankle_roll_link").id
+        deck_joint = model.joint("deck_free")
+        dq = int(deck_joint.dofadr[0])
+        return {
+            "preset": self.preset,
+            "backend": self.name,
+            "physics_owner": "mjlab.mujoco_warp",
+            "device": str(self.sim.device),
+            "pelvis_position": data.xpos[pelvis].tolist(),
+            "left_foot_position": data.xpos[left].tolist(),
+            "right_foot_position": data.xpos[right].tolist(),
+            "deck_position": data.xpos[deck].tolist(),
+            "board_linear_velocity": self.sim.data.qvel[self.view_env, dq:dq + 3].cpu().tolist(),
+            "board_angular_velocity": self.sim.data.qvel[self.view_env, dq + 3:dq + 6].cpu().tolist(),
+            "contact_count": int(data.ncon),
+            "termination": False,
+        }
 
     def set_state(self, state: dict[str, Any]) -> None:
         self.sim.data.qpos[:] = self._torch.as_tensor(state["qpos"])
@@ -270,7 +298,7 @@ class MjlabBackend(Backend):
         old_style = self.style
         new_style = board_styles(style)[style]
         new_spec = mujoco.MjSpec.from_string(build_board_xml(new_style, gallery=self.scene == "gallery"))
-        sim_cfg = SimulationCfg(nconmax=256)
+        sim_cfg = SimulationCfg(nconmax=512, njmax=512)
         sim_cfg.mujoco.timestep = self.config.physics_dt
         new_sim = Simulation(num_envs=1, cfg=sim_cfg, spec=new_spec, device="cuda:0")
 
