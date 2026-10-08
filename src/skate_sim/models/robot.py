@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import tempfile
 from pathlib import Path
 
 from ..robot.contract import G1_29_JOINTS
@@ -39,7 +40,7 @@ def official_robot_scene() -> Path:
     return path
 
 
-def rider_scene(style: str = "standard", preset: str = "separate") -> Path:
+def rider_scene(style: str = "standard", preset: str = "separate", dynamics=None) -> Path:
     """Compose the official G1 free-base asset with a real movable board.
 
     The board and the G1 remain independent bodies. Presets only choose their
@@ -48,7 +49,7 @@ def rider_scene(style: str = "standard", preset: str = "separate") -> Path:
     import xml.etree.ElementTree as ET
     from .board import board_styles, build_board_xml
     robot_root = ET.parse(official_robot_scene()).getroot()
-    board_root = ET.fromstring(build_board_xml(board_styles(style)[style]))
+    board_root = ET.fromstring(build_board_xml(board_styles(style)[style], dynamics=dynamics or {}))
     robot_asset = robot_root.find("asset")
     board_asset = board_root.find("asset")
     for asset_child in list(board_asset):
@@ -69,6 +70,8 @@ def rider_scene(style: str = "standard", preset: str = "separate") -> Path:
     # The deploy MJCF has finite foot contact proxies attached below each
     # ankle-roll body (the four named dummy_l{f,r}_* bodies). Keep those
     # contacts and add no auxiliary support geometry.
-    out = Path(__file__).parents[3] / "assets" / "robot" / "g1" / f"rider_{style}_{preset}.xml"
-    out.write_text(ET.tostring(robot_root, encoding="unicode"), encoding="utf-8")
-    return out
+    asset_dir = Path(__file__).parents[3] / "assets" / "robot" / "g1"
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".xml",
+                                     prefix=".rider-", dir=asset_dir, delete=False) as file:
+        file.write(ET.tostring(robot_root, encoding="unicode"))
+        return Path(file.name)

@@ -21,7 +21,7 @@
 
 - `src/skate_sim/__main__.py` 与 `cli.py`：非可视化工具。
 - `viewer.py`、`record.py`、`config.py`：共用可视化/事件/记录/配置。
-- `backends/{base,mujoco,mjlab,isaacsim}.py`：后端wrapper及生命周期。
+- `backends/{base,mujoco,mjlab}.py`：后端wrapper及生命周期。
 - `models/{board,robot,scene}.py`：参数化资产与场景。
 - `control/{actions,observations,policy}.py`：控制与基座模型最小适配。
 - `physics/{contact,randomize,calibrate}.py`：确实需要时再创建。
@@ -33,9 +33,9 @@
 
 ## 3. 唯一可视化入口：play.py
 
-所有阶段、所有后端、所有实时交互、资产检视、接触实验、参数对比与可视化回放都由根目录 `play.py` 启动。不得要求用户直接运行mjlab原生play、Isaac独立示例、另一份viewer.py或单独的replay.py。内部可以复用原生viewer和启动器；浏览器型viewer也由play.py启动服务并给出地址，不要求第二个启动脚本。
+所有阶段、所有后端、所有实时交互、资产检视、接触实验、参数对比与可视化回放都由根目录 `play.py` 启动。不得要求用户直接运行mjlab原生play、另一份viewer.py或单独的replay.py。内部可以复用原生viewer；浏览器型viewer也由play.py启动服务并给出地址，不要求第二个启动脚本。
 
-`play.py` 只做参数解析/后端懒加载/调用共享执行逻辑，不能把全部项目堆进一个长脚本。Isaac需先初始化应用再导入特定模块，未选中后端不导入它。三个后端同处conda环境，但每次窗口使用独立进程，避免运行时污染。
+`play.py` 只做参数解析/后端懒加载/调用共享执行逻辑，不能把全部项目堆进一个长脚本。两个后端同处conda环境，但每次窗口使用独立进程，避免运行时污染。
 
 目标命令（不是空目录当前已有能力）：
 
@@ -43,18 +43,17 @@
 conda activate skate-sim
 python play.py --backend mujoco --scene board
 python play.py --backend mjlab --scene board
-python play.py --backend isaacsim --scene board
 python play.py --backend mujoco --scene rider --controller policy --checkpoint /absolute/path/model.pt
 python play.py --replay runs/example --mode visual
 python play.py --replay runs/example --mode dynamics --backend mujoco
 ```
 
-- `--backend`：mujoco/mjlab/isaacsim，默认mujoco。
+- `--backend`：mujoco/mjlab，默认mujoco。
 - `--scene`：bench/board/contact/robot/rider/gallery，逐阶段实现，未实现时明确报错；默认board在02后可用。
 - `--controller`：none/pose/joint/policy；policy读取checkpoint，项目名称不随模型变化。
 - `--replay`配合`--mode visual|dynamics`；回放后端/场景默认读取记录，显式指定冲突时拒绝并说明。
 - 各阶段需要的style/model/experiment/inspect/preset/num-envs/view-env/params/randomize/seed/record参数实际接入，不保留空开关。
-- `--help`在没有任何引擎或GPU时仍能显示，不能先导入Isaac再打印帮助。
+- `--help`在没有任何引擎或GPU时仍能显示，不能先导入后端再打印帮助。
 
 非可视化工具用 `python -m skate_sim doctor|build|check|report|calibrate`。它们可以生成数字、文件和静态报告，但凡要求用户看场景/曲线或操作窗口，仍使用 `play.py`。如校准曲线需要交互查看，在play.py对应experiment面板或回放叠加中显示；不另造仪表盘入口。
 
@@ -64,7 +63,7 @@ python play.py --replay runs/example --mode dynamics --backend mujoco
 
 ## 4. 缺依赖时安装并迭代
 
-普通软件/依赖缺失已经属于执行任务：检查→选择同环境兼容版本→安装→pip check/导入→真实应用启动→play.py集成验证。阶段01负责conda、MuJoCo、mjlab、Isaac Sim及必要Isaac Lab；后续阶段负责修复新引入/损坏的依赖。不是发现未安装就交给用户自行解决。
+普通软件/依赖缺失已经属于执行任务：检查→选择同环境兼容版本→安装→pip check/导入→真实应用启动→play.py集成验证。阶段01负责conda、MuJoCo和mjlab；后续阶段负责修复新引入/损坏的依赖。不是发现未安装就交给用户自行解决。
 
 先查硬件/OS/驱动/GLIBC/磁盘/显示和官方兼容表；不要盲目混装最新版本。默认只用conda `skate-sim`，不默认新增环境、不改系统Python、不改其他项目环境。版本发生冲突时先求解兼容版本并验证；确实无法满足同环境要求时提交准确冲突证据与最小调整建议，不偷偷改名或丢弃后端。
 
@@ -101,7 +100,7 @@ python play.py --replay runs/example --mode dynamics --backend mujoco
 
 OpenCode 不得自行把 WAITING_REVIEW 改为 ACCEPTED。用户已明确确认相应可见行为时可记录确认。一次交付只推进到当前允许关卡，不能提前生成大量未验证的后续模块。
 
-每次迭代在同一份阶段记录追加：问题/触发命令/seed/截图时间点/原因/修复 commit/复测结果。修模型后重跑受影响的上游回归；修共享 action/obs 后三个后端都复测。不得以“先跳过”“以后补上”关闭必需项。
+每次迭代在同一份阶段记录追加：问题/触发命令/seed/截图时间点/原因/修复 commit/复测结果。修模型后重跑受影响的上游回归；修共享 action/obs 后两个活动后端都复测。不得以“先跳过”“以后补上”关闭必需项。
 
 计划中的数值门槛是待阶段开工时冻结的工程起点，不是测量事实。OpenCode须在正式测试前登记指标、单位、绝对/相对误差算法、样本与阈值。测试失败后不得单纯放宽阈值获取通过；有物理理由需要调整时，向用户说明并取得确认，再重跑相关验收。
 
@@ -109,7 +108,7 @@ OpenCode 不得自行把 WAITING_REVIEW 改为 ACCEPTED。用户已明确确认�
 
 ## 7. 总交付边界
 
-必须交付三后端的可交互板单体和板＋机器人、29DoF BFM 数据链路、多个板样式、独立可展示的障碍资产、可用的记录回放、工程级参数与随机化机制。真实 BFM checkpoint 必須实际运行，不能只用零动作冒充模型兼容。
+必须交付两个活动后端的可交互板单体和板＋机器人、29DoF BFM 数据链路、多个板样式、独立可展示的障碍资产、可用的记录回放、工程级参数与随机化机制。真实 BFM checkpoint 必須实际运行，不能只用零动作冒充模型兼容。
 
 “不承诺未经训练的 BFM 自动掌握滑板技能”：环境适配与策略能力分开验收；失败/摔倒可用于检验碰撞和终止，但不得用它冒充稳定骑行演示。稳定演示可用明确标注的姿态控制/辅助夹具；正式物理验收必须去除辅助。要交付自主稳定骑行须另有任务策略或明确扩展训练范围。
 
@@ -117,4 +116,4 @@ OpenCode 不得自行把 WAITING_REVIEW 改为 ACCEPTED。用户已明确确认�
 
 ## 8. 变更原则
 
-本套v3的目录、名称、play.py及conda约定覆盖上一版；原始29DoF/action适配、三wrapper、多板样式、被动动力学、脚板摩擦、障碍资产、sim2real方法研究、README与代码整洁要求保持有效。不得为了满足单入口而复制物理逻辑，也不得为了项目独立命名而删除基座适配或引用来源。
+本套v3的目录、名称、play.py及conda约定覆盖上一版；原始29DoF/action适配、双wrapper、多板样式、被动动力学、脚板摩擦、障碍资产、sim2real方法研究、README与代码整洁要求保持有效。不得为了满足单入口而复制物理逻辑，也不得为了项目独立命名而删除基座适配或引用来源。

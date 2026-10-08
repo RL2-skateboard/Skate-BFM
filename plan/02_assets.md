@@ -2,7 +2,7 @@
 
 共同约定：项目名与 conda 环境名均为 `skate-sim`；工作目录为用户的 `workspace/skate-sim`，计划位于 `plan/`。先读 [计划总览](00_overview.md) 与 [执行规范](12_execution.md)。下列命令均在项目根目录执行，先 `conda activate skate-sim`；所有窗口、交互及可视化回放只从根目录 `play.py` 启动。
 
-前置：阶段01已 ACCEPTED。主开发窗口：MuJoCo；mjlab/Isaac 的实际资产移植分别在07/08验收。
+前置：阶段01已 ACCEPTED。主开发窗口：MuJoCo；mjlab 的实际资产移植在07验收。
 
 ## 目标与可见成果
 

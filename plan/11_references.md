@@ -10,9 +10,8 @@
 | BFM-Zero         | https://github.com/LeCAR-Lab/BFM-Zero                                                                                                                             | 模型、控制、观测和对应资产的权威实现                       |
 | BFM权重            | https://huggingface.co/LeCAR-Lab/BFM-Zero                                                                                                                         | 仅测试所需权重；核对配置/hash/许可                     |
 | BFM参考机器人配置       | https://github.com/LeCAR-Lab/BFM-Zero/tree/318cf44a3262e5bdec5944f82f1a5f509b95d09b/humanoidverse/config/robot/g1                                                 | 区分不同waist/effort版本，不能混用                  |
-| BFM参考资产          | https://github.com/LeCAR-Lab/BFM-Zero/tree/318cf44a3262e5bdec5944f82f1a5f509b95d09b/humanoidverse/data/robots/g1                                                  | 检查MJCF/USD/mesh与LFS完整性                   |
+| BFM参考资产          | https://github.com/LeCAR-Lab/BFM-Zero/tree/318cf44a3262e5bdec5944f82f1a5f509b95d09b/humanoidverse/data/robots/g1                                                  | 检查MJCF/mesh与LFS完整性                   |
 | BFM控制/观测实现       | https://github.com/LeCAR-Lab/BFM-Zero/blob/318cf44a3262e5bdec5944f82f1a5f509b95d09b/humanoidverse/envs/legged_base_task/legged_robot_base.py                      | 控制子步、坐标变换、history拼接；配套history_handler一起查 |
-| BFM wrapper      | https://github.com/LeCAR-Lab/BFM-Zero/blob/318cf44a3262e5bdec5944f82f1a5f509b95d09b/humanoidverse/agents/envs/humanoidverse_isaac.py                              | 模型接口与reset语义                             |
 | HUSKY作者代码        | https://github.com/TeleHuman/humanoid_skateboarding                                                                                                               | 借鉴滑板物理、实验与viewer，不继承23DoF控制接口            |
 | HUSKY参考板模型       | https://github.com/TeleHuman/humanoid_skateboarding/blob/d93833e80deff7f927c0b80ef9c435d8b5c488fe/src/mjlab_husky/asset_zoo/robots/skateboard/xmls/skateboard.xml | 分析真实拓扑、tilt/truck关系与碰撞                   |
 | Unitree MuJoCo   | https://github.com/unitreerobotics/unitree_mujoco                                                                                                                 | 几何/命名对照，不自动替换BFM资产                       |
@@ -24,7 +23,6 @@
 
 安装由OpenCode在阶段01实际完成，不以“未安装”替代执行。优先选择支持同一conda环境的稳定版本，版本/Python约束以对应发布版官方文档为准，不混用main/develop或不同发行版的安装命令。
 
-- Isaac Sim/Isaac Lab pip安装：https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
 - mjlab安装：https://mujocolab.github.io/mjlab/v1.6.0/source/installation.html
 - mjlab依赖声明：https://github.com/mujocolab/mjlab/blob/main/pyproject.toml
 - Conda安装：https://docs.conda.io/projects/conda/en/stable/user-guide/install/index.html
@@ -37,11 +35,7 @@
 - mjlab：https://github.com/mujocolab/mjlab
 - mjlab架构：https://mujocolab.github.io/mjlab/main/source/architecture_overview.html
 - MuJoCo Warp：https://mujoco.readthedocs.io/en/latest/mjwarp/
-- Isaac Lab：https://github.com/isaac-sim/IsaacLab
-- Isaac Sim物理：https://docs.isaacsim.omniverse.nvidia.com/latest/physics/simulation_fundamentals.html
-- Isaac Lab执行器：https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.actuators.html
-
-mjlab是基于MuJoCo Warp的独立运行/批量环境框架，不是Isaac Sim的另一个窗口皮肤。可微能力也不能仅从“使用GPU/Warp”推断；需核对实际算子、状态路径与梯度检查。
+mjlab是基于MuJoCo Warp的独立运行/批量环境框架。可微能力也不能仅从“使用GPU/Warp”推断；需核对实际算子、状态路径与梯度检查。
 
 ## 3. 方法论文与代码
 
@@ -76,7 +70,6 @@ mjlab是基于MuJoCo Warp的独立运行/批量环境框架，不是Isaac Sim的
 | foot场景实际没有脚                  | 04自由度/模型存在＋起滑实验             |
 | 摩擦配置无效/诊断无力与滑移               | 04有效接触参数与力/速度显示             |
 | mjlab写错root、history全零        | 07实体映射/partial reset/oracle |
-| Isaac永远抛不可用、USD仅metadata     | 01运行探针＋08实际加载/step          |
 | DR每次reset累计缩放                | 09 nominal恢复与重复seed         |
 | 校准train/validation复用、无条件PASS | 09独立留出＋forward重放            |
 | UI按键不执行、replay没有读取           | 各阶段窗口人工验收＋06回放              |

@@ -2,22 +2,19 @@ from __future__ import annotations
 
 import argparse
 import time
-import webbrowser
-import hashlib
-import json
 from skate_sim.backends import create_backend
 from skate_sim.record import Recorder
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="skate-sim interactive workbench")
-    p.add_argument("--backend", choices=["mujoco", "mjlab"], default="mujoco")
+    p.add_argument("--backend", choices=["mujoco", "mjlab"], default=None)
     p.add_argument("--scene", choices=["bench", "board", "contact", "robot", "rider", "gallery"], default="bench")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--record")
     p.add_argument("--duration", type=float, help="Close after this many simulation seconds")
     p.add_argument("--replay")
-    p.add_argument("--mode", choices=['visual'], default='visual')
+    p.add_argument("--mode", choices=['visual', 'dynamics'], default='visual')
     p.add_argument("--num-envs", type=int, default=1)
     p.add_argument("--view-env", type=int, default=0)
     p.add_argument("--inspect", action="store_true")
@@ -27,6 +24,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--contact-model", choices=["native"], default="native")
     p.add_argument("--controller", choices=["none", "pose", "policy"], default="none")
     p.add_argument("--checkpoint")
+    p.add_argument("--params", help="nominal or a JSON/YAML parameter file")
+    p.add_argument("--randomize", action="store_true", help="sample bounded episode parameters from the declared ranges")
     p.add_argument("--policy-task", choices=["reward", "tracking", "goal"], default="reward")
     p.add_argument("--latent-name")
     p.add_argument("--preset", choices=["separate", "push_start", "steer_start"], default="separate")
@@ -37,8 +36,9 @@ def main() -> int:
     args = parser().parse_args()
     if args.replay:
         from skate_sim.replay import replay
-        replay(args.replay)
+        replay(args.replay, mode=args.mode, backend=args.backend)
         return 0
+    args.backend = args.backend or "mujoco"
     if args.scene not in ("bench", "board", "gallery", "contact", "robot", "rider"):
         raise SystemExit("active workbench implements bench, board, gallery, contact, robot and rider scenes")
     extra = {}
@@ -51,14 +51,19 @@ def main() -> int:
             extra = dict(experiment=args.experiment, contact_model=args.contact_model)
         else:
             extra = dict(dynamics=asdict(experiment_config(args.model, args.experiment)), experiment=args.experiment)
-    backend = create_backend(args.backend, seed=args.seed, scene=args.scene, style=args.style,
-                             inspect=args.inspect, controller=args.controller,
-                             checkpoint=args.checkpoint, policy_task=args.policy_task,
-                             latent_name=args.latent_name, preset=args.preset,
-                             num_envs=args.num_envs, view_env=args.view_env, **extra)
+    backend_kwargs = dict(seed=args.seed, scene=args.scene, style=args.style,
+                          inspect=args.inspect, controller=args.controller,
+                          checkpoint=args.checkpoint, policy_task=args.policy_task,
+                          latent_name=args.latent_name, preset=args.preset,
+                          params=args.params, randomize=args.randomize, **extra)
+    if args.backend == "mjlab":
+        backend_kwargs.update(num_envs=args.num_envs, view_env=args.view_env)
+    backend = create_backend(args.backend, **backend_kwargs)
     backend.paused = args.inspect
     recorder = Recorder(args.record, backend=args.backend, scene=args.scene, seed=args.seed)
     recorder.write("mode", controller=args.controller, preset=args.preset, policy_task=args.policy_task)
+    recorder.write("parameters", **backend.diagnostics().get("parameter_metadata", {}),
+                   parameter_summary=backend.diagnostics().get("parameter_summary"))
     if args.experiment:
         recorder.write("experiment", model=args.model, experiment=args.experiment,
                        dynamics=extra.get("dynamics", {}), contact_model=args.contact_model,
@@ -90,9 +95,9 @@ def main() -> int:
                     break
                 time.sleep(.01)
         while getattr(backend, "is_running", lambda: backend.viewer is None or backend.viewer.is_running())():
-            if getattr(backend, "viewer", None) is None and args.backend != "isaacsim":
+            if getattr(backend, "viewer", None) is None:
                 backend.render()
-            if args.backend != "isaacsim" and backend.viewer is None:
+            if backend.viewer is None:
                 break
             # The passive viewer gives us a real window; keyboard callbacks are
             # intentionally kept in the small loop so the backend contract stays pure.

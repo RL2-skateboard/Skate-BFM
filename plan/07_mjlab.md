@@ -1,8 +1,8 @@
 # 阶段07：mjlab 实际移植、GPU批量与窗口交互
 
-当前状态：**进行中（MuJoCo Warp GPU board/contact 已验证；rider GPU 编译验证仍在进行）**。
+当前状态：**已完成当前自动验收（CUDA 推进、非连续 partial reset、rider pose/policy 控制链路通过；Isaac 不在范围内）**。
 
-本阶段只覆盖 mjlab；Isaac Sim 后端及其后续验收按项目约定跳过。
+本阶段只覆盖 mjlab。另一个原计划后端已因设备条件从项目范围永久移除，不再作为后端、依赖或验收项。
 
 共同约定：项目名与 conda 环境名均为 `skate-sim`；工作目录为用户的 `workspace/skate-sim`，计划位于 `plan/`。先读 [计划总览](00_overview.md) 与 [执行规范](12_execution.md)。下列命令均在项目根目录执行，先 `conda activate skate-sim`；所有窗口、交互及可视化回放只从根目录 `play.py` 启动。
 

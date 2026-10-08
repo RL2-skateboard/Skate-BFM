@@ -15,6 +15,8 @@ from ..robot.bfm import (BFMOnnxPolicy, DEPLOY_JOINTS, build_official_actor_inpu
                          load_policy_context, deploy_joint_values)
 from ..robot.contract import HistoryState
 from ..physics.contact import contact_xml, contact_metrics
+from ..physics.randomize import (effective_dynamics, nominal_parameters,
+                                  parameter_metadata, resolve_parameters)
 
 
 class MujocoBackend(Backend):
@@ -28,12 +30,20 @@ class MujocoBackend(Backend):
                  experiment: str | None = None, contact_model: str = "native",
                  controller: str = "none", checkpoint: str | None = None,
                  policy_task: str = "reward", latent_name: str | None = None,
-                 preset: str = "separate"):
+                 preset: str = "separate", params: str | dict | None = None,
+                 randomize: bool = False):
         self.config = config or SimConfig()
         self.scene = scene
         self.style = style
         self.inspect = inspect
         self.experiment = experiment
+        self.seed = int(seed)
+        self.randomize = bool(randomize)
+        self.parameter_spec = params
+        self.parameter_source = ("nominal" if params is None else
+                                 "mapping" if isinstance(params, dict) else str(params))
+        self.parameters = resolve_parameters(params, randomize=self.randomize, seed=self.seed)
+        self.nominal_parameters = nominal_parameters()
         self.contact_model = contact_model
         self.controller = controller
         self.policy_task = policy_task
@@ -44,12 +54,19 @@ class MujocoBackend(Backend):
         self.robot_joint_names = []
         self.robot_history = HistoryState()
         self.initial_roll = initial_roll
-        self.dynamics = dynamics or {}
+        if dynamics is None and experiment and scene != "contact":
+            from dataclasses import asdict
+            from ..physics.dynamics import experiment_config
+            dynamics = asdict(experiment_config("truck", experiment))
+        self.base_dynamics = dict(dynamics or {})
+        self.dynamics = effective_dynamics(self.base_dynamics, self.parameters)
+        self.compile_dynamics = effective_dynamics(self.base_dynamics, nominal_parameters())
         self.events = SimpleQueue()
         self.contact_scene = scene == "contact"
         self.preset = preset
         self.robot_scene = scene in ("robot", "rider")
         self.rider_scene = scene == "rider"
+        generated_scene = False
         if self.rider_scene and preset not in ("separate", "push_start", "steer_start"):
             raise ValueError("unknown rider preset; choose separate, push_start, or steer_start")
         robot_path = None
@@ -58,7 +75,8 @@ class MujocoBackend(Backend):
             # Every robot controller is evaluated on the same official 29-DoF
             # free-base asset. The procedural model is only retained for the
             # old non-robot workbench and is never a policy/pose fallback.
-            robot_path = rider_scene(style, preset) if self.rider_scene else official_robot_scene()
+            robot_path = rider_scene(style, preset, dynamics=self.compile_dynamics) if self.rider_scene else official_robot_scene()
+            generated_scene = self.rider_scene
             xml = robot_path.read_text(encoding="utf-8")
             self.board_style = None
         elif self.contact_scene:
@@ -66,13 +84,24 @@ class MujocoBackend(Backend):
             self.board_style = None
         elif scene in ("board", "gallery"):
             self.board_style = board_styles(style)[style]
-            xml = build_board_xml(self.board_style, gallery=scene == "gallery", dynamics=dynamics, initial_roll=initial_roll)
+            xml = build_board_xml(self.board_style, gallery=scene == "gallery", dynamics=self.compile_dynamics, initial_roll=initial_roll)
         else:
             self.board_style = None
             xml = self._xml()
-        self.model = mujoco.MjModel.from_xml_path(str(robot_path)) if robot_path else mujoco.MjModel.from_xml_string(xml)
+        try:
+            self.model = mujoco.MjModel.from_xml_path(str(robot_path)) if robot_path else mujoco.MjModel.from_xml_string(xml)
+        finally:
+            if generated_scene and robot_path is not None:
+                robot_path.unlink(missing_ok=True)
         self.model.opt.timestep = self.config.physics_dt
         self.model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
+        self._nominal_body_mass = self.model.body_mass.copy()
+        self._nominal_body_inertia = self.model.body_inertia.copy()
+        self._nominal_geom_friction = self.model.geom_friction.copy()
+        self._nominal_dof_damping = self.model.dof_damping.copy()
+        self._nominal_jnt_stiffness = self.model.jnt_stiffness.copy()
+        self._nominal_body_pos = self.model.body_pos.copy()
+        self._nominal_body_ipos = self.model.body_ipos.copy()
         if self.contact_scene:
             for gid in range(self.model.ngeom):
                 geom_name = self.model.geom(gid).name or ""
@@ -83,7 +112,12 @@ class MujocoBackend(Backend):
             for prefix in ("front", "rear"):
                 for side in ("left", "right"):
                     j = self.model.joint(f"{prefix}_{side}_spin").id
-                    self.model.dof_damping[self.model.jnt_dofadr[j]] = self.dynamics["wheel_spin_damping"]
+                    self.model.dof_damping[self.model.jnt_dofadr[j]] = self.compile_dynamics["wheel_spin_damping"]
+        self._nominal_geom_friction = self.model.geom_friction.copy()
+        self._nominal_dof_damping = self.model.dof_damping.copy()
+        self._nominal_jnt_stiffness = self.model.jnt_stiffness.copy()
+        self._nominal_body_pos = self.model.body_pos.copy()
+        self._nominal_body_ipos = self.model.body_ipos.copy()
         self.data = mujoco.MjData(self.model)
         if self.robot_scene:
             self.robot_joint_names = list(DEPLOY_JOINTS)
@@ -130,6 +164,11 @@ class MujocoBackend(Backend):
         self.inference_time_ms = 0.0
         self._first_policy_debug = False
         self.last_obs = np.zeros(721, dtype=np.float32)
+        self._action_queue: list[np.ndarray] = []
+        self._parameter_reset_count = 0
+        self.rng = np.random.default_rng(self.seed)
+        self._action_queue.clear()
+        self._apply_parameters()
         self.reset(seed)
 
     @staticmethod
@@ -154,7 +193,57 @@ class MujocoBackend(Backend):
           </worldbody>
         </mujoco>'''
 
-    def reset(self, seed: int = 0, env_ids: Any = None) -> None:
+    def _apply_parameters(self) -> None:
+        """Restore nominal model arrays, then apply the current episode once."""
+        self.dynamics = effective_dynamics(self.base_dynamics, self.parameters)
+        self.model.body_mass[:] = self._nominal_body_mass
+        self.model.body_inertia[:] = self._nominal_body_inertia
+        self.model.geom_friction[:] = self._nominal_geom_friction
+        self.model.dof_damping[:] = self._nominal_dof_damping
+        self.model.jnt_stiffness[:] = self._nominal_jnt_stiffness
+        self.model.body_pos[:] = self._nominal_body_pos
+        self.model.body_ipos[:] = self._nominal_body_ipos
+        for gid in range(self.model.ngeom):
+            name = self.model.geom(gid).name or ""
+            self.model.geom_friction[gid] *= self.parameters["friction_scale"]
+        if self.board_style is not None:
+            for body_id in range(self.model.nbody):
+                name = self.model.body(body_id).name or ""
+                if name == "deck":
+                    scale = self.parameters["deck_mass_scale"]
+                elif name in {f"{prefix}_{side}" for prefix in ("front", "rear") for side in ("left", "right")}:
+                    scale = self.parameters["wheel_mass_scale"]
+                elif name in {"front_truck", "rear_truck"}:
+                    scale = self.parameters["truck_mass_scale"]
+                else:
+                    scale = 1.0
+                self.model.body_mass[body_id] *= scale
+                self.model.body_inertia[body_id] *= scale
+            for prefix in ("front", "rear"):
+                truck = self.model.joint(f"{prefix}_truck_tilt")
+                self.model.jnt_stiffness[truck.id] *= self.parameters["truck_stiffness_scale"]
+                self.model.dof_damping[truck.dofadr[0]] *= self.parameters["truck_damping_scale"]
+                for side in ("left", "right"):
+                    joint = self.model.joint(f"{prefix}_{side}_spin")
+                    self.model.dof_damping[joint.dofadr[0]] *= self.parameters["wheel_spin_damping_scale"]
+            deck_id = self.model.body("deck").id
+            self.model.body_ipos[deck_id, 0] += self.parameters["deck_com_offset_x"]
+            self.model.body_ipos[deck_id, 1] += self.parameters["deck_com_offset_y"]
+        mujoco.mj_setConst(self.model, self.data)
+        self._parameter_metadata = parameter_metadata(
+            self.parameters, source=self.parameter_source, seed=self.seed,
+            randomize=self.randomize)
+
+    def reset(self, seed: int | None = None, env_ids: Any = None) -> None:
+        if env_ids is not None:
+            raise ValueError("native MuJoCo has one environment; env_ids must be omitted")
+        if seed is not None:
+            self.seed = int(seed)
+            self.parameters = resolve_parameters(
+                self.parameter_spec, randomize=self.randomize, seed=self.seed)
+        self.rng = np.random.default_rng(self.seed)
+        self._apply_parameters()
+        self._action_queue.clear()
         mujoco.mj_resetData(self.model, self.data)
         self.force[:] = 0
         self.force_point = None
@@ -247,13 +336,20 @@ class MujocoBackend(Backend):
             t0 = _time.perf_counter()
             obs = build_official_actor_input(q, dq, self.data.xquat[base], self.data.cvel[base, :3],
                                              self.policy_action, self.robot_history, context)
+            noise_std = self.parameters["observation_noise_std"]
+            if noise_std > 0:
+                obs = obs + self.rng.normal(0.0, noise_std, size=obs.shape).astype(np.float32)
             self.last_obs = obs.copy()
             raw = np.asarray(self.policy(obs), dtype=np.float64)
             self.inference_time_ms = (_time.perf_counter() - t0) * 1000.0
             if raw.shape != (29,) or not np.isfinite(raw).all():
                 raise RuntimeError(f"BFM action contract failed: shape={raw.shape} finite={np.isfinite(raw).all()}")
             self.raw_action = raw.copy()
-            self.policy_action = np.clip(raw, -1.0, 1.0)
+            candidate_action = np.clip(raw, -1.0, 1.0)
+            self._action_queue.append(candidate_action.copy())
+            delay = int(self.parameters["control_delay_steps"])
+            self.policy_action = (self._action_queue.pop(0)
+                                  if len(self._action_queue) > delay else np.zeros(29, dtype=np.float64))
             self.q_target = np.clip(
                 self.policy_values["default"] + float(self.policy_values["action_rescale"]) *
                 self.policy_action * self.policy_values["action_scale"],
@@ -269,7 +365,8 @@ class MujocoBackend(Backend):
         if self.robot_scene and self.controller in ("policy", "pose"):
             q = self._robot_q()
             dq = self._robot_dq()
-            tau = self.policy_values["kp"] * (self.q_target - q) - self.policy_values["kd"] * dq
+            tau = (self.policy_values["kp"] * self.parameters["pd_kp_scale"] * (self.q_target - q)
+                   - self.policy_values["kd"] * self.parameters["pd_kd_scale"] * dq)
             tau = np.clip(tau, -self.policy_values["joint_effort_limit"], self.policy_values["joint_effort_limit"])
             self.last_q, self.last_dq, self.last_tau = q.copy(), dq.copy(), tau.copy()
             robot_torques = list(zip(self.robot_dof_adr, tau))
@@ -511,7 +608,11 @@ class MujocoBackend(Backend):
                 "force_world_N": (self.mouse_force + self.force).tolist(),
                 "keyboard_force_N": self.force.tolist(), "mouse_force_N": self.mouse_force.tolist(),
                 "mouse_body": mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, self._body_id),
-                "contacts": int(self.data.ncon)}
+                "contacts": int(self.data.ncon),
+                "parameter_source": self.parameter_source,
+                "randomized": self.randomize,
+                "parameters": dict(self.parameters),
+                "parameter_metadata": self._parameter_metadata}
         result['mouse_selection'] = self.mouse_selection
         result['force_point_world_m'] = None if self.force_point is None else self.force_point.tolist()
         if self.board_style is not None:

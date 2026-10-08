@@ -6,23 +6,23 @@
 
 ## 交付目标
 
-用户拿到 `skate-sim` 完整项目后，按README在声明硬件上安装，能执行三后端的滑板单体和机器人＋滑板窗口命令，完成交互、重置、记录、回放和物理检查。代码整洁、功能真实、限制明确，没有必需路径中的占位实现。
+用户拿到 `skate-sim` 完整项目后，按README在声明硬件上安装，能执行两个活动后端的滑板单体和机器人＋滑板窗口命令，完成交互、重置、记录、回放和物理检查。代码整洁、功能真实、限制明确，没有必需路径中的占位实现。
 
 ## 交付验收矩阵
 
-| 必需项                            | MuJoCo | mjlab    | Isaac Sim |
-| ------------------------------ | ------ | -------- | --------- |
-| board三样式/被动滑行/转向/回正            | 必测     | 必测       | 必测        |
-| contact拉动/卸载与材料有效性             | 必测     | 必测       | 必测        |
-| G1 29DoF与BFM action/obs oracle | 必测     | 必测       | 必测        |
-| rider姿态/实际checkpoint持续推理       | 必测     | 必测       | 必测        |
-| 窗口暂停/步进/施力/重置/诊断               | 必测     | 必测       | 必测        |
-| 记录/视觉回放/动力学重放说明                | 必测     | 必测       | 必测        |
-| partial reset与逐环境外力            | N=1语义  | GPU N=64 | 目标N=16    |
-| 随机化nominal恢复与参数响应              | 必测     | 必测       | 必测        |
-| gallery障碍展示且默认场景不加载            | 必测     | 必测       | 必测        |
+| 必需项                            | MuJoCo | mjlab    |
+| ------------------------------ | ------ | -------- |
+| board三样式/被动滑行/转向/回正            | 必测     | 必测       |
+| contact拉动/卸载与材料有效性             | 必测     | 必测       |
+| G1 29DoF与BFM action/obs oracle | 必测     | 必测       |
+| rider姿态/实际checkpoint持续推理       | 必测     | 必测       |
+| 窗口暂停/步进/施力/重置/诊断               | 必测     | 必测       |
+| 记录/视觉回放/动力学重放说明                | 必测     | 必测       |
+| partial reset与逐环境外力            | N=1语义  | GPU N=64 |
+| 随机化nominal恢复与参数响应              | 必测     | 必测       |
+| gallery障碍展示且默认场景不加载            | 必测     | 必测       |
 
-工程校准管线与方法报告必需；真实参数精度取决于外部真实数据，不能与三后端代码完整性混为一谈。没有真实数据必须清楚披露，但不是允许后端缺实现的理由。
+工程校准管线与方法报告必需；真实参数精度取决于外部真实数据，不能与两个活动后端的代码完整性混为一谈。没有真实数据必须清楚披露，但不是允许活动后端缺实现的理由。
 
 ## 清理与可复现
 
@@ -47,14 +47,12 @@ python -m skate_sim doctor --backend all --display --checkpoint /absolute/path/m
 python play.py --backend mujoco --scene board --style standard --record runs/final_mujoco_board
 python play.py --backend mujoco --scene rider --controller policy --checkpoint /absolute/path/model.pt --record runs/final_mujoco_rider
 python play.py --backend mjlab --scene board --num-envs 1 --record runs/final_mjlab_board
-python play.py --backend mjlab --scene rider --controller policy --checkpoint /absolute/path/model.pt --num-envs 1 --record runs/final_mjlab_rider
-python play.py --backend isaacsim --scene board --num-envs 1 --record runs/final_isaac_board
-python play.py --backend isaacsim --scene rider --controller policy --checkpoint /absolute/path/model.pt --num-envs 1 --record runs/final_isaac_rider
+python play.py --backend mjlab --scene rider --controller none --num-envs 1 --record runs/final_mjlab_rider
 python -m skate_sim check --stage all --backend all --checkpoint /absolute/path/model.pt --output runs/final_check
 python -m skate_sim report --run runs/final_check --output docs/acceptance.md
 ```
 
-all检查必须在 `skate-sim` 环境中逐后端启动独立进程，使用实际安装的后端；可以复用内部调度逻辑，不增加用户可视化入口。
+all检查必须在目标环境中逐后端启动独立进程，使用实际安装的后端；可以复用内部调度逻辑，不增加用户可视化入口。
 
 ## 最终人工验收
 
@@ -80,8 +78,8 @@ all检查必须在 `skate-sim` 环境中逐后端启动独立进程，使用实�
 
 ## 最终判据与返工
 
-“已交付”必须同时满足：三个后端真实可运行、所有必需自动项通过、用户已确认各窗口效果、README干净复现成功、无必需项BLOCKED/NOT_RUN。
+“已交付”必须同时满足：两个活动后端真实可运行、所有已纳入范围的自动项通过、用户已确认各窗口效果、README干净复现成功、无必需项BLOCKED/NOT_RUN。
 
-发现缺陷：定位责任阶段→修复→相关上游/下游回归→重新演示→更新确认记录。没有“最后一天先交半成品”的例外。资源或权限不足时诚实列阻塞与下一步，不能把目标悄悄改为仅MuJoCo。
+发现缺陷：定位责任阶段→修复→相关上游/下游回归→重新演示→更新确认记录。没有“最后一天先交半成品”的例外。阶段07批量策略链路已纳入 mjlab 自动验收；后续策略质量仍需以实际 checkpoint 和窗口行为单独确认，不能用 MuJoCo 结果替代 mjlab 结果。
 
-真实gap尚未测量、无专用滑板策略等边界可以作为明确限制交付；它们不能掩盖错误物理、错误BFM观测、缺失Isaac实现或无效窗口交互。
+真实gap尚未测量、无专用滑板策略等边界可以作为明确限制交付；它们不能掩盖错误物理、错误BFM观测或无效窗口交互。

@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -58,18 +58,19 @@ def board_hash(style: BoardStyle) -> str:
     return hashlib.sha256(payload).hexdigest()[:12]
 
 
-def _wheel_xml(name: str, y: float, z: float, s: BoardStyle) -> str:
+def _wheel_xml(name: str, y: float, z: float, s: BoardStyle, friction: float | None = None) -> str:
     # MuJoCo cylinders use a local Z axis; fromto makes the wheel axis explicit Y.
+    friction_attr = "" if friction is None else f' friction="{friction:.8g} .01 .001"'
     return f'''<body name="{name}" pos="0 {y:.6f} {z:.6f}">
       <joint name="{name}_spin" type="hinge" axis="0 1 0" damping=".02"/>
-      <geom name="{name}_collision" type="cylinder" fromto="0 {-s.wheel_width/2:.6f} 0 0 {s.wheel_width/2:.6f} 0" size="{s.wheel_radius:.6f}" mass="{s.wheel_mass:.6f}" rgba=".08 .08 .08 1"/>
+      <geom name="{name}_collision" type="cylinder" fromto="0 {-s.wheel_width/2:.6f} 0 0 {s.wheel_width/2:.6f} 0" size="{s.wheel_radius:.6f}" mass="{s.wheel_mass:.6f}"{friction_attr} rgba=".08 .08 .08 1"/>
       <site name="{name}_axle" pos="0 0 0" size=".006" rgba="1 1 0 1"/>
       <site name="{name}_axis" type="capsule" fromto="0 -.04 0 0 .04 0" size=".002" rgba="1 1 0 1" group="3"/>
       <site name="{name}_marker" pos="{s.wheel_radius:.6f} 0 0" size=".004" rgba="1 .2 .1 1"/>
     </body>'''
 
 
-def deck_meshes(s):
+def deck_meshes(s, friction: float | None = None):
     """Convex strips form a rounded, thin deck without bridging the kick concavity."""
     half = s.deck_length/2
     raw_xs = sorted([-half, half, -half+s.kick_length, half-s.kick_length] +
@@ -95,7 +96,8 @@ def deck_meshes(s):
                     vertices.extend((xs[j],y,heights[j]+dz))
         ident = f'deck_strip_{i}'
         meshes.append(f'<mesh name="{ident}" vertex="{" ".join(format(v,".9g") for v in vertices)}"/>')
-        geoms.append(f'<geom name="{ident}" type="mesh" mesh="{ident}" mass="{s.deck_mass*area/sum(areas):.12g}" rgba=".18 .27 .38 1"/>')
+        friction_attr = "" if friction is None else f' friction="{friction:.8g} .01 .001"'
+        geoms.append(f'<geom name="{ident}" type="mesh" mesh="{ident}" mass="{s.deck_mass*area/sum(areas):.12g}"{friction_attr} rgba=".18 .27 .38 1"/>')
     return ''.join(meshes), ''.join(geoms)
 
 
@@ -104,24 +106,30 @@ def build_board_xml(style: BoardStyle, *, gallery: bool = False, dynamics=None, 
     model = dynamics.get("model", "truck")
     if model not in ("truck", "reduced"):
         raise ValueError("Unknown dynamics model")
+    deck_mass_scale = float(dynamics.get("deck_mass_scale", 1.0))
+    truck_mass_scale = float(dynamics.get("truck_mass_scale", 1.0))
+    wheel_mass_scale = float(dynamics.get("wheel_mass_scale", 1.0))
+    style = replace(style, deck_mass=style.deck_mass * deck_mass_scale,
+                    truck_mass=style.truck_mass * truck_mass_scale,
+                    wheel_mass=style.wheel_mass * wheel_mass_scale)
     truck_k1 = float(dynamics.get("truck_k1", style.truck_stiffness))
     truck_c = float(dynamics.get("truck_c", style.truck_damping))
-    meshes, deck_geoms = deck_meshes(style)
+    friction = dynamics.get("friction")
+    meshes, deck_geoms = deck_meshes(style, None if friction is None else float(friction))
     x_front, x_rear = style.wheelbase / 2, -style.wheelbase / 2
     wheel_z = style.wheel_radius
     deck_z = wheel_z + .060 + style.deck_thickness / 2
-    deck_half = style.deck_length / 2
-    kick_start = deck_half - style.kick_length
-    kick_angle = math.atan2(style.kick_height, style.kick_length)
     trucks = []
     for prefix, x in (("front", x_front), ("rear", x_rear)):
         wheel_local_z = wheel_z - deck_z + style.deck_thickness / 2
-        wheels = _wheel_xml(f"{prefix}_left", style.track / 2, wheel_local_z, style)
-        wheels += _wheel_xml(f"{prefix}_right", -style.track / 2, wheel_local_z, style)
+        wheels = _wheel_xml(f"{prefix}_left", style.track / 2, wheel_local_z, style,
+                            None if friction is None else float(friction))
+        wheels += _wheel_xml(f"{prefix}_right", -style.track / 2, wheel_local_z, style,
+                             None if friction is None else float(friction))
         trucks.append(f'''<body name="{prefix}_truck" pos="{x:.6f} 0 {-style.deck_thickness/2:.6f}">
           <joint name="{prefix}_truck_tilt" type="hinge" axis="{math.cos(style.truck_angle)} 0 {math.sin(style.truck_angle)*(1 if prefix == 'front' else -1)}" range="{-style.truck_limit} {style.truck_limit}" stiffness="{truck_k1}" damping="{truck_c}"/>
-          <geom name="{prefix}_truck_collision" type="box" pos="0 0 -.030" size=".025 .012 .030" mass="{style.truck_mass*.6:.6f}" rgba=".65 .65 .68 1"/>
-          <geom name="{prefix}_axle_collision" type="box" pos="0 0 -.060" size=".012 {style.track/2-style.wheel_width/2:.6f} .010" mass="{style.truck_mass*.4:.6f}" rgba=".65 .65 .68 1"/>
+          <geom name="{prefix}_truck_collision" type="box" pos="0 0 -.030" size=".025 .012 .030" mass="{style.truck_mass*.6:.6f}"{'' if friction is None else f' friction="{float(friction):.8g} .01 .001"'} rgba=".65 .65 .68 1"/>
+          <geom name="{prefix}_axle_collision" type="box" pos="0 0 -.060" size=".012 {style.track/2-style.wheel_width/2:.6f} .010" mass="{style.truck_mass*.4:.6f}"{'' if friction is None else f' friction="{float(friction):.8g} .01 .001"'} rgba=".65 .65 .68 1"/>
           <site name="{prefix}_truck_pivot" size=".005" rgba="1 .3 1 1"/>
            <site name="{prefix}_truck_axis" type="capsule" fromto="0 0 0 {math.cos(style.truck_angle)*.09} 0 {math.sin(style.truck_angle)*.09*(1 if prefix == 'front' else -1)}" size=".002" rgba="1 .3 1 1" group="3"/>
           {wheels}
@@ -147,7 +155,7 @@ def build_board_xml(style: BoardStyle, *, gallery: bool = False, dynamics=None, 
         <geom name="axis_x" type="box" pos="1 0 .002" size="1 .008 .002" rgba=".9 .1 .1 1" contype="0" conaffinity="0"/>
         <geom name="axis_y" type="box" pos="0 1 .002" size=".008 1 .002" rgba=".1 .8 .1 1" contype="0" conaffinity="0"/>
         {obstacles}
-        <body name="deck" pos="0 0 {deck_z:.6f}" euler="{initial_roll:.8g} 0 0">
+        <body name="deck" pos="{float(dynamics.get('deck_com_offset_x', 0.0)):.8g} {float(dynamics.get('deck_com_offset_y', 0.0)):.8g} {deck_z:.6f}" euler="{initial_roll:.8g} 0 0">
           <freejoint name="deck_free"/>
           <geom name="deck_collision" type="box" size="{(style.deck_length-2*style.kick_length)/2:.6f} {style.deck_width/2:.6f} {style.deck_thickness/2:.6f}" mass="0" contype="0" conaffinity="0" rgba="0 0 0 0" group="5"/>
           {deck_geoms}

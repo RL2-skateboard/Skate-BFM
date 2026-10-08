@@ -1,5 +1,7 @@
 # 阶段09：参数可解释性、随机化与sim2real准备
 
+当前实现状态：**自动验收通过（MuJoCo/mjlab）；合成校准可运行；无真实数据时不宣称 sim2real 提升；等待窗口验收后进入阶段10**。
+
 共同约定：项目名与 conda 环境名均为 `skate-sim`；工作目录为用户的 `workspace/skate-sim`，计划位于 `plan/`。先读 [计划总览](00_overview.md) 与 [执行规范](12_execution.md)。下列命令均在项目根目录执行，先 `conda activate skate-sim`；所有窗口、交互及可视化回放只从根目录 `play.py` 启动。
 
 前置：阶段08已 ACCEPTED。项目保持纯仿真，不新增真机部署、训练平台或硬件采集链路。
@@ -12,16 +14,16 @@
 
 ## 误差清单与处理次序
 
-| 误差源 | 本轮机制 | 验证 |
-| --- | --- | --- |
-| 尺度/质量/惯量/质心 | 参数化资产、配置与编译值核验 | 尺寸和惯量检查、摆动/响应 |
-| truck几何/衬套 |03两模型对照、恢复/阻尼参数 | lean、release、曲率 |
-| 轮地/轴承损耗 |区分滑动、滚阻和轴阻 | 滑行/轮速/能量 |
-| 足底材料/面积/柔顺 |原生接触与04微基准 | 起滑、滑动、扭转、卸载 |
-| 执行器/控制时序 |PD、饱和、延迟、可选结构化执行器 | 关节响应与oracle |
-| 观测与状态估计 |观测噪声/延迟的明确注入点 | 干净/噪声对照与重置 |
-| 求解器差异 |dt收敛与跨后端物理指标 |03/04/08复测 |
-| 未建模接触规律 |有真实数据才启用受约束残差 | 独立真实留出评价 |
+| 误差源         | 本轮机制              | 验证              |
+| ----------- | ----------------- | --------------- |
+| 尺度/质量/惯量/质心 | 参数化资产、配置与编译值核验    | 尺寸和惯量检查、摆动/响应   |
+| truck几何/衬套  | 03两模型对照、恢复/阻尼参数   | lean、release、曲率 |
+| 轮地/轴承损耗     | 区分滑动、滚阻和轴阻        | 滑行/轮速/能量        |
+| 足底材料/面积/柔顺  | 原生接触与04微基准        | 起滑、滑动、扭转、卸载     |
+| 执行器/控制时序    | PD、饱和、延迟、可选结构化执行器 | 关节响应与oracle     |
+| 观测与状态估计     | 观测噪声/延迟的明确注入点     | 干净/噪声对照与重置      |
+| 求解器差异       | dt收敛与跨后端物理指标      | 03/04/08复测      |
+| 未建模接触规律     | 有真实数据才启用受约束残差     | 独立真实留出评价        |
 
 先隔离执行器与几何误差，再拟合摩擦；不能让摩擦系数吸收所有控制错误。
 
@@ -47,7 +49,7 @@
 
 同时满足才进入正式候选：有足够多载荷/速度/方向/材料的真实数据；原生模型已校准；真实留出误差仍存在稳定模式；网络改进超过测量噪声且不伤害长期稳定性。
 
-若启用，优先结构化参数估计/受约束残差，满足非负法向力、摩擦界、耗散约束、无接触不出力；明确它与引擎原生摩擦如何组合，避免双计。检查OOD输入、功率/能量和长时rollout。三后端若不能等价接入，只作为清楚隔离的实验候选，不替换已验收基线。
+若启用，优先结构化参数估计/受约束残差，满足非负法向力、摩擦界、耗散约束、无接触不出力；明确它与引擎原生摩擦如何组合，避免双计。检查OOD输入、功率/能量和长时rollout。两个活动后端若不能等价接入，只作为清楚隔离的实验候选，不替换已验收基线。
 
 没有数据时结论为“暂不启用”，不是“该功能占位完成”。本轮核心交付不依赖训练接触网络。
 
@@ -59,10 +61,13 @@ python play.py --backend mujoco --scene board --experiment release --randomize -
 python play.py --backend mjlab --scene rider --controller pose --num-envs 64 --randomize --seed 17 --view-env 7
 python -m skate_sim calibrate --experiment release --data synthetic --method cem --output runs/09_fit
 python play.py --backend mujoco --scene board --experiment release --params runs/09_fit/params.yaml --record runs/09_fitted
-python -m skate_sim check --stage 09 --backend all --output runs/09_check
+python -m skate_sim check --stage 09 --backend all --num-envs 64 \
+  --checkpoint checkpoints/bfm-zero --output runs/09_check
 ```
 
-有真实数据再追加：
+有真实数据再追加。CSV 输入必须同时提供同名 `.units.json` sidecar，不能由
+程序猜测单位：
+
 ```bash
 python -m skate_sim calibrate --experiment release --data /absolute/path/measurements --split trial --method cem --output runs/09_real
 ```
@@ -80,4 +85,3 @@ OpenCode须明确合成数据怎样生成、哪些试验留出；不能让同模
 用户确认参数响应、可信边界和所选默认模型后进入10。
 
 参考：[ContactBench](https://github.com/Simple-Robotics/ContactBench)、[ContactNets](https://proceedings.mlr.press/v155/pfrommer21a.html)、[梯度可靠性研究](https://arxiv.org/abs/2207.05060)、[SPI-Active](https://arxiv.org/abs/2505.14266)、[DROPO](https://arxiv.org/abs/2201.08434)。
-

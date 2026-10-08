@@ -121,15 +121,12 @@ def load_policy_context(root: str | Path, task: str, name: str | None = None):
 
 def build_actor_input(state: RobotState, action: np.ndarray, history: HistoryState,
                       *, latent: np.ndarray | None = None) -> np.ndarray:
-    """Build the deploy adapter's 721-vector only after official field layout is verified.
-
-    The current function is deliberately strict: it accepts a precomputed
-    721-dimensional adapter frame rather than silently inventing privileged or
-    latent fields from the environment. The exact deploy config must supply the
-    field-major construction before this is used for policy control.
-    """
-    del state, action, history, latent
-    raise NotImplementedError("BFM 721-field official observation adapter is not yet frozen")
+    """Build the same official 721-vector used by both active backends."""
+    if latent is None:
+        raise ValueError("official BFM actor input requires an explicit 256-dimensional latent")
+    return build_official_actor_input(
+        state.q, state.dq, state.base_quat_wxyz, state.base_angvel,
+        action, history, latent)
 
 
 def build_official_actor_input(q, dq, quat_wxyz, angvel_b, previous_action,

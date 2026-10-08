@@ -17,6 +17,8 @@ Isaac Sim 已按用户决定从当前交付范围移除，不是活动依赖，�
 | 04 | WAITING_REVIEW | 足底—滑板接触实验台 |
 | 05 | WAITING_REVIEW | 29DoF contract、官方G1资产、BFM ONNX地面烟测 |
 | 06 | WAITING_REVIEW | G1+真实滑板 MuJoCo rider slice |
+| 07 | AUTO_PASS | mjlab CUDA batch、rider controller、partial reset |
+| 09 | AUTO_PASS | 参数随机化、合成 CEM 校准、留出验证 |
 
 阶段记录：
 
@@ -81,7 +83,13 @@ python play.py --backend mjlab --scene bench --seed 0 --record runs/01_mjlab
 ```bash
 python -m skate_sim doctor --backend mujoco
 python -m skate_sim doctor --backend mjlab
+python -m skate_sim doctor --backend all
+python -m skate_sim check --stage 01 --backend mujoco
+python -m skate_sim check --stage 07 --backend mjlab --num-envs 64
+python -m skate_sim check --stage all --backend all --checkpoint checkpoints/bfm-zero
 ```
+
+当前活动范围只有 MuJoCo 和 mjlab。阶段 07 的 CUDA 推进、非连续 partial reset、rider pose/policy 控制链路均已通过自动检查；MuJoCo 01–06 与 mjlab 01/07 的整体检查也已通过。Isaac 相关内容不在项目范围内。
 
 ## 阶段 02：资产
 
@@ -274,6 +282,51 @@ python play.py --replay runs/06_policy --mode visual
 编译后 pelvis、脚、deck、ground 和接触对证据。
 当前 BFM latent 不是滑板任务策略，摔倒会如实记录，不代表环境接口失败。
 窗口验收见 [docs/stages/06.md](docs/stages/06.md)。
+
+## 阶段 09：参数与 sim2real 准备
+
+阶段 09 保持纯仿真。参数范围是明确标注的工程假设，不是真实测量置信区间。
+每次 reset 从 nominal 模型字段重新应用参数，不在当前值上累计缩放；参数、来源和
+seed 会写入记录。
+
+```bash
+python play.py --backend mujoco --scene board --experiment release \
+  --params nominal --record runs/09_nominal
+python play.py --backend mujoco --scene board --experiment release \
+  --randomize --seed 17 --record runs/09_random
+python play.py --backend mjlab --scene rider --controller pose \
+  --num-envs 64 --randomize --seed 17 --view-env 7
+```
+
+合成校准使用真实 MuJoCo board rollout、独立完整 trial 和有界 CEM；结果必须同时
+看 train/held-out loss，不能解释为真实 sim2real 提升：
+
+```bash
+python -m skate_sim calibrate --experiment release --data synthetic \
+  --method cem --seed 17 --output runs/09_fit
+python play.py --backend mujoco --scene board --experiment release \
+  --params runs/09_fit/params.yaml --record runs/09_fitted
+python -m skate_sim check --stage 09 --backend all --num-envs 64 \
+  --checkpoint checkpoints/bfm-zero --output runs/09_check
+```
+
+有真实数据时只接受带完整 trial 划分和显式单位的 JSON；CSV 还必须有同名
+`.units.json` sidecar，不能猜测单位。没有真实数据时结论限于 synthetic method
+validation。阶段 09 详细结果见
+[docs/stages/09.md](docs/stages/09.md)。
+
+## 交付检查与回放
+
+```bash
+python -m skate_sim check --stage all --backend all \
+  --num-envs 64 --checkpoint checkpoints/bfm-zero --output runs/final_check
+python -m skate_sim report --run runs/final_check --output docs/acceptance.md
+python play.py --replay runs/03_truck_turn --mode visual
+python play.py --replay runs/03_truck_turn --mode dynamics --backend mujoco
+```
+
+`visual` 只显示记录状态；`dynamics` 按记录的场景配置重新运行 native MuJoCo。
+Isaac Sim、真机部署、训练平台和硬件采集均不在本项目交付范围。
 
 ## 故障排查
 
