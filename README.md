@@ -317,6 +317,26 @@ validation。阶段 09 详细结果见
 
 ## 交付检查与回放
 
+### 阶段09离线参数训练（新增）
+
+`src/skate_sim/physics/train_parameters.py` 支持解析接触参数拟合、受约束接触网络，以及三自由度
+足底模型的多步可微轨迹拟合。没有真实数据时须显式选择合成验证：
+
+```bash
+python -m skate_sim.physics.train_parameters --data synthetic --task force_fit --output runs/sole_force
+python -m skate_sim.physics.train_parameters --data synthetic --task trajectory_fit --output runs/sole_trajectory
+python -m skate_sim.physics.train_parameters --data runs/sole_force/dataset.json --model contact_net \
+  --init runs/sole_force/model.pt --output runs/sole_network
+python play.py --contact-run runs/sole_trajectory
+```
+
+依赖使用已有 `skate-sim-mjlab` 环境，或安装 `pip install -e '.[contact]'`。
+详细数据合同、参数含义、扩展接口和 TactileStep 参考见
+[离线接触训练](docs/contact_training.md)。输出为离线候选，不自动替换原生接触，
+也不代表 MuJoCo/mjlab 引擎已支持反向传播或真实 sim2real 已验证。
+
+### 全项目验收
+
 ```bash
 python -m skate_sim check --stage all --backend all \
   --num-envs 64 --checkpoint checkpoints/bfm-zero --output runs/final_check

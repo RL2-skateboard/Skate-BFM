@@ -6,4 +6,5 @@ MUJOCO_LOG.TXT
 runs/
 checkpoints/
 .cache/
+data/contact/
 checkpoints/

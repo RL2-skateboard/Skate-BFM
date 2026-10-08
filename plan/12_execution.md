@@ -15,6 +15,10 @@
 
 只保留仿真环境、资产、配置、可视化、交互、微基准、必要回归、离线小型辨识和测试checkpoint所需最小推理。不引入项目级训练代码、真机驱动、ROS/SDK部署、采集平台、无关数据集或权重。引擎自身官方依赖可以包含训练相关库；不为精简破坏官方依赖，但不把其训练工程复制进项目。
 
+用户在阶段09追加授权 `physics/train_parameters.py`，用于小型离线物理参数与
+接触网络辨识。该入口复用 `physics/contact.py`，属于本节的离线辨识范围；
+可视化仍从 `play.py` 启动，不扩展为机器人策略训练或硬件部署平台。
+
 项目根目录：`play.py`、`README.md`、`pyproject.toml`、`environment.yml`、`plan/`、`src/skate_sim/`、`assets/`、`configs/`、`tests/`、`docs/`。本套计划仅在 `plan/`，不另复制到docs/plans。
 
 建议模块：

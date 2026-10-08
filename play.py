@@ -12,6 +12,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--scene", choices=["bench", "board", "contact", "robot", "rider", "gallery"], default="bench")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--record")
+    p.add_argument("--contact-run", help="offline train_parameters.py run: show target/baseline/trained curves")
+    p.add_argument("--contact-trial", help="complete trial ID (default: first untouched test trial)")
     p.add_argument("--duration", type=float, help="Close after this many simulation seconds")
     p.add_argument("--replay")
     p.add_argument("--mode", choices=['visual', 'dynamics'], default='visual')
@@ -34,6 +36,16 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
+    if args.contact_run:
+        if args.replay or args.params or args.randomize or args.duration is not None:
+            raise SystemExit("--contact-run is an offline comparison; do not combine it with replay/params/randomize/duration")
+        from skate_sim.physics.contact import contact_figure
+        import matplotlib.pyplot as plt
+        contact_figure(args.contact_run, args.contact_trial)
+        plt.show()
+        return 0
+    if args.contact_trial:
+        raise SystemExit("--contact-trial requires --contact-run")
     if args.replay:
         from skate_sim.replay import replay
         replay(args.replay, mode=args.mode, backend=args.backend)
