@@ -83,7 +83,11 @@ Archived the complete `train/eval_res/2026-08-20/` checkpoint-evaluation results
 
 ### 2026-08-24
 
-Added task-oriented board/coupling/stability metrics and established the fixed rollout-balanced 80-case Val model-selection benchmark.
+Added task-oriented board/coupling/stability metrics, established the fixed rollout-balanced 80-case Val model-selection benchmark, and completed the fresh Phase 200k extension from the 100k milestone with 200,000 transitions, 398 update blocks, 19,900 native updates, finite reloadable checkpoints, and unresolved transition instability.
+
+### 2026-08-25
+
+Evaluated Phase 200k on the fixed Val bank, added shared latent-space metrics and right-corner latent-inset videos, and confirmed steer improvement while push2steer and steer2push remained incomplete.
 
 ## Experiment 4: Continuous BFM + Skate Expert Training and Matched Comparison
 

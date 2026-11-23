@@ -18,7 +18,7 @@ from humanoidverse.utils.torch_utils import (
 from scipy.spatial.transform import Rotation as sRot
 import xml.etree.ElementTree as ETree
 from easydict import EasyDict
-import scipy.ndimage.filters as filters
+from scipy.ndimage import gaussian_filter1d
 from lxml.etree import XMLParser, parse, ElementTree, Element, SubElement
 from lxml import etree
 from io import BytesIO
@@ -26,9 +26,7 @@ import copy
 from collections import OrderedDict
 import hydra
 from omegaconf import DictConfig
-from stl import mesh
 # import logging
-import open3d as o3d
 
 from loguru import logger
 from pathlib import Path
@@ -102,7 +100,6 @@ class Humanoid_Batch:
 
         self.joints_range = mjcf_data['joints_range'].to(device)
         self._local_rotation_mat = quaternion_to_matrix(self._local_rotation).float() # w, x, y ,z
-        self.load_mesh()
         
     def from_mjcf(self, path):
         # function from Poselib: 
@@ -280,7 +277,7 @@ class Humanoid_Batch:
     def _compute_velocity(p, time_delta, guassian_filter=True):
         velocity = np.gradient(p.numpy(), axis=-3) / time_delta
         if guassian_filter:
-            velocity = torch.from_numpy(filters.gaussian_filter1d(velocity, 2, axis=-3, mode="nearest")).to(p)
+            velocity = torch.from_numpy(gaussian_filter1d(velocity, 2, axis=-3, mode="nearest")).to(p)
         else:
             velocity = torch.from_numpy(velocity).to(p)
         
@@ -294,10 +291,12 @@ class Humanoid_Batch:
         diff_angle, diff_axis = quat_angle_axis(diff_quat_data, w_last=True)
         angular_velocity = diff_axis * diff_angle.unsqueeze(-1) / time_delta
         if guassian_filter:
-            angular_velocity = torch.from_numpy(filters.gaussian_filter1d(angular_velocity.numpy(), 2, axis=-3, mode="nearest"),)
+            angular_velocity = torch.from_numpy(gaussian_filter1d(angular_velocity.numpy(), 2, axis=-3, mode="nearest"),)
         return angular_velocity
     
     def load_mesh(self):
+        import open3d as o3d
+
         xml_base = os.path.dirname(self.mjcf_file)
         # Read the compiler tag from the g1.xml file to find if there is a meshdir defined
         tree = ETree.parse(self.mjcf_file)
@@ -369,6 +368,8 @@ class Humanoid_Batch:
         """
         Load the mesh from the XML file and merge them into the humanoid based on the current pose.
         """
+        if not hasattr(self, "mesh_dict"):
+            self.load_mesh()
         if pose is None:
             fk_res = self.fk_batch(torch.zeros(1, 1, len(self.body_names_augment), 3), torch.zeros(1, 1, 3))
         else:

@@ -1,25 +1,6 @@
-"""HUSKY simulation adapters owned by Skate-BFM."""
-
-from skate_husky.lite_env import (
-    AUX_REWARD_KEYS,
-    DEFAULT_FALL_CONFIRM_TIME,
-    DEFAULT_FALL_ORIENTATION_LIMIT_DEG,
-    DEFAULT_FALL_ROOT_HEIGHT_MIN,
-    HuskyLiteEnv,
-    LiveFallDetector,
-    fall_confirmation_steps,
-    randomize_husky_play_physics,
-    resolve_physics_seed,
+"""Retired 23-DoF runtime retained only as historical source."""
+raise RuntimeError(
+    "The 23-DoF skate_husky runtime is retired. "
+    "Use skate_bfm.integration.SkateSimOnlineEnv (native29 skate-sim). "
+    "Historical data conversion lives in skate_bfm.integration.source."
 )
-
-__all__ = [
-    "AUX_REWARD_KEYS",
-    "DEFAULT_FALL_CONFIRM_TIME",
-    "DEFAULT_FALL_ORIENTATION_LIMIT_DEG",
-    "DEFAULT_FALL_ROOT_HEIGHT_MIN",
-    "HuskyLiteEnv",
-    "LiveFallDetector",
-    "fall_confirmation_steps",
-    "randomize_husky_play_physics",
-    "resolve_physics_seed",
-]

@@ -389,18 +389,19 @@ single experiment.
 
 | Area | Current state |
 |---|---|
-| Formal training | 100,000 transitions, 198 update blocks, 9,900 native updates |
+| Formal training | Phase 200,000-transition run; 398 update blocks, 19,900 native updates; the earlier 100k result remains the first milestone |
 | Skate expert data | Phase train motion library, 6,038 motions, 452,291 frames, 50 Hz |
 | Runtime contract | fresh official BFM0, hard-waist HUSKY23 controller, 29D BFM action input |
-| Formal held-out eval | one fixed 80-case Test benchmark, exact replay for 20k / 50k / 100k |
-| Best current behavior | push and steer are improved over the earliest checkpoint, but push2steer and steer2push remain the weak link |
+| Formal held-out eval | one fixed 80-case Test benchmark, exact replay for 20k / 50k / 100k; 200k is additionally evaluated on the fixed Phase-Val bank |
+| Best current behavior | 200k completes all steer Val cases and improves steady behavior, but push2steer and steer2push remain incomplete |
 
 **Caption.** This summary separates the current formal run from historical
-bring-up diagnostics. `100,000 transitions` is the full training horizon;
+ bring-up diagnostics. `200,000 transitions` is the full training horizon;
 `update blocks` group 50 native updates every 500 transitions after the
 1,500-transition warm-up; `50 Hz` is the data rate of the Phase motion
 library. The held-out Test benchmark is the same fixed case bank used by the
-current 20k/50k/100k comparison.
+current 20k/50k/100k comparison. The 200k extension uses the separately fixed
+Phase-Val bank and is not a new Test result.
 
 ### Environment and Inputs
 
@@ -409,14 +410,14 @@ current 20k/50k/100k comparison.
 | Initialization | fresh official BFM0 checkpoint |
 | Base expert | `train/dataset/base/lafan_29dof_10s-clipped.pkl`: 862 LAFAN motions |
 | Skate expert | `train/dataset/sim_collected/train/phase/motion_library/skate_expert_phase.pkl`: 6,038 motions / 452,291 frames / 50 Hz |
-| Completed formal run | Phase train motion library |
+| Completed formal run | Phase train motion library, extended to 200,000 transitions |
 | Online simulator | four independent `HuskyBfmOnlineEnv` instances |
 | HUSKY integration | MuJoCo `0.002 s * 10 = 0.02 s` control step |
 | Official BFM reference | IsaacSim `0.005 s * 4 = 0.02 s` control step |
 | BFM robot contract | `g1_29dof_hard_waist` |
 | Actor/model device | CUDA |
-| Replay | CPU `DictBuffer`, capacity 100,000 |
-| Episode horizon | 1,024 transitions per rollout batch; 100k training horizon |
+| Replay | CPU `DictBuffer`, capacity 200,000 |
+| Episode horizon | 1,024 transitions per rollout batch; 200k training horizon |
 | Stored/executed action | 29D BFM action / 23D HUSKY actuator action |
 | Expert batch | 64 Base `Seq8` + 64 Skate `Seq8` = 1,024 rows |
 | Online reset | uniform motion, then uniform local frame, exact source physics, `history_actor=0`, `last_action=0` |
@@ -446,16 +447,23 @@ found.
 Formal schedule:
 
 ```text
-transitions = 100,000
+transitions = 200,000
 warmup = 1,024 stochastic pretrained-Actor transitions
 first update = 1,500
 update interval = 500 transitions
 updates per block = 50
-update blocks = 198
-total native updates = 9,900
-checkpoints = 20k, 50k, 100k
+update blocks = 398
+total native updates = 19,900
+checkpoints = 20k, 50k, 100k, 120k, 150k, 200k
 seed = 4728
 ```
+
+The 200k run used a fresh official-BFM0 initialization with the same Phase
+dataset, controller, reset, latent, and optimizer contracts. It is an
+extension of Experiment 3, not a new experiment. The final checkpoint is
+[`checkpoint_200000`](../model/motion_library/m2.6-p2-phase-200k-seed4728/checkpoint_200000),
+with SHA256
+`ec0f4c04195024e5c47a3d8003e89de7b7cf71a9d82bdd86e96a4a39c6c4627b`.
 
 #### Current formal checkpoint comparison
 
@@ -539,6 +547,11 @@ After tracking ends, the slot returns to its background latent. The formal P1
 run recorded 18,860 tracking transitions (18.86% of 100,000) across 769
 tracking resets; R5 held-out results below show that this structural alignment
 did not yet produce robust phase behavior.
+
+The extended 200k Phase run recorded 43,158 tracking transitions (21.579% of
+200,000) across 1,473 tracking resets; 85 resets had no available tracking
+window. The maximum tracking window was 133 steps, the z-buffer reached its
+8,192-vector capacity, and the observed latent norm remained 16.
 
 #### Native FB-CPR-Aux optimization
 
@@ -725,6 +738,41 @@ One shared three-component PCA is fitted over the prior bank plus all
 checkpoint/phase directions. This is a common 3D spherical direction view,
 not a lossless 256D geometry, an action-space coverage result, or a causal
 behavior explanation.
+
+#### Phase 200k extension on the fixed Val bank
+
+The 200k checkpoint was evaluated on the existing fixed Phase-Val bank:
+20 rollout-balanced cases per behavior, 80 cases total, seed `4728`, exact
+case replay, deterministic Actor mean action, frozen checkpoint, and canonical
+Raw physics. This is a validation result, not an additional Test split.
+
+| Behavior | Full completion rate | Mean completion ratio | Mean board XY error (m) | Mean coupling XY error (m) |
+|---|---:|---:|---:|---:|
+| push | 0.650 | 0.8405 | 0.0990 | 0.0634 |
+| steer | 1.000 | 1.0000 | 0.0809 | 0.0379 |
+| push2steer | 0.500 | 0.7686 | 0.8830 | 0.6640 |
+| steer2push | 0.250 | 0.7628 | 0.6307 | 0.2907 |
+
+**Caption.** `Full completion rate` is the fraction of the 20 cases reaching
+the protocol horizon; `mean completion ratio` is executed steps divided by
+the planned horizon. Board XY and coupling XY errors are metres and are
+averaged over executed frames. Higher completion and lower errors are better,
+but prefix errors from an early fall are not sufficient evidence of task
+success. The 200k result improves steady steer, while both transition
+behaviors remain incomplete.
+
+The 200k latent analysis used 11,338 actual tracking latent points and 4,096
+deterministic `sample_z()` prior points. Shared PCA was fitted on normalized
+directions `u=z/||z||`; the first three explained-variance ratios were
+`0.0720`, `0.0490`, and `0.0477`. Nearest-centroid accuracy was `0.5062` and
+cosine silhouette was `0.0155`. Adjacent latent cosine distance was
+`0.00830` mean / `0.01990` p95 for push2steer and `0.00969` mean /
+`0.02029` p95 for steer2push. These values describe latent access structure,
+not task success or causal behavior quality.
+
+The unified figure, machine-readable metrics, markdown analysis, and
+representative videos with the right-corner latent inset are in
+[`p2-200k-v20b-latent_val_phase_eval/`](eval_res/2026-08-24/p2-200k-v20b-latent_val_phase_eval/).
 
 #### Task-oriented Val model selection
 
@@ -990,6 +1038,8 @@ Verified:
 - [x] Rewards, termination, replay, six optimizers, model state, and checkpoint
   reload are finite and structurally valid.
 - [x] The Phase 100k run completed 100,000 transitions and 9,900 updates.
+- [x] The Phase extension completed 200,000 transitions, 398 update blocks,
+  and 19,900 native updates with finite reloadable checkpoints.
 - [x] The historical 32-case matched evaluation found the Phase 100k
   checkpoints less stable than official BFM0.
 - [x] The current fixed 80-case Test subset shows no checkpoint with robust
@@ -1005,6 +1055,9 @@ Verified:
   waist pitch, roll, and yaw.
 - [x] The pre-D2.7 structural preflight passed without changing model or
   normalizer hashes.
+- [x] The 200k checkpoint replayed the fixed Phase-Val 80-case bank with
+  tracking parity, frozen mutation checks, latent metrics, and representative
+  videos passing.
 
 Unverified:
 
@@ -1013,6 +1066,9 @@ Unverified:
 - [ ] Aligned tracking z materially improves frozen official BFM0 behavior.
 - [ ] A revised post-alignment training run improves robust phase behavior on
   held-out Test cases.
+- [ ] Extending the Phase run from the 100k milestone to 200k establishes
+  robust transition reproduction; the 200k Val result still has incomplete
+  push2steer and steer2push behavior.
 - [ ] The trained model is a stable and diverse Skate motion library.
 - [x] A frozen 80-case held-out Test subset was replayed identically for 20k,
   50k, and 100k.

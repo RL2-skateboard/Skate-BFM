@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import os
@@ -19,12 +18,10 @@ ISAAC_ENV_ROOT = Path(
 ).expanduser().resolve()
 sys.path[:0] = [
     str(REPOSITORY_ROOT / "src"),
-    str(REPOSITORY_ROOT / "husky_sim" / "src"),
     str(ISAAC_ENV_ROOT),
 ]
 
 import gymnasium
-import mujoco
 import numpy as np
 import safetensors.torch
 import torch
@@ -35,7 +32,6 @@ from humanoidverse.agents.envs.humanoidverse_isaac import (
     HumanoidVerseIsaacConfig,
 )
 from humanoidverse.agents.envs.utils.gym_spaces import json_to_space
-from skate_bfm.integration import HuskyBfmOnlineEnv
 
 DATASET_ROOT = REPOSITORY_ROOT / "train/dataset"
 RAW_DATASET_ROOT = DATASET_ROOT / "sim_collected/train/raw"
@@ -90,115 +86,6 @@ def resolve_source_rollout_path(record: Mapping[str, Any]) -> Path:
         "Cannot uniquely resolve source rollout "
         f"{recorded} under {RAW_DATASET_ROOT}: {len(matches)} candidates"
     )
-
-
-def validate_raw_layout(
-    metadata_path: Path,
-    raw_qpos: np.ndarray,
-    raw_qvel: np.ndarray,
-    env: HuskyBfmOnlineEnv,
-) -> dict[str, Any]:
-    if not metadata_path.is_file():
-        raise FileNotFoundError(f"Canonical raw metadata not found: {metadata_path}")
-    metadata = json.loads(metadata_path.read_text())
-    required = (
-        "nq",
-        "nv",
-        "joint_order",
-        "board_joint_order",
-        "qpos_quaternion_order",
-        "robot_xml",
-        "fields",
-    )
-    if any(field not in metadata for field in required):
-        raise RuntimeError(f"Canonical raw layout metadata is incomplete: {metadata_path}")
-    model = env.env.model
-    if raw_qpos.ndim != 2 or raw_qvel.ndim != 2:
-        raise RuntimeError("Canonical raw qpos/qvel must be rank-2 arrays.")
-    fields = metadata["fields"]
-    if (
-        int(metadata["nq"]) != model.nq
-        or int(metadata["nv"]) != model.nv
-        or raw_qpos.shape[1] != model.nq
-        or raw_qvel.shape[1] != model.nv
-        or fields.get("qpos", {}).get("shape") != list(raw_qpos.shape)
-        or fields.get("qvel", {}).get("shape") != list(raw_qvel.shape)
-        or fields.get("qpos", {}).get("dtype") != str(raw_qpos.dtype)
-        or fields.get("qvel", {}).get("dtype") != str(raw_qvel.dtype)
-        or metadata["qpos_quaternion_order"] != "wxyz"
-    ):
-        raise RuntimeError(f"Canonical raw qpos/qvel layout mismatch: {metadata_path}")
-    robot_joint_order = tuple(
-        model.joint(index).name
-        for index in range(model.njnt)
-        if (model.joint(index).name or "").startswith("robot/")
-        and model.jnt_type[index] != mujoco.mjtJoint.mjJNT_FREE
-    )
-    board_joint_order = tuple(
-        model.joint(index).name
-        for index in range(model.njnt)
-        if (model.joint(index).name or "").startswith("skateboard/")
-        and model.jnt_type[index] != mujoco.mjtJoint.mjJNT_FREE
-    )
-    free_joint_order = tuple(
-        model.joint(index).name
-        for index in range(model.njnt)
-        if model.jnt_type[index] == mujoco.mjtJoint.mjJNT_FREE
-    )
-    actuator_order = tuple(
-        model.actuator(index).name
-        for index in range(model.nu)
-        if (model.actuator(index).name or "").startswith("robot/")
-    )
-    if (
-        tuple(metadata["joint_order"]) != robot_joint_order
-        or tuple(metadata["board_joint_order"]) != board_joint_order
-        or len(actuator_order) != len(robot_joint_order)
-        or set(actuator_order) != set(robot_joint_order)
-        or free_joint_order
-        != (
-            "robot/floating_base_joint",
-            "skateboard/floating_base_joint_skateboard",
-        )
-    ):
-        raise RuntimeError(f"Canonical raw joint order mismatch: {metadata_path}")
-    source_xml = Path(metadata["robot_xml"]).expanduser()
-    current_xml = env.env.xml_path.expanduser().resolve()
-    if not source_xml.is_file() or not source_xml.resolve().samefile(current_xml):
-        raise RuntimeError(
-            f"Canonical raw source XML differs from current HUSKY XML: {metadata_path}"
-        )
-    return metadata
-
-
-def load_source_rollout(
-    source_path: Path,
-    env: HuskyBfmOnlineEnv,
-    expected_physics_seed: int,
-) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
-    """Load one canonical raw source and validate its recorded physics."""
-
-    source_path = source_path.expanduser().resolve()
-    if not source_path.is_file():
-        raise FileNotFoundError(f"Canonical raw rollout not found: {source_path}")
-    with np.load(source_path, allow_pickle=False) as archive:
-        if "qpos" not in archive or "qvel" not in archive:
-            raise RuntimeError(f"Canonical raw rollout lacks qpos/qvel: {source_path}")
-        raw_qpos = np.asarray(archive["qpos"]).copy()
-        raw_qvel = np.asarray(archive["qvel"]).copy()
-    metadata = validate_raw_layout(
-        source_path.with_suffix(".json"),
-        raw_qpos,
-        raw_qvel,
-        env,
-    )
-    source_physics = metadata.get("physics_randomization")
-    if not isinstance(source_physics, dict):
-        raise RuntimeError(f"Canonical raw source lacks physics_randomization: {source_path}")
-    normalized = env.env.validate_source_physics(source_physics)
-    if normalized["seed"] != int(expected_physics_seed):
-        raise RuntimeError(f"Canonical raw physics seed mismatch: {source_path}")
-    return raw_qpos, raw_qvel, copy.deepcopy(source_physics)
 
 
 def checkpoint_model_path(checkpoint_dir: Path) -> Path:
@@ -331,7 +218,18 @@ def load_bfm_checkpoint(agent: Any, checkpoint_dir: Path) -> dict[str, Any]:
         raise FileNotFoundError("BFM0 checkpoint metadata is incomplete.")
     checkpoint_config = json.loads(config_path.read_text())
     init_kwargs = json.loads(init_kwargs_path.read_text())
-    if checkpoint_config != agent._model.cfg.model_dump():
+    runtime_config = agent._model.cfg.model_dump()
+    # Device placement is runtime state, while every architecture/config field
+    # remains strict. Never rewrite the checkpoint metadata or model config.
+    comparable_checkpoint = {
+        key: value for key, value in checkpoint_config.items() if key != "device"
+    }
+    comparable_runtime = {key: value for key, value in runtime_config.items() if key != "device"}
+    if (
+        "device" not in checkpoint_config
+        or "device" not in runtime_config
+        or comparable_checkpoint != comparable_runtime
+    ):
         raise RuntimeError("Pretrained BFM0 model configuration differs from Skate-BFM.")
     if init_kwargs.get("action_dim") != agent.action_dim:
         raise RuntimeError("Pretrained BFM0 action dimension mismatch.")
@@ -364,4 +262,6 @@ def load_bfm_checkpoint(agent: Any, checkpoint_dir: Path) -> dict[str, Any]:
         "model_file": str(model_path),
         "model_sha256": hash_file(model_path),
         "optimizer_policy": "fresh optimizers; pretrained optimizer state is not loaded",
+        "checkpoint_device": checkpoint_config["device"],
+        "runtime_device": runtime_config["device"],
     }

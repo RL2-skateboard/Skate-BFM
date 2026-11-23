@@ -1,3189 +1,367 @@
 #!/usr/bin/env python3
-# ruff: noqa: E402, I001
-"""Evaluate, record, or view frozen Skate-BFM policies on Phase + Raw data."""
+"""Evaluate native29 BFM policies and use skate-sim's versioned public replay.
 
+Historical 23-DoF raw resets, teacher parity and paired trajectory scores are
+retired. An offline latent is an independent condition, never an aligned reset.
+Interactive playback belongs to skate-sim/play.py --replay.
+"""
 from __future__ import annotations
 
 import argparse
-import copy
 import hashlib
-import itertools
 import json
 import math
-import signal
-import subprocess
+import os
 import sys
-import tempfile
-from collections import Counter
-from collections.abc import Mapping, Sequence
+import subprocess
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
-import joblib
-import mujoco
+os.environ.setdefault("MUJOCO_GL", "egl")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+SIM_ROOT = REPOSITORY_ROOT.parent / "skate-sim"
+sys.path[:0] = [str(REPOSITORY_ROOT / "src"), str(SIM_ROOT / "src"),
+                str(REPOSITORY_ROOT / "train/scripts")]
+
 import numpy as np
 import torch
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path[:0] = [
-    str(REPOSITORY_ROOT / "src"),
-    str(REPOSITORY_ROOT / "husky_sim" / "src"),
-    str(SCRIPT_DIRECTORY),
-]
-
-from data_collection.convert_continuous import (
-    bfm_joint_contract,
-    convert_record,
-    load_reference,
+from skate_bfm.integration import AUX_REWARD_KEYS, SkateSimOnlineEnv
+from skate_bfm.integration.actions import BFM0_JOINTS
+from skate_sim.record import (
+    Recorder, checkpoint_manifest, compiled_model_xml, numerics_manifest,
 )
-from skate_bfm.integration import HuskyBfmOnlineEnv
-from train_runner import (
-    checkpoint_model_path,
-    hash_buffers,
-    hash_components,
-    hash_data,
-    hash_file,
-    hash_params,
-)
-from train_skate_bfm import AlignedSkateTrackingContext, load_frozen_agent
+from skate_sim.replay import read_record, replay
+
+SCHEMA = "skate-bfm-native29-evaluation-v1"
+PROTOCOL = REPOSITORY_ROOT / "train/evaluation_protocol.json"
 
 
-CONTROL_DT = 0.02
-FPS = 50
-EVAL_SECONDS = 5.0
-EVAL_STEPS = 250
-LEAD_SECONDS = 1.0
-LEAD_STEPS = 50
-DIRECTION_SPEED_EPS_MPS = 0.05
-NET_DISPLACEMENT_EPS_M = 0.05
-PHASE_LABELS = {
-    0: "push",
-    1: "push2steer",
-    2: "steer_left",
-    3: "steer_right",
-    4: "steer_forward",
-    5: "steer2push",
-    6: "fall",
-}
-STEER = frozenset(("steer_left", "steer_forward", "steer_right"))
-BEHAVIORS = ("push", "steer", "push2steer", "steer2push")
-LATENT_COLORS = {
-    "push": "#2563eb",
-    "steer": "#dc2626",
-    "push2steer": "#059669",
-    "steer2push": "#d97706",
-}
-SELECTION_SEED_OFFSETS = {
-    "push": 0,
-    "steer": 1000,
-    "push2steer": 2000,
-    "steer2push": 3000,
-}
-PRIMARY_METRICS = (
-    "joint_position_mae_rad",
-    "joint_velocity_mae_rad_s",
-    "root_orientation_geodesic_error_deg",
-    "board_xy_displacement_error_m",
-    "board_heading_error_deg",
-    "coupling_xy_error_m",
-)
-REFERENCE_METRICS = (
-    "joint_position_mae_rad",
-    "joint_velocity_mae_rad_s",
-    "root_xy_displacement_error_m",
-    "root_z_error_m",
-    "root_orientation_geodesic_error_deg",
-    "board_xy_displacement_error_m",
-    "board_orientation_geodesic_error_deg",
-    "board_linear_velocity_error_mps",
-    "board_angular_velocity_error_rad_s",
-    "board_heading_error_deg",
-    "board_tilt_error_deg",
-    "coupling_xy_error_m",
-    "coupling_z_error_m",
-)
-TASK_SERIES_METRICS = (
-    "board_planar_velocity_error_mps",
-    "board_speed_error_mps",
-    "board_velocity_direction_error_deg",
-    "board_velocity_direction_valid_fraction",
-    "feet_on_board_ratio",
-)
+def write_json(path, value):
+    Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    def common(subparser: argparse.ArgumentParser) -> None:
-        subparser.add_argument("--checkpoint", required=True, type=Path)
-        subparser.add_argument("--checkpoint-sha256")
-        subparser.add_argument("--label", required=True)
-        subparser.add_argument("--training-summary", required=True, type=Path)
-        subparser.add_argument("--seed", type=int, default=4728)
-
-    evaluate = subparsers.add_parser("eval", help="Formal Phase + Raw evaluation.")
-    common(evaluate)
-    evaluate.add_argument("--split", choices=("val", "test"), default="test")
-    evaluate.add_argument(
-        "--behavior",
-        choices=(*BEHAVIORS, "all"),
-        default="all",
-    )
-    evaluate.add_argument("--steady-duration-s", type=float, default=3.0)
-    evaluate.add_argument("--max-cases-per-behavior", type=int)
-    evaluate.add_argument("--case-spec", type=Path)
-    evaluate.add_argument(
-        "--latent-analysis",
-        action="store_true",
-        help="Analyze the tracking latents used by the frozen eval rollout.",
-    )
-    evaluate.add_argument(
-        "--latent-inset",
-        action="store_true",
-        help="Overlay the shared latent projection on representative videos.",
-    )
-
-    video = subparsers.add_parser("video", help="Val Phase + Raw presentation videos.")
-    common(video)
-    video.add_argument(
-        "--behavior",
-        choices=(*BEHAVIORS, "all"),
-        default="all",
-    )
-    video.add_argument(
-        "--steer-direction", choices=("left", "forward", "right", "random"), default="random"
-    )
-    video.add_argument("--clip-s", type=float, default=3.0)
-    video.add_argument("--context-s", type=float, default=0.5)
-    video.add_argument("--with-expert", action="store_true")
-    video.add_argument(
-        "--latent-inset",
-        action="store_true",
-        help="Overlay the shared latent projection on generated videos.",
-    )
-
-    view = subparsers.add_parser("viewer", help="Persistent Val Phase + Raw viewer.")
-    common(view)
-    view.add_argument(
-        "--behavior",
-        choices=(*BEHAVIORS, "all"),
-        default="all",
-    )
-    view.add_argument(
-        "--steer-direction", choices=("left", "forward", "right", "random"), default="random"
-    )
-    view.add_argument("--clip-s", type=float, default=3.0)
-    view.add_argument("--context-s", type=float, default=0.5)
-    return parser.parse_args()
+def numpy(value):
+    return value.detach().cpu().numpy() if torch.is_tensor(value) else np.asarray(value)
 
 
-def write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+def load_protocol(path):
+    protocol = json.loads(Path(path).read_text())
+    if protocol.get("schema") != SCHEMA or protocol.get("source_joint_support") != 29:
+        raise ValueError("Retired/unsupported protocol: native29 cannot restore or score legacy raw23 dynamics.")
+    if protocol.get("control_dt_s") != .02 or protocol.get("physics_dt_s") != .002:
+        raise ValueError("Native29 protocol requires control_dt=.02 and physics_dt=.002.")
+    return protocol
 
 
-def board_yaw(quaternion: np.ndarray) -> float:
-    w, x, y, z = np.asarray(quaternion, dtype=np.float64)
-    return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-
-
-def board_tilt_deg(quaternion: np.ndarray) -> float:
-    q = np.asarray(quaternion, dtype=np.float64)
-    if q.shape != (4,) or not np.isfinite(q).all():
-        raise RuntimeError("Board quaternion must be finite wxyz.")
-    norm = np.linalg.norm(q)
-    if norm <= 1e-12:
-        raise RuntimeError("Board quaternion has zero norm.")
-    _, x, y, _ = q / norm
-    return float(np.degrees(np.arccos(np.clip(1 - 2 * (x * x + y * y), -1, 1))))
-
-
-def quaternion_geodesic_deg(actual: np.ndarray, reference: np.ndarray) -> np.ndarray:
-    actual = np.asarray(actual, dtype=np.float64)
-    reference = np.asarray(reference, dtype=np.float64)
-    actual_norm = np.linalg.norm(actual, axis=-1, keepdims=True)
-    reference_norm = np.linalg.norm(reference, axis=-1, keepdims=True)
-    if (actual_norm <= 1e-12).any() or (reference_norm <= 1e-12).any():
-        raise RuntimeError("Quaternion metric received zero norm.")
-    dot = np.clip(
-        np.abs(np.sum(actual / actual_norm * (reference / reference_norm), axis=-1)), 0, 1
-    )
-    return np.degrees(2 * np.arccos(dot))
-
-
-def wrapped_angle_deg(actual: np.ndarray, reference: np.ndarray) -> np.ndarray:
-    return np.degrees(np.abs(np.angle(np.exp(1j * (actual - reference)))))
-
-
-def summarize(values: np.ndarray) -> dict[str, float]:
-    values = np.asarray(values, dtype=np.float64)
-    if values.size == 0 or not np.isfinite(values).all():
-        raise RuntimeError("Metric values must be finite and non-empty.")
-    return {
-        "mean": float(values.mean()),
-        "std": float(values.std()),
-        "median": float(np.median(values)),
-        "p95": float(np.quantile(values, 0.95)),
-        "max": float(values.max()),
-        "rmse": float(np.sqrt(np.mean(values * values))),
-    }
-
-
-def summarize_valid(values: np.ndarray) -> dict[str, float] | None:
-    """Summarize finite values while retaining low-speed direction invalidity."""
-    values = np.asarray(values, dtype=np.float64)
-    valid = np.isfinite(values)
-    if not valid.any():
+def load_context(path):
+    if path is None:
         return None
-    result = summarize(values[valid])
-    result["valid_count"] = int(valid.sum())
-    result["valid_fraction"] = float(valid.mean())
-    return result
+    value = np.load(path, allow_pickle=False)
+    if value.ndim == 1:
+        value = value[None]
+    if value.ndim != 2 or value.shape[1] != 256 or not len(value) or not np.isfinite(value).all():
+        raise ValueError("Independent context must be a finite [256] or [T,256] NumPy array.")
+    return value.astype(np.float32)
 
 
-def cosine_distance_matrix(left: np.ndarray, right: np.ndarray | None = None) -> np.ndarray:
-    left = left / np.linalg.norm(left, axis=1, keepdims=True)
-    right = left if right is None else right / np.linalg.norm(right, axis=1, keepdims=True)
-    return 1.0 - np.clip(left @ right.T, -1.0, 1.0)
+def recording_kwargs(env, seed):
+    backend = env.env.backend
+    kwargs = dict(seed=seed, scene=backend.scene, controller="pose",
+                  scene_config=backend.scene_config, config=asdict(backend.config))
+    if env.device.type == "cuda":
+        kwargs["num_envs"] = env.num_envs
+    return kwargs
 
 
-def mean_pairwise_cosine_distance(values: np.ndarray) -> float:
-    distances = cosine_distance_matrix(values)
-    if len(values) < 2:
-        return 0.0
-    return float(distances[~np.eye(len(values), dtype=bool)].mean())
+def attach_recording(env, output, checkpoint_files, seed, *, mode="external_bfm29"):
+    backend = env.env.backend
+    recorder = Recorder(str(output), backend=backend.name, scene=backend.scene, seed=seed,
+                        metadata={"schema": "native29_control_v1", "source_joint_support": 29,
+                                  "physics_dt": backend.config.physics_dt,
+                                  "control_dt": backend.config.control_dt,
+                                  "num_envs": env.num_envs, "checkpoint": checkpoint_files,
+                                  "numerics": numerics_manifest(backend),
+                                  "reset_alignment": False})
+    recorder.start(backend.get_state(), backend_kwargs=recording_kwargs(env, seed),
+                   runtime_state=backend.export_replay_state())
+    model_path = output / "model.xml"
+    model_path.write_text(compiled_model_xml(backend))
+    recorder.write("asset_model", files=checkpoint_manifest(str(model_path)))
+    recorder.write("mode", controller=mode, preset=env.env.preset,
+                   initial_state_aligned=False, source_physics_aligned=False,
+                   scene_config=backend.scene_config, joint_order=BFM0_JOINTS)
+    backend.recorder = recorder
+    return recorder
 
 
-def latent_phase_label(case: Mapping[str, Any], phase: str) -> str:
-    if case["behavior"] not in ("push2steer", "steer2push"):
-        return "STEADY"
-    if phase == case.get("pre_phase"):
-        return "PRE"
-    if phase == case.get("transition_phase"):
-        return "TRANSITION"
-    if phase == case.get("post_phase"):
-        return "POST"
-    return "UNKNOWN"
+def validate_checkpoint(path):
+    """Reject retired controllers/layouts before allocating an agent or simulator."""
+    from train_runner import checkpoint_model_path
+
+    path = Path(path).expanduser().resolve()
+    if path.suffix.lower() in (".onnx", ".npz", ".pkl"):
+        raise ValueError("Native29 evaluation requires a complete BFM checkpoint; legacy ONNX/raw23 resets are unsupported.")
+    model = checkpoint_model_path(path)
+    metadata = json.loads((model.parent / "init_kwargs.json").read_text())
+    if metadata.get("action_dim") != 29:
+        raise ValueError("Native29 evaluation rejects checkpoints with a non-29 action dimension.")
+    return path
 
 
-def deterministic_prior(model: Any, count: int, seed: int) -> np.ndarray:
-    cpu_state = torch.random.get_rng_state()
-    cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+def run_eval(args):
+    from train_skate_bfm import load_frozen_agent
+
+    protocol = load_protocol(args.protocol)
+    if not np.isfinite(args.duration_s) or args.duration_s <= 0:
+        raise ValueError("duration-s must be finite and positive.")
+    if args.num_envs < 1 or (args.backend == "mujoco" and args.num_envs != 1):
+        raise ValueError("MuJoCo evaluation supports exactly one world; mjlab supports positive batches.")
+    context = load_context(args.context_npy)
+    checkpoint = validate_checkpoint(args.checkpoint)
+    if args.output.expanduser().resolve().exists():
+        raise FileExistsError("Evaluation output must be a fresh directory.")
+    if args.checkpoint_sha256:
+        from train_runner import checkpoint_model_path, hash_file
+        if hash_file(checkpoint_model_path(checkpoint)) != args.checkpoint_sha256:
+            raise ValueError("Checkpoint SHA256 differs from the explicitly requested identity.")
+    scene = None
+    if args.scene_config:
+        from skate_sim.models.scene import normalize_scene_config
+        scene = normalize_scene_config(json.loads(args.scene_config.read_text()))
+        if not scene["robot"] or not scene["board"]:
+            raise ValueError("Native29 evaluation requires both robot and board.")
+    device = args.device or ("cpu" if args.backend == "mujoco" else "cuda")
+    agent, checkpoint_report = load_frozen_agent(
+        checkpoint, online_env_backend="skate-sim-cpu" if args.backend == "mujoco" else "skate-sim-mjlab",
+        device=device,
+    )
+    output = args.output.expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    env = SkateSimOnlineEnv(backend=args.backend, num_envs=args.num_envs,
+                           preset=args.preset, seed=args.seed, scene_config=scene)
+    recorder = None
+    samples = []
+    resets = terminations = truncations = 0
+    torch.manual_seed(args.seed)
     try:
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-        return model.sample_z(count, device=model.device).detach().cpu().numpy()
-    finally:
-        torch.random.set_rng_state(cpu_state)
-        if cuda_state is not None:
-            torch.cuda.set_rng_state_all(cuda_state)
-
-
-def latent_sample_indices(count: int, limit: int = 1024) -> np.ndarray:
-    if count <= limit:
-        return np.arange(count)
-    return np.linspace(0, count - 1, limit, dtype=np.int64)
-
-
-def latent_basic_stats(z: np.ndarray) -> dict[str, Any]:
-    norms = np.linalg.norm(z, axis=1)
-    return {
-        "count": int(len(z)),
-        "norm": summarize(norms),
-    }
-
-
-def latent_render_projection(
-    agent: Any,
-    latent_runs: Sequence[Mapping[str, Any]],
-    seed: int,
-) -> dict[str, Any]:
-    prior = deterministic_prior(agent._model, 4096, seed)
-    points: list[dict[str, Any]] = []
-    for run in latent_runs:
-        case = run["case"]
-        z = np.asarray(run["z"], dtype=np.float64)
-        phases = run["phases"]
-        for index, (value, phase) in enumerate(zip(z, phases)):
-            points.append(
-                {
-                    "behavior": str(case["behavior"]),
-                    "case_id": str(case["case_id"]),
-                    "step": index,
-                    "phase": latent_phase_label(case, str(phase)),
-                    "z": value,
-                }
-            )
-    if not points:
-        raise RuntimeError("Latent analysis received no executed latent points.")
-    actual = np.stack([item["z"] for item in points])
-    all_z = np.concatenate((prior, actual), axis=0)
-    directions = all_z / np.linalg.norm(all_z, axis=1, keepdims=True)
-    centered = directions - directions.mean(axis=0)
-    _, singular, components = np.linalg.svd(centered, full_matrices=False)
-    components = components[:3]
-    eigenvalues = (singular * singular) / max(len(directions) - 1, 1)
-    explained = (eigenvalues / max(eigenvalues.sum(), 1e-12))[:3]
-    projected = centered @ components.T
-    for item, coords in zip(points, projected[len(prior) :]):
-        item["pca"] = coords
-    return {
-        "prior_z": prior,
-        "prior": projected[: len(prior)],
-        "points": points,
-        "explained": explained,
-    }
-
-
-def pca_explained_ratio(values: np.ndarray) -> list[float]:
-    centered = values - values.mean(axis=0)
-    singular = np.linalg.svd(centered, compute_uv=False)
-    variance = singular * singular
-    total = max(float(variance.sum()), 1e-12)
-    return (variance[:3] / total).tolist()
-
-
-def latent_analysis_markdown(
-    path: Path,
-    checkpoint: Path,
-    split: str,
-    cases: Sequence[Mapping[str, Any]],
-    metrics: Mapping[str, Any],
-) -> None:
-    behavior = metrics["behavior"]
-    transition = metrics["transition_continuity"]
-    lines = [
-        "# Latent Space Analysis",
-        "",
-        f"- Checkpoint: `{checkpoint}`",
-        f"- Split: `{split}`",
-        f"- Cases: `{len(cases)}` (" + ", ".join(
-            f"{name}={sum(case['behavior'] == name for case in cases)}" for name in BEHAVIORS
-        ) + ")",
-        "- Latent source: the exact tracking `z_t` returned by `AlignedSkateTrackingContext.encode` and consumed by the frozen actor.",
-        "- Prior reference: 4096 deterministic samples from the checkpoint model's `sample_z`, seed `4728`.",
-        "- Projection: PCA is fitted jointly on normalized directions `u=z/||z||` from prior and evaluated latents.",
-        "- Limitation: the 3D plot shows a direction projection, not lossless 256D geometry and not task success.",
-        "",
-        "![Unified latent space](latent_space_compare.png)",
-        "",
-        "## Behavior Statistics",
-        "",
-        "| Behavior | Count | Norm mean | Norm std | PCA centroid (x, y, z) |",
-        "|---|---:|---:|---:|---|",
-    ]
-    for name in BEHAVIORS:
-        item = behavior[name]
-        centroid = item["pca_centroid"]
-        lines.append(
-            f"| {name} | {item['count']} | {item['norm']['mean']:.5g} | "
-            f"{item['norm']['std']:.5g} | ({centroid[0]:.5g}, {centroid[1]:.5g}, {centroid[2]:.5g}) |"
-        )
-    lines.extend(
-        [
-            "",
-            "The norm columns describe the magnitude of the actual 256D latent. The centroid is in the shared PCA coordinate system.",
-            "",
-            "## Structure",
-            "",
-            f"- Nearest-centroid accuracy: `{metrics['separability']['nearest_centroid_accuracy']:.4f}`.",
-            f"- Silhouette score (cosine, deterministic subsample): `{metrics['separability']['silhouette_score']:.4f}`.",
-            "- Pairwise cosine distances are computed on normalized latent directions; PCA distances are only distances in the displayed 3D projection.",
-            "",
-            "## Transition Continuity",
-            "",
-            "| Behavior | PRE count | TRANSITION count | POST count | PRE -> TRANSITION cosine | TRANSITION -> POST cosine | Adjacent cosine mean | Adjacent cosine p95 |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|",
-        ]
-    )
-    for name in ("push2steer", "steer2push"):
-        item = transition[name]
-        lines.append(
-            f"| {name} | {item['segments']['PRE']['count']} | {item['segments']['TRANSITION']['count']} | "
-            f"{item['segments']['POST']['count']} | {item['pre_to_transition_cosine_distance']:.5g} | "
-            f"{item['transition_to_post_cosine_distance']:.5g} | {item['adjacent_cosine_distance']['mean']:.5g} | "
-            f"{item['adjacent_cosine_distance']['p95']:.5g} |"
-        )
-    lines.extend(
-        [
-            "",
-            "PRE, TRANSITION, and POST are assigned from each case's formal `frame_phase` mapping. Adjacent distances use consecutive latent values within each executed case, including across phase boundaries.",
-            "",
-            "## Interpretation",
-            "",
-            "This analysis describes which latent directions the frozen policy actually visited under the fixed benchmark. Separation or continuity is not evidence of task success; task metrics and completion remain the authoritative performance measures.",
-            "",
-        ]
-    )
-    path.write_text("\n".join(lines))
-
-
-def run_latent_analysis(
-    root: Path,
-    agent: Any,
-    checkpoint: Path,
-    split: str,
-    cases: Sequence[Mapping[str, Any]],
-    latent_runs: Sequence[Mapping[str, Any]],
-    seed: int,
-    projection: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
-
-    colors = LATENT_COLORS
-    projection = (
-        latent_render_projection(agent, latent_runs, seed)
-        if projection is None
-        else projection
-    )
-    prior_projected = projection["prior"]
-    points = projection["points"]
-    explained = projection["explained"]
-    prior = projection["prior_z"]
-    actual = np.stack([item["z"] for item in points])
-    directions = np.concatenate(
-        (
-            prior / np.linalg.norm(prior, axis=1, keepdims=True),
-            actual / np.linalg.norm(actual, axis=1, keepdims=True),
-        ),
-        axis=0,
-    )
-
-    behavior_stats: dict[str, Any] = {}
-    centroids: dict[str, np.ndarray] = {}
-    for name in BEHAVIORS:
-        items = [item for item in points if item["behavior"] == name]
-        z = np.stack([item["z"] for item in items])
-        coords = np.stack([item["pca"] for item in items])
-        unit = z / np.linalg.norm(z, axis=1, keepdims=True)
-        centroid_unit = unit.mean(axis=0)
-        centroid_unit /= np.linalg.norm(centroid_unit)
-        centroids[name] = centroid_unit
-        sample = unit[latent_sample_indices(len(unit))]
-        centroid_coords = coords.mean(axis=0)
-        behavior_stats[name] = {
-            **latent_basic_stats(z),
-            "pca_centroid": centroid_coords.tolist(),
-            "shared_pca_explained_variance_ratio": explained.tolist(),
-            "behavior_pca_explained_variance_ratio_first_3": pca_explained_ratio(unit),
-            "pca_3d_mean_radius": float(np.linalg.norm(coords - centroid_coords, axis=1).mean()),
-            "within_behavior": {
-                "pairwise_cosine_distance": mean_pairwise_cosine_distance(sample),
-                "centroid_cosine_distance": float((1.0 - sample @ centroid_unit).mean()),
-                "pairwise_sample_count": int(len(sample)),
-            },
-        }
-
-    between: dict[str, Any] = {}
-    for left, right in itertools.combinations(BEHAVIORS, 2):
-        left_items = [item for item in points if item["behavior"] == left]
-        right_items = [item for item in points if item["behavior"] == right]
-        left_unit = np.stack([item["z"] for item in left_items])
-        right_unit = np.stack([item["z"] for item in right_items])
-        left_unit /= np.linalg.norm(left_unit, axis=1, keepdims=True)
-        right_unit /= np.linalg.norm(right_unit, axis=1, keepdims=True)
-        key = f"{left}_vs_{right}"
-        between[key] = {
-            "centroid_cosine_distance": float(1.0 - centroids[left] @ centroids[right]),
-            "centroid_euclidean_distance_pca3": float(
-                np.linalg.norm(
-                    np.mean([item["pca"] for item in left_items], axis=0)
-                    - np.mean([item["pca"] for item in right_items], axis=0)
-                )
-            ),
-            "mean_pairwise_cosine_distance": float(
-                cosine_distance_matrix(left_unit[latent_sample_indices(len(left_unit))], right_unit[latent_sample_indices(len(right_unit))]).mean()
-            ),
-        }
-
-    labels = np.asarray([BEHAVIORS.index(item["behavior"]) for item in points])
-    unit_actual = actual / np.linalg.norm(actual, axis=1, keepdims=True)
-    centroid_matrix = np.stack([centroids[name] for name in BEHAVIORS])
-    nearest = np.argmax(unit_actual @ centroid_matrix.T, axis=1)
-    # Keep the silhouette calculation bounded while retaining one deterministic slice per class.
-    silhouette_indices = np.concatenate(
-        [np.flatnonzero(labels == index)[latent_sample_indices(int((labels == index).sum()), 256)] for index in range(len(BEHAVIORS))]
-    )
-    sample_unit = unit_actual[silhouette_indices]
-    sample_labels = labels[silhouette_indices]
-    distances = cosine_distance_matrix(sample_unit)
-    silhouettes = []
-    for index, label in enumerate(sample_labels):
-        same = sample_labels == label
-        same[index] = False
-        a = float(distances[index, same].mean()) if same.any() else 0.0
-        b = min(float(distances[index, sample_labels == other].mean()) for other in range(len(BEHAVIORS)) if other != label)
-        silhouettes.append((b - a) / max(a, b, 1e-12))
-
-    transition_metrics: dict[str, Any] = {}
-    for name in ("push2steer", "steer2push"):
-        name_points = [item for item in points if item["behavior"] == name]
-        segments = {}
-        segment_centroids = {}
-        for segment in ("PRE", "TRANSITION", "POST"):
-            values = np.stack([item["z"] for item in name_points if item["phase"] == segment])
-            unit = values / np.linalg.norm(values, axis=1, keepdims=True)
-            segment_unit = unit.mean(axis=0)
-            segment_unit /= np.linalg.norm(segment_unit)
-            segment_centroids[segment] = segment_unit
-            segments[segment] = {"count": int(len(values)), "centroid": segment_unit.tolist()}
-        adjacent = []
-        for run in latent_runs:
-            if run["case"]["behavior"] != name:
-                continue
-            z = np.asarray(run["z"], dtype=np.float64)
-            adjacent.extend(1.0 - np.sum(
-                z[:-1] / np.linalg.norm(z[:-1], axis=1)[:, None]
-                * (z[1:] / np.linalg.norm(z[1:], axis=1)[:, None]), axis=1
-            ))
-        transition_metrics[name] = {
-            "segments": segments,
-            "pre_to_transition_cosine_distance": float(1.0 - segment_centroids["PRE"] @ segment_centroids["TRANSITION"]),
-            "transition_to_post_cosine_distance": float(1.0 - segment_centroids["TRANSITION"] @ segment_centroids["POST"]),
-            "adjacent_cosine_distance": summarize(np.asarray(adjacent, dtype=np.float64)),
-        }
-
-    fig = plt.figure(figsize=(13, 9))
-    axis = fig.add_subplot(111, projection="3d")
-    axis.scatter(prior_projected[:, 0], prior_projected[:, 1], prior_projected[:, 2], s=3, c="#9ca3af", alpha=0.08, label="prior reference")
-    markers = {"STEADY": "o", "PRE": "^", "TRANSITION": "s", "POST": "v", "UNKNOWN": "x"}
-    for name in BEHAVIORS:
-        for segment, marker in markers.items():
-            values = np.stack([item["pca"] for item in points if item["behavior"] == name and item["phase"] == segment]) if any(item["behavior"] == name and item["phase"] == segment for item in points) else np.empty((0, 3))
-            if len(values):
-                axis.scatter(values[:, 0], values[:, 1], values[:, 2], s=9, alpha=0.48, c=colors[name], marker=marker)
-    axis.set_xlabel("PC1")
-    axis.set_ylabel("PC2")
-    axis.set_zlabel("PC3")
-    axis.set_title("Skate-BFM frozen tracking latent directions\nshared PCA with prior reference")
-    legend = [Line2D([0], [0], marker="o", color="w", label=name, markerfacecolor=color, markersize=8) for name, color in colors.items()]
-    legend.append(Line2D([0], [0], marker="o", color="w", label="prior reference", markerfacecolor="#9ca3af", markersize=6, alpha=0.5))
-    legend.extend(Line2D([0], [0], marker=marker, color="black", label=segment, linestyle="None") for segment, marker in markers.items() if segment != "UNKNOWN")
-    axis.legend(handles=legend, loc="upper left", fontsize=8)
-    fig.tight_layout()
-    root.mkdir(parents=True, exist_ok=True)
-    fig.savefig(root / "latent_space_compare.png", dpi=160)
-    plt.close(fig)
-
-    metrics = {
-        "checkpoint": str(checkpoint.resolve()),
-        "split": split,
-        "case_count": len(cases),
-        "behaviors": list(BEHAVIORS),
-        "latent_source": "actual tracking.encode z_t used by frozen actor, truncated at executed transitions",
-        "prior": {"method": "checkpoint model.sample_z", "count": len(prior), "seed": seed, "norm_z": True},
-        "projection": {
-            "method": "shared PCA on normalized directions u=z/||z|| for prior plus actual latents",
-            "input_count": len(directions),
-            "explained_variance_ratio_first_3": explained.tolist(),
-        },
-        "behavior": behavior_stats,
-        "between_behavior": between,
-        "separability": {
-            "nearest_centroid_accuracy": float(np.mean(nearest == labels)),
-            "silhouette_score": float(np.mean(silhouettes)),
-            "silhouette_sample_count": int(len(silhouettes)),
-            "distance": "cosine distance on normalized latent directions",
-        },
-        "transition_continuity": transition_metrics,
-    }
-    write_json(root / "latent_metrics.json", metrics)
-    write_latent_projection(root / "latent_projection.json", projection)
-    latent_analysis_markdown(root / "latent_metrics.md", checkpoint, split, cases, metrics)
-    return {
-        "image": "latent_space_compare.png",
-        "metrics": "latent_metrics.json",
-        "markdown": "latent_metrics.md",
-        "projection": "latent_projection.json",
-        "actual_latent_count": len(points),
-        "prior_count": len(prior),
-        "pca_explained_variance_ratio_first_3": explained.tolist(),
-    }
-
-
-def write_latent_projection(path: Path, projection: Mapping[str, Any]) -> None:
-    write_json(
-        path,
-        {
-            "projection": "shared PCA on normalized latent directions",
-            "prior": np.asarray(projection["prior"]).tolist(),
-            "points": [
-                {
-                    "behavior": point["behavior"],
-                    "case_id": point["case_id"],
-                    "step": point["step"],
-                    "phase": point["phase"],
-                    "pca": np.asarray(point["pca"]).tolist(),
-                }
-                for point in projection["points"]
-            ],
-        },
-    )
-
-
-class RawResolver:
-    """Resolve one Phase record to its exact split-specific raw rollout."""
-
-    def __init__(self, split: str) -> None:
-        if split not in ("val", "test"):
-            raise ValueError(split)
-        self.split = split
-        self.metadata_split = {"val": "validation", "test": "test"}[split]
-        self.root = REPOSITORY_ROOT / "train/dataset/sim_collected" / split / "raw"
-        if not self.root.is_dir():
-            raise FileNotFoundError(self.root)
-        self.cache: dict[Path, tuple[dict[str, np.ndarray], dict[str, Any]]] = {}
-
-    def load(self, record: Mapping[str, Any]) -> tuple[dict[str, np.ndarray], dict[str, Any], Path]:
-        required = (
-            "source_raw_npz",
-            "source_round",
-            "source_rollout",
-            "source_episode",
-            "source_start_frame",
-            "source_end_frame",
-            "physics_seed",
-            "dataset_split",
-        )
-        if any(name not in record for name in required):
-            raise RuntimeError("Phase record lacks raw provenance.")
-        if record["dataset_split"] != self.metadata_split:
-            raise RuntimeError("Phase record split does not match evaluator split.")
-        root = self.root / f"round_{str(record['source_round']).zfill(3)}"
-        root /= f"rollout_{str(record['source_rollout']).zfill(3)}"
-        root /= "raw_rollout"
-        files = sorted(root.glob("*.npz"))
-        if len(files) != 1 or files[0].name != Path(str(record["source_raw_npz"])).name:
-            raise RuntimeError(f"Raw provenance is not uniquely resolvable under {root}.")
-        path = files[0].resolve()
-        if path not in self.cache:
-            metadata_path = path.with_suffix(".json")
-            metadata = json.loads(metadata_path.read_text())
-            expected = {
-                "dataset_split": self.metadata_split,
-                "round_id": str(record["source_round"]).zfill(3),
-                "rollout_id": str(record["source_rollout"]).zfill(3),
-                "episode_id": str(record["source_episode"]),
-            }
-            actual = {key: str(metadata.get(key, "")) for key in expected}
-            if actual != expected:
-                raise RuntimeError(f"Raw metadata mismatch: {actual} != {expected}")
-            physics = metadata.get("physics_randomization")
-            if not isinstance(physics, dict) or int(physics.get("seed", -1)) != int(
-                record["physics_seed"]
-            ):
-                raise RuntimeError("Raw source physics provenance mismatch.")
-            with np.load(path, allow_pickle=False) as archive:
-                state = {name: np.asarray(archive[name]).copy() for name in archive.files}
-            frames = state["qpos"].shape[0]
-            if any(value.shape[0] != frames for value in state.values()):
-                raise RuntimeError(f"Raw arrays are not frame aligned: {path}")
-            if not all(
-                np.isfinite(value).all()
-                for value in state.values()
-                if np.issubdtype(value.dtype, np.number)
-            ):
-                raise RuntimeError(f"Raw arrays contain NaN/Inf: {path}")
-            self.cache[path] = (state, copy.deepcopy(metadata))
-        state, metadata = self.cache[path]
-        return state, metadata, path
-
-
-def phase_paths(split: str) -> tuple[Path, Path]:
-    root = REPOSITORY_ROOT / "train/dataset/sim_collected" / split / "phase/motion_library"
-    return root / "skate_expert_phase.pkl", root / "manifest.json"
-
-
-def load_phase_records(split: str) -> tuple[dict[str, dict[str, Any]], dict[str, Any], Path, Path]:
-    motion_path, manifest_path = phase_paths(split)
-    if not motion_path.is_file() or not manifest_path.is_file():
-        raise FileNotFoundError(f"{split} Phase MotionLibrary is incomplete.")
-    manifest = json.loads(manifest_path.read_text())
-    expected = {"val": "validation", "test": "test"}[split]
-    if manifest.get("dataset_split") != expected:
-        raise RuntimeError("Phase manifest split mismatch.")
-    records = joblib.load(motion_path)
-    if not isinstance(records, dict) or not records:
-        raise RuntimeError("Phase MotionLibrary must be a non-empty mapping.")
-    result = {str(key): value for key, value in records.items()}
-    valid = {"push", "push2steer", "steer_left", "steer_forward", "steer_right", "steer2push"}
-    for key, record in result.items():
-        if record.get("phase_label") not in valid:
-            raise RuntimeError(f"Invalid Phase label in {key}.")
-        if int(record["source_end_frame"]) - int(record["source_start_frame"]) != len(
-            record["dof"]
-        ):
-            raise RuntimeError(f"Phase frame range mismatch in {key}.")
-    return result, manifest, motion_path, manifest_path
-
-
-def source_identity(record: Mapping[str, Any]) -> tuple[str, str, str, str, int]:
-    return (
-        str(record["source_raw_npz"]),
-        str(record["source_round"]).zfill(3),
-        str(record["source_rollout"]).zfill(3),
-        str(record["source_episode"]),
-        int(record["physics_seed"]),
-    )
-
-
-def tracking_seq_length(agent: Any) -> int:
-    value = int(agent._model.cfg.seq_length)
-    if value <= 0:
-        raise RuntimeError(f"Invalid model seq_length: {value}")
-    return value
-
-
-def phase_groups(
-    records: Mapping[str, Mapping[str, Any]],
-) -> list[list[tuple[str, Mapping[str, Any]]]]:
-    grouped: dict[tuple[str, str, str, str, int], list[tuple[str, Mapping[str, Any]]]] = {}
-    for key, record in records.items():
-        grouped.setdefault(source_identity(record), []).append((key, record))
-    result = []
-    for items in grouped.values():
-        items.sort(key=lambda item: int(item[1]["source_start_frame"]))
-        for previous, current in zip(items, items[1:]):
-            if int(previous[1]["source_end_frame"]) != int(current[1]["source_start_frame"]):
-                raise RuntimeError("Phase boundary is not exactly source-frame contiguous.")
-        result.append(items)
-    return result
-
-
-def transition_candidates(
-    records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    seq_length: int,
-) -> tuple[list[dict[str, Any]], Counter[str]]:
-    candidates: list[dict[str, Any]] = []
-    excluded: Counter[str] = Counter()
-    for items in phase_groups(records):
-        for previous, transition, following in zip(items, items[1:], items[2:]):
-            pre_key, pre = previous
-            transition_key, transition_record = transition
-            post_key, post = following
-            label = transition_record["phase_label"]
-            if label == "push2steer":
-                valid = pre["phase_label"] == "push" and post["phase_label"] in STEER
-                kind = "push2steer"
-            elif label == "steer2push":
-                valid = pre["phase_label"] in STEER and post["phase_label"] == "push"
-                kind = "steer2push"
-            else:
-                continue
-            if not valid:
-                excluded[f"{kind}:phase_semantics"] += 1
-                continue
-            start = int(transition_record["source_start_frame"])
-            end = int(transition_record["source_end_frame"])
-            reset = start - LEAD_STEPS
-            raw, metadata, path = resolver.load(transition_record)
-            bridge_end = reset + EVAL_STEPS + seq_length + 1
-            if reset < 0:
-                excluded[f"{kind}:no_lead"] += 1
-            elif bridge_end > len(raw["qpos"]):
-                excluded[f"{kind}:raw_window"] += 1
-            elif np.any(raw["reset"][reset:bridge_end]) or np.any(raw["fall"][reset:bridge_end]):
-                excluded[f"{kind}:raw_reset_or_fall"] += 1
-            else:
-                candidate_index = len([item for item in candidates if item["transition"] == kind])
-                candidates.append(
-                    {
-                        "case_id": f"{kind}_{candidate_index:03d}",
-                        "behavior": kind,
-                        "transition": kind,
-                        "transition_motion_key": transition_key,
-                        "pre_motion_key": pre_key,
-                        "post_motion_key": post_key,
-                        "motion_key": transition_key,
-                        "steps": EVAL_STEPS,
-                        "source_raw_npz": str(path),
-                        "source_round": str(transition_record["source_round"]),
-                        "source_rollout": str(transition_record["source_rollout"]),
-                        "source_episode": str(transition_record["source_episode"]),
-                        "dataset_split": str(transition_record["dataset_split"]),
-                        "command_v": float(transition_record["command_v"]),
-                        "command_h": float(transition_record["command_h"]),
-                        "physics_seed": int(transition_record["physics_seed"]),
-                        "reset_raw_frame": reset,
-                        "transition_start_raw": start,
-                        "transition_end_raw": end,
-                        "pre_phase": pre["phase_label"],
-                        "transition_phase": label,
-                        "post_phase": post["phase_label"],
-                        "phase_ranges": [
-                            {
-                                "phase": pre["phase_label"],
-                                "start": int(pre["source_start_frame"]),
-                                "end": int(pre["source_end_frame"]),
-                            },
-                            {
-                                "phase": label,
-                                "start": start,
-                                "end": end,
-                            },
-                            {
-                                "phase": post["phase_label"],
-                                "start": int(post["source_start_frame"]),
-                                "end": int(post["source_end_frame"]),
-                            },
-                        ],
-                        "source_physics": metadata["physics_randomization"],
-                    }
-                )
-    return candidates, excluded
-
-
-def steady_candidates(
-    records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    behavior: str,
-    steps: int,
-    seq_length: int,
-) -> tuple[list[dict[str, Any]], Counter[str]]:
-    labels = {"push"} if behavior == "push" else STEER
-    candidates: list[dict[str, Any]] = []
-    excluded: Counter[str] = Counter()
-    required_frames = steps + seq_length + 1
-    phase_ids = {name: value for value, name in PHASE_LABELS.items()}
-    for key, record in sorted(records.items()):
-        label = str(record["phase_label"])
-        if label not in labels:
-            continue
-        phase_start = int(record["source_start_frame"])
-        phase_end = int(record["source_end_frame"])
-        if phase_end - phase_start < required_frames:
-            excluded["too_short"] += 1
-            continue
-        reset = (phase_start + phase_end - required_frames) // 2
-        raw, metadata, path = resolver.load(record)
-        raw_end = reset + required_frames
-        if raw_end > len(raw["qpos"]):
-            excluded["tracking_context"] += 1
-            continue
-        if np.any(raw["reset"][reset:raw_end]) or np.any(raw["fall"][reset:raw_end]):
-            excluded["raw_reset_or_fall"] += 1
-            continue
-        expected_phase = phase_ids[label]
-        if not np.all(np.asarray(raw["phase_id"][reset:raw_end]) == expected_phase):
-            excluded["phase_contamination"] += 1
-            continue
-        candidates.append(
-            {
-                "case_id": f"{behavior}_{len(candidates):03d}",
-                "behavior": behavior,
-                "motion_key": key,
-                "source_raw_npz": str(path),
-                "source_round": str(record["source_round"]),
-                "source_rollout": str(record["source_rollout"]),
-                "source_episode": str(record["source_episode"]),
-                "dataset_split": str(record["dataset_split"]),
-                "command_v": float(record["command_v"]),
-                "command_h": float(record["command_h"]),
-                "physics_seed": int(record["physics_seed"]),
-                "reset_raw_frame": reset,
-                "steps": steps,
-                "phase_start_raw": phase_start,
-                "phase_end_raw": phase_end,
-                "phase_ranges": [
-                    {"phase": label, "start": phase_start, "end": phase_end}
-                ],
-                "source_physics": metadata["physics_randomization"],
-                **(
-                    {"steer_direction": label.removeprefix("steer_")}
-                    if behavior == "steer"
-                    else {}
-                ),
-            }
-        )
-    return candidates, excluded
-
-
-def formal_candidates(
-    records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    steady_steps: int,
-    seq_length: int,
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, int]]]:
-    push, push_excluded = steady_candidates(
-        records, resolver, "push", steady_steps, seq_length
-    )
-    steer, steer_excluded = steady_candidates(
-        records, resolver, "steer", steady_steps, seq_length
-    )
-    transition, transition_excluded = transition_candidates(records, resolver, seq_length)
-    bank = {
-        "push": push,
-        "steer": steer,
-        "push2steer": [item for item in transition if item["behavior"] == "push2steer"],
-        "steer2push": [item for item in transition if item["behavior"] == "steer2push"],
-    }
-    excluded = {
-        "push": dict(push_excluded),
-        "steer": dict(steer_excluded),
-        "push2steer": {
-            key.split(":", 1)[1]: value
-            for key, value in transition_excluded.items()
-            if key.startswith("push2steer:")
-        },
-        "steer2push": {
-            key.split(":", 1)[1]: value
-            for key, value in transition_excluded.items()
-            if key.startswith("steer2push:")
-        },
-    }
-    return bank, excluded
-
-
-def source_group(case: Mapping[str, Any]) -> tuple[str, str, str, int]:
-    return (
-        str(case["source_round"]).zfill(3),
-        str(case["source_rollout"]).zfill(3),
-        str(case["source_episode"]),
-        int(case["physics_seed"]),
-    )
-
-
-def case_sort_key(case: Mapping[str, Any]) -> tuple[str, str, int, str]:
-    return (
-        str(case["source_round"]).zfill(3),
-        str(case["source_rollout"]).zfill(3),
-        int(case["reset_raw_frame"]),
-        str(case["case_id"]),
-    )
-
-
-def case_identity(case: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "case_id": str(case["case_id"]),
-        "behavior": str(case["behavior"]),
-        "dataset_split": str(case["dataset_split"]),
-        "source_raw_npz": str(case["source_raw_npz"]),
-        "source_round": str(case["source_round"]).zfill(3),
-        "source_rollout": str(case["source_rollout"]).zfill(3),
-        "source_episode": str(case["source_episode"]),
-        "physics_seed": int(case["physics_seed"]),
-        "reset_raw_frame": int(case["reset_raw_frame"]),
-        "steps": int(case["steps"]),
-    }
-
-
-def selected_direction(case: Mapping[str, Any]) -> str | None:
-    behavior = str(case["behavior"])
-    if behavior == "steer":
-        return str(case["steer_direction"])
-    if behavior == "push2steer":
-        phase = str(case.get("post_phase", ""))
-    elif behavior == "steer2push":
-        phase = str(case.get("pre_phase", ""))
-    else:
-        return None
-    return phase.removeprefix("steer_") if phase in STEER else None
-
-
-def selection_stats(
-    bank: Mapping[str, Sequence[Mapping[str, Any]]],
-    selected: Mapping[str, Sequence[Mapping[str, Any]]],
-    mode: str,
-    seed: int | None,
-    limit: int | None,
-) -> dict[str, Any]:
-    selected_cases = [
-        case
-        for behavior in BEHAVIORS
-        for case in sorted(selected.get(behavior, ()), key=case_sort_key)
-    ]
-    identities = [case_identity(case) for case in selected_cases]
-    fingerprint = hashlib.sha256(
-        json.dumps(identities, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-    def group_count(cases: Sequence[Mapping[str, Any]]) -> int:
-        paths: dict[tuple[str, str, str, int], str] = {}
-        for case in cases:
-            key = source_group(case)
-            path = str(case["source_raw_npz"])
-            if key in paths and paths[key] != path:
-                raise RuntimeError(f"Source group maps to multiple raw files: {key}")
-            paths[key] = path
-        return len(paths)
-
-    direction_counts = {
-        behavior: dict(
-            sorted(
-                Counter(
-                    direction
-                    for case in selected.get(behavior, ())
-                    if (direction := selected_direction(case)) is not None
-                ).items()
-            )
-        )
-        for behavior in ("steer", "push2steer", "steer2push")
-    }
-    warnings = []
-    if mode == "rollout_balanced_without_replacement":
-        for behavior in direction_counts:
-            eligible_directions = Counter(
-                direction
-                for case in bank[behavior]
-                if (direction := selected_direction(case)) is not None
-            )
-            for direction in eligible_directions:
-                if direction_counts[behavior].get(direction, 0) == 0:
-                    warnings.append(
-                        f"{behavior} selected no {direction} case despite eligible cases."
-                    )
-    return {
-        "mode": mode,
-        "seed": seed,
-        "max_cases_per_behavior": limit,
-        "selection_fingerprint": fingerprint,
-        "eligible_counts": {behavior: len(bank[behavior]) for behavior in BEHAVIORS},
-        "selected_counts": {behavior: len(selected.get(behavior, ())) for behavior in BEHAVIORS},
-        "eligible_source_groups": {
-            behavior: group_count(bank[behavior]) for behavior in BEHAVIORS
-        },
-        "selected_unique_source_groups": {
-            behavior: group_count(selected.get(behavior, ())) for behavior in BEHAVIORS
-        },
-        "selected_direction_counts": direction_counts,
-        "warnings": warnings,
-    }
-
-
-def select_balanced_cases(
-    cases: Sequence[Mapping[str, Any]],
-    limit: int | None,
-    seed: int,
-    behavior: str,
-) -> list[Mapping[str, Any]]:
-    ordered = sorted(cases, key=case_sort_key)
-    if limit is None or limit >= len(ordered):
-        return ordered
-    if limit <= 0:
-        raise ValueError("max-cases-per-behavior must be positive.")
-    if behavior not in SELECTION_SEED_OFFSETS:
-        raise ValueError(f"Unsupported selection behavior: {behavior}")
-
-    grouped: dict[tuple[str, str, str, int], list[Mapping[str, Any]]] = {}
-    for case in ordered:
-        key = source_group(case)
-        group = grouped.setdefault(key, [])
-        if group and str(group[0]["source_raw_npz"]) != str(case["source_raw_npz"]):
-            raise RuntimeError(f"Source group maps to multiple raw files: {key}")
-        group.append(case)
-    rng = np.random.default_rng(seed + SELECTION_SEED_OFFSETS[behavior])
-    group_keys = list(grouped)
-    group_keys = [group_keys[index] for index in rng.permutation(len(group_keys))]
-    for key in group_keys:
-        group = grouped[key]
-        permutation = rng.permutation(len(group))
-        grouped[key] = [group[index] for index in permutation]
-
-    selected: list[Mapping[str, Any]] = []
-    depth = 0
-    while len(selected) < limit:
-        added = False
-        for key in group_keys:
-            group = grouped[key]
-            if depth < len(group):
-                selected.append(group[depth])
-                added = True
-                if len(selected) == limit:
-                    break
-        if not added:
-            raise RuntimeError("Balanced selection exhausted before reaching limit.")
-        depth += 1
-    selected_ids = [str(case["case_id"]) for case in selected]
-    if len(selected_ids) != len(set(selected_ids)):
-        raise RuntimeError("Balanced selection returned duplicate case IDs.")
-    return selected
-
-
-def behavior_candidates(
-    records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    behavior: str,
-    clip_steps: int,
-    context_steps: int,
-    direction: str,
-    seq_length: int,
-) -> list[dict[str, Any]]:
-    if behavior in ("push", "steer"):
-        labels = (
-            {"push"}
-            if behavior == "push"
-            else (STEER if direction == "random" else {f"steer_{direction}"})
-        )
-        result = []
-        for key, record in sorted(records.items()):
-            if record["phase_label"] not in labels:
-                continue
-            start = int(record["source_start_frame"])
-            raw, _, path = resolver.load(record)
-            end = start + clip_steps + seq_length + 1
-            if (
-                end <= int(record["source_end_frame"])
-                and not np.any(raw["reset"][start:end])
-                and not np.any(raw["fall"][start:end])
-            ):
-                result.append(
-                    {
-                        "case_id": f"{behavior}_{len(result):03d}",
-                        "behavior": behavior,
-                        "motion_key": key,
-                        "source_raw_npz": str(path),
-                        "source_round": str(record["source_round"]),
-                        "source_rollout": str(record["source_rollout"]),
-                        "source_episode": str(record["source_episode"]),
-                        "physics_seed": int(record["physics_seed"]),
-                        "reset_raw_frame": start,
-                        "clip_start_raw": start,
-                        "clip_end_raw": start + clip_steps + 1,
-                        "phase_ranges": [
-                            {
-                                "phase": record["phase_label"],
-                                "start": start,
-                                "end": start + clip_steps + 1,
-                            }
-                        ],
-                        "source_physics": resolver.load(record)[1]["physics_randomization"],
-                    }
-                )
-        return result
-    transitions, _ = transition_candidates(records, resolver, seq_length)
-    result = []
-    target = "push2steer" if behavior == "push2steer" else "steer2push"
-    for candidate in transitions:
-        if candidate["transition"] != target:
-            continue
-        start = candidate["transition_start_raw"] - context_steps
-        end = candidate["transition_end_raw"] + context_steps
-        raw, _, path = resolver.load(records[candidate["transition_motion_key"]])
-        bridge_end = start + (end - start - 1) + seq_length + 1
-        if start < 0 or bridge_end > len(raw["qpos"]):
-            continue
-        if np.any(raw["reset"][start:bridge_end]) or np.any(raw["fall"][start:bridge_end]):
-            continue
-        item = dict(candidate)
-        item.update(
-            {
-                "case_id": f"{behavior}_{len(result):03d}",
-                "behavior": behavior,
-                "reset_raw_frame": start,
-                "clip_start_raw": start,
-                "clip_end_raw": end,
-                "phase_ranges": [
-                    {
-                        "phase": candidate["pre_phase"],
-                        "start": start,
-                        "end": candidate["transition_start_raw"],
-                    },
-                    {
-                        "phase": candidate["transition_phase"],
-                        "start": candidate["transition_start_raw"],
-                        "end": candidate["transition_end_raw"],
-                    },
-                    {
-                        "phase": candidate["post_phase"],
-                        "start": candidate["transition_end_raw"],
-                        "end": end,
-                    },
-                ],
-                "source_raw_npz": str(path),
-            }
-        )
-        result.append(item)
-    return result
-
-
-def temporary_record(
-    record: Mapping[str, Any],
-    raw: Mapping[str, np.ndarray],
-    metadata: Mapping[str, Any],
-    source_path: Path,
-    start: int,
-    frame_count: int,
-    reference_keys: Sequence[str],
-    reference_record: Mapping[str, Any],
-    target_order: Sequence[str],
-    target_axes: np.ndarray,
-    seq_length: int,
-) -> dict[str, Any]:
-    end = start + frame_count
-    converted, _ = convert_record(
-        metadata,
-        raw,
-        reference_keys,
-        reference_record,
-        target_order,
-        target_axes,
-        start,
-        end,
-        source_path,
-        seq_length,
-        frame_count,
-    )
-    converted.update(
-        {
-            key: record[key]
-            for key in (
-                "source_round",
-                "source_rollout",
-                "source_episode",
-                "physics_seed",
-                "dataset_split",
-            )
-            if key in record
-        }
-    )
-    converted.update(
-        {
-            "source_raw_npz": str(source_path),
-            "source_start_frame": start,
-            "source_end_frame": end,
-            "phase_label": record.get("phase_label", "mixed"),
-            "phase_id": np.asarray(raw["phase_id"][start:end], dtype=np.int16),
-            "phase_value": np.asarray(raw["phase_value"][start:end], dtype=np.float32),
-        }
-    )
-    return converted
-
-
-def build_temp_motionlib(
-    cases: Sequence[Mapping[str, Any]],
-    records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    agent: Any,
-    directory: Path,
-    seq_length: int,
-) -> tuple[Path, dict[str, dict[str, Any]], dict[str, Any]]:
-    reference_path = REPOSITORY_ROOT / "train/dataset/base/lafan_29dof_10s-clipped.pkl"
-    robot_xml = (
-        REPOSITORY_ROOT / "train/scripts/isaac_env/humanoidverse/data/robots/g1/g1_29dof.xml"
-    )
-    reference_keys, reference_record = load_reference(reference_path)
-    target_order, target_axes = bfm_joint_contract(robot_xml)
-    converted: dict[str, dict[str, Any]] = {}
-    for case in cases:
-        source_key = case.get("transition_motion_key", case["motion_key"])
-        source_record = records[source_key]
-        raw, metadata, path = resolver.load(source_record)
-        start = int(case["reset_raw_frame"])
-        steps = int(case.get("steps", EVAL_STEPS))
-        frame_count = int(case.get("bridge_frame_count", steps + seq_length + 1))
-        if case.get("clip_end_raw") is not None:
-            visible_end = int(case["clip_end_raw"])
-            frame_count = max(frame_count, visible_end - start + seq_length)
-        if start + frame_count > len(raw["qpos"]):
-            raise RuntimeError(f"Raw window cannot cover case {case['case_id']}.")
-        if np.any(raw["reset"][start : start + frame_count]) or np.any(
-            raw["fall"][start : start + frame_count]
-        ):
-            raise RuntimeError(f"Raw window contains reset/fall for case {case['case_id']}.")
-        record = temporary_record(
-            source_record,
-            raw,
-            metadata,
-            path,
-            start,
-            frame_count,
-            reference_keys,
-            reference_record,
-            target_order,
-            target_axes,
-            seq_length,
-        )
-        record["source_start_frame"] = start
-        record["source_end_frame"] = start + frame_count
-        converted[str(case["case_id"])] = record
-    path = directory / "raw_window_motionlib.pkl"
-    joblib.dump(converted, path)
-    return (
-        path,
-        converted,
-        {
-            "converter": str(
-                REPOSITORY_ROOT / "train/scripts/data_collection/convert_continuous.py"
-            ),
-            "converter_sha256": hash_file(
-                REPOSITORY_ROOT / "train/scripts/data_collection/convert_continuous.py"
-            ),
-            "reference": str(reference_path),
-            "reference_sha256": hash_file(reference_path),
-            "robot_xml": str(robot_xml),
-            "robot_xml_sha256": hash_file(robot_xml),
-            "temporary_motionlib_sha256": hash_file(path),
-        },
-    )
-
-
-def checkpoint_mutation(agent: Any) -> dict[str, Any]:
-    return {
-        "parameters": hash_params(agent._model),
-        "buffers": hash_buffers(agent._model),
-        "normalizer": hash_buffers(agent._model._obs_normalizer),
-        "components": hash_components(agent),
-    }
-
-
-class ControlDiagnostics:
-    groups = ("waist", "hip", "ankle")
-
-    def __init__(self, env: HuskyBfmOnlineEnv) -> None:
-        report = env.env.physical_actuator_report
-        if len(report) != 23:
-            raise RuntimeError("Expected 23 HUSKY actuators.")
-        self.names = tuple(str(item["joint_name"]).removeprefix("robot/") for item in report)
-        self.limits = np.asarray(
-            [item["derived_joint_torque_limit"] for item in report], dtype=np.float64
-        )
-        self.dof = np.asarray(
-            [
-                int(env.env.model.joint(int(env.env.model.actuator_trnid[i, 0])).dofadr[0])
-                for i in range(23)
-            ],
-            dtype=np.int32,
-        )
-        if (
-            len(set(self.dof)) != 23
-            or not np.isfinite(self.limits).all()
-            or (self.limits <= 0).any()
-        ):
-            raise RuntimeError("Physical actuator mapping is invalid.")
-        self.indices = {
-            group: np.asarray(
-                [i for i, name in enumerate(self.names) if group in name], dtype=np.int32
-            )
-            for group in self.groups
-        }
-        self.actions: list[np.ndarray] = []
-        self.torques: list[np.ndarray] = []
-
-    def update(self, action: torch.Tensor, qfrc: np.ndarray) -> None:
-        action = np.asarray(action.detach().cpu(), dtype=np.float64)
-        torque = np.asarray(qfrc, dtype=np.float64)[self.dof]
-        if (
-            action.shape != (23,)
-            or torque.shape != (23,)
-            or not np.isfinite(action).all()
-            or not np.isfinite(torque).all()
-        ):
-            raise RuntimeError("Invalid physical control diagnostic.")
-        self.actions.append(np.abs(action))
-        self.torques.append(np.abs(torque) / self.limits)
-
-    def summary(self) -> dict[str, Any]:
-        action = np.asarray(self.actions)
-        torque = np.asarray(self.torques)
-        result = {
-            "actuator_joint_names": list(self.names),
-            "action_soft_saturation_fraction": float(np.mean(action >= 0.95)),
-            "action_hard_saturation_fraction": float(np.mean(action >= 0.99)),
-            "torque_utilization_mean": float(torque.mean()),
-            "torque_utilization_p95": float(np.quantile(torque, 0.95)),
-            "torque_utilization_p99": float(np.quantile(torque, 0.99)),
-            "torque_utilization_max": float(torque.max()),
-            "torque_utilization_ge_0_95_fraction": float(np.mean(torque >= 0.95)),
-            "groups": {},
-        }
-        for group, indices in self.indices.items():
-            values = torque[:, indices].reshape(-1)
-            actions = action[:, indices].reshape(-1)
-            result["groups"][group] = {
-                "joint_names": [self.names[i] for i in indices],
-                "action_soft_saturation_fraction": float(np.mean(actions >= 0.95)),
-                "action_hard_saturation_fraction": float(np.mean(actions >= 0.99)),
-                "torque_utilization_p95": float(np.quantile(values, 0.95)),
-                "torque_utilization_p99": float(np.quantile(values, 0.99)),
-                "torque_utilization_ge_0_95_fraction": float(np.mean(values >= 0.95)),
-            }
-        return result
-
-
-def metric_series(
-    actual: Sequence[Mapping[str, Any]], raw: Mapping[str, np.ndarray], reset: int
-) -> dict[str, np.ndarray]:
-    ref = slice(reset + 1, reset + len(actual) + 1)
-    if reset < 0 or reset + len(actual) >= len(raw["qpos"]):
-        raise RuntimeError("Raw metric reference is outside the source.")
-    root = np.asarray([row["root_position"] for row in actual])
-    board = np.asarray([row["board_position"] for row in actual])
-    root_q = np.asarray([row["root_quaternion"] for row in actual])
-    board_q = np.asarray([row["board_quaternion"] for row in actual])
-    joint = np.asarray([row["joint_position"] for row in actual])
-    velocity = np.asarray([row["joint_velocity"] for row in actual])
-    board_lin = np.asarray([row["board_linear_velocity"] for row in actual])
-    board_ang = np.asarray([row["board_angular_velocity"] for row in actual])
-    raw_root = raw["root_pos"][ref]
-    raw_board = raw["board_root_pos"][ref]
-    board_planar_velocity = board_lin[:, :2]
-    raw_board_planar_velocity = raw["board_root_lin_vel"][ref, :2]
-    board_speed = np.linalg.norm(board_planar_velocity, axis=1)
-    raw_board_speed = np.linalg.norm(raw_board_planar_velocity, axis=1)
-    direction_valid = (board_speed > DIRECTION_SPEED_EPS_MPS) & (
-        raw_board_speed > DIRECTION_SPEED_EPS_MPS
-    )
-    direction_error = np.full(len(actual), np.nan, dtype=np.float64)
-    direction_error[direction_valid] = wrapped_angle_deg(
-        np.arctan2(
-            board_planar_velocity[direction_valid, 1],
-            board_planar_velocity[direction_valid, 0],
-        ),
-        np.arctan2(
-            raw_board_planar_velocity[direction_valid, 1],
-            raw_board_planar_velocity[direction_valid, 0],
-        ),
-    )
-    return {
-        "joint_position_mae_rad": np.mean(np.abs(joint - raw["dof_pos"][ref]), axis=1),
-        "joint_velocity_mae_rad_s": np.mean(np.abs(velocity - raw["dof_vel"][ref]), axis=1),
-        "root_xy_displacement_error_m": np.linalg.norm(
-            (root[:, :2] - raw["root_pos"][reset, :2])
-            - (raw_root[:, :2] - raw["root_pos"][reset, :2]),
-            axis=1,
-        ),
-        "root_z_error_m": np.abs(root[:, 2] - raw_root[:, 2]),
-        "root_orientation_geodesic_error_deg": quaternion_geodesic_deg(
-            root_q, raw["root_quat"][ref]
-        ),
-        "board_xy_displacement_error_m": np.linalg.norm(
-            (board[:, :2] - raw["board_root_pos"][reset, :2])
-            - (raw_board[:, :2] - raw["board_root_pos"][reset, :2]),
-            axis=1,
-        ),
-        "board_orientation_geodesic_error_deg": quaternion_geodesic_deg(
-            board_q, raw["board_root_quat"][ref]
-        ),
-        "board_linear_velocity_error_mps": np.linalg.norm(
-            board_lin - raw["board_root_lin_vel"][ref], axis=1
-        ),
-        "board_planar_velocity_error_mps": np.linalg.norm(
-            board_planar_velocity - raw_board_planar_velocity, axis=1
-        ),
-        "board_speed_error_mps": np.abs(board_speed - raw_board_speed),
-        "board_velocity_direction_error_deg": direction_error,
-        "board_velocity_direction_valid_fraction": direction_valid.astype(np.float64),
-        "feet_on_board_ratio": np.asarray(
-            [float(bool(row["feet_on_board"])) for row in actual], dtype=np.float64
-        ),
-        "board_angular_velocity_error_rad_s": np.linalg.norm(
-            board_ang - raw["board_root_ang_vel"][ref], axis=1
-        ),
-        "board_heading_error_deg": wrapped_angle_deg(
-            np.asarray([board_yaw(q) for q in board_q]),
-            np.asarray([board_yaw(q) for q in raw["board_root_quat"][ref]]),
-        ),
-        "board_tilt_error_deg": np.abs(
-            np.asarray([board_tilt_deg(q) for q in board_q])
-            - np.asarray([board_tilt_deg(q) for q in raw["board_root_quat"][ref]])
-        ),
-        "coupling_xy_error_m": np.linalg.norm(
-            (root[:, :2] - board[:, :2]) - (raw_root[:, :2] - raw_board[:, :2]), axis=1
-        ),
-        "coupling_z_error_m": np.abs(
-            (root[:, 2] - board[:, 2]) - (raw_root[:, 2] - raw_board[:, 2])
-        ),
-    }
-
-
-def retention_stability(
-    actual: Sequence[Mapping[str, Any]],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    feet = np.asarray([bool(row["feet_on_board"]) for row in actual])
-    off = ~feet
-    heights = np.asarray([row["root_height"] for row in actual], dtype=np.float64)
-    tilt = np.asarray(
-        [
-            np.degrees(np.arccos(np.clip(-np.asarray(row["projected_gravity"])[2], -1, 1)))
-            for row in actual
-        ]
-    )
-    root = np.asarray([row["root_position"] for row in actual])
-    board = np.asarray([row["board_position"] for row in actual])
-    separation = np.linalg.norm(root[:, :2] - board[:, :2], axis=1)
-    first = np.flatnonzero(off)
-    streak = current = 0
-    for value in off:
-        current = current + 1 if value else 0
-        streak = max(streak, current)
-    first_index = int(first[0]) if first.size else None
-    return {
-        "feet_on_board_ratio": float(feet.mean()),
-        "off_board_ratio": float(off.mean()),
-        "final_feet_on_board": bool(feet[-1]),
-        "time_to_first_off_board_s": None
-        if first_index is None
-        else (first_index + 1) * CONTROL_DT,
-        "longest_off_board_streak_steps": int(streak),
-        "longest_off_board_streak_s": streak * CONTROL_DT,
-        "robot_board_separation_mean_m": float(separation.mean()),
-        "robot_board_separation_final_m": float(separation[-1]),
-        "robot_board_separation_max_m": float(separation.max()),
-    }, {
-        "root_tilt_mean_deg": float(tilt.mean()),
-        "root_tilt_p95_deg": float(np.quantile(tilt, 0.95)),
-        "root_tilt_max_deg": float(tilt.max()),
-        "root_height_min_m": float(heights.min()),
-        "illegal_contact_ratio": float(np.mean([bool(row["illegal_contact"]) for row in actual])),
-        "off_board_upright_ratio": (
-            float(np.mean((tilt[off] < 70) & (heights[off] >= 0.45))) if off.any() else None
-        ),
-        "post_first_off_board_survival_s": (
-            None if first_index is None else (len(actual) - first_index - 1) * CONTROL_DT
-        ),
-    }
-
-
-def section_metrics(
-    series: Mapping[str, np.ndarray], phases: Sequence[str], wanted: str
-) -> dict[str, dict[str, float] | None] | None:
-    indices = np.asarray([i for i, phase in enumerate(phases) if phase == wanted], dtype=np.int64)
-    return (
-        None
-        if not indices.size
-        else {name: summarize_valid(values[indices]) for name, values in series.items()}
-    )
-
-
-def task_metric_values(
-    series: Mapping[str, np.ndarray],
-    actual: Sequence[Mapping[str, Any]],
-    raw: Mapping[str, np.ndarray],
-    reset: int,
-    retention: Mapping[str, Any],
-    stability: Mapping[str, Any],
-    full_completion: bool,
-    terminated: bool,
-    completion_ratio: float,
-    control: Mapping[str, Any],
-) -> dict[str, Any]:
-    board_start = np.asarray(raw["board_root_pos"][reset, :2], dtype=np.float64)
-    board_policy_final = np.asarray(actual[-1]["board_position"], dtype=np.float64)[:2]
-    board_reference_final = np.asarray(
-        raw["board_root_pos"][reset + len(actual), :2], dtype=np.float64
-    )
-    policy_displacement = board_policy_final - board_start
-    reference_displacement = board_reference_final - board_start
-    net_valid = (
-        np.linalg.norm(policy_displacement) > NET_DISPLACEMENT_EPS_M
-        and np.linalg.norm(reference_displacement) > NET_DISPLACEMENT_EPS_M
-    )
-    return {
-        "binary_success": "NOT_YET_CALIBRATED",
-        "board_trajectory": {
-            "board_planar_velocity_error_mps": float(
-                series["board_planar_velocity_error_mps"].mean()
-            ),
-            "board_speed_error_mps": float(series["board_speed_error_mps"].mean()),
-            "board_velocity_direction_error_deg": (
-                float(np.nanmean(series["board_velocity_direction_error_deg"]))
-                if np.isfinite(series["board_velocity_direction_error_deg"]).any()
-                else None
-            ),
-            "board_velocity_direction_valid_fraction": float(
-                series["board_velocity_direction_valid_fraction"].mean()
-            ),
-            "board_heading_error_deg": float(series["board_heading_error_deg"].mean()),
-            "board_xy_displacement_error_m": float(
-                series["board_xy_displacement_error_m"].mean()
-            ),
-            "board_final_heading_error_deg": float(series["board_heading_error_deg"][-1]),
-            "board_final_xy_error_m": float(
-                np.linalg.norm(policy_displacement - reference_displacement)
-            ),
-            "board_net_displacement_direction_error_deg": (
-                float(
-                    wrapped_angle_deg(
-                        np.asarray([math.atan2(policy_displacement[1], policy_displacement[0])]),
-                        np.asarray(
-                            [math.atan2(reference_displacement[1], reference_displacement[0])]
-                        ),
-                    )[0]
-                )
-                if net_valid
-                else None
-            ),
-            "board_net_displacement_direction_valid": bool(net_valid),
-        },
-        "coupling": {
-            "feet_on_board_ratio": float(retention["feet_on_board_ratio"]),
-            "longest_off_board_streak_steps": int(retention["longest_off_board_streak_steps"]),
-            "longest_off_board_streak_s": float(retention["longest_off_board_streak_s"]),
-            "coupling_xy_error_m": float(series["coupling_xy_error_m"].mean()),
-        },
-        "stability_plausibility": {
-            "horizon_completion": float(completion_ratio),
-            "terminated": bool(terminated),
-            "root_tilt_p95_deg": float(stability["root_tilt_p95_deg"]),
-            "root_tilt_max_deg": float(stability["root_tilt_max_deg"]),
-            "root_height_min_m": float(stability["root_height_min_m"]),
-            "illegal_contact_ratio": float(stability["illegal_contact_ratio"]),
-            "action_soft_saturation_fraction": float(
-                control["action_soft_saturation_fraction"]
-            ),
-            "action_hard_saturation_fraction": float(
-                control["action_hard_saturation_fraction"]
-            ),
-            "torque_utilization_p95": float(control["torque_utilization_p95"]),
-        },
-        "humanoid_motion_quality": {
-            "joint_position_mae_rad": float(series["joint_position_mae_rad"].mean()),
-            "joint_velocity_mae_rad_s": float(series["joint_velocity_mae_rad_s"].mean()),
-            "root_orientation_geodesic_error_deg": float(
-                series["root_orientation_geodesic_error_deg"].mean()
-            ),
-        },
-        "final_is_horizon": bool(full_completion),
-    }
-
-
-def open_writer(path: Path, env: HuskyBfmOnlineEnv) -> tuple[Any, mujoco.Renderer]:
-    import imageio.v2 as imageio
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    writer = imageio.get_writer(path, fps=FPS, codec="libx264", macro_block_size=1)
-    return writer, mujoco.Renderer(env.env.model, height=720, width=1280)
-
-
-class LatentInset:
-    """Draw a shared PC1/PC2 view of the formal 3D latent projection."""
-
-    def __init__(self, projection: Mapping[str, Any], width: int = 286, height: int = 214):
-        from PIL import Image, ImageColor, ImageDraw, ImageFont
-
-        self.Image = Image
-        self.ImageColor = ImageColor
-        self.ImageDraw = ImageDraw
-        self.font = ImageFont.load_default()
-        self.width = width
-        self.height = height
-        self.x0, self.y0 = 12, 28
-        self.x1, self.y1 = width - 12, height - 12
-        self.points = list(projection["points"])
-        self.by_case: dict[str, list[Mapping[str, Any]]] = {}
-        for point in self.points:
-            self.by_case.setdefault(str(point["case_id"]), []).append(point)
-        for values in self.by_case.values():
-            values.sort(key=lambda point: int(point["step"]))
-        prior = np.asarray(projection["prior"], dtype=np.float64)
-        actual = np.asarray([point["pca"] for point in self.points], dtype=np.float64)
-        values = np.concatenate((prior, actual), axis=0)
-        self.x_min, self.x_max = self._bounds(values[:, 0])
-        self.y_min, self.y_max = self._bounds(values[:, 1])
-        self.base = Image.new("RGBA", (width, height), (250, 250, 250, 238))
-        draw = ImageDraw.Draw(self.base, "RGBA")
-        draw.rectangle((0, 0, width - 1, height - 1), outline=(55, 65, 81, 235), width=2)
-        draw.text((8, 7), "latent (PCA-3D)", fill=(17, 24, 39, 255), font=self.font)
-        draw.line((self.x0, self.y1, self.x1, self.y1), fill=(156, 163, 175, 180), width=1)
-        draw.line((self.x0, self.y0, self.x0, self.y1), fill=(156, 163, 175, 180), width=1)
-        for point in prior[latent_sample_indices(len(prior), 700)]:
-            self._circle(draw, point, "#9ca3af", 80, 1.5)
-        for behavior in BEHAVIORS:
-            values = np.asarray(
-                [
-                    point["pca"]
-                    for point in self.points
-                    if point["behavior"] == behavior
-                ],
-                dtype=np.float64,
-            )
-            for point in values[latent_sample_indices(len(values), 450)]:
-                self._circle(draw, point, LATENT_COLORS[behavior], 75, 1.5)
-
-    @staticmethod
-    def _bounds(values: np.ndarray) -> tuple[float, float]:
-        low, high = np.percentile(values, (1.0, 99.0))
-        span = max(float(high - low), 1e-6)
-        pad = span * 0.08
-        return float(low - pad), float(high + pad)
-
-    def _pixel(self, point: Sequence[float]) -> tuple[int, int]:
-        x = self.x0 + (float(point[0]) - self.x_min) / (self.x_max - self.x_min) * (
-            self.x1 - self.x0
-        )
-        y = self.y1 - (float(point[1]) - self.y_min) / (self.y_max - self.y_min) * (
-            self.y1 - self.y0
-        )
-        return round(x), round(y)
-
-    def _circle(
-        self,
-        draw: Any,
-        point: Sequence[float],
-        color: str,
-        alpha: int,
-        radius: float,
-        outline: str | None = None,
-    ) -> None:
-        x, y = self._pixel(point)
-        rgb = self.ImageColor.getrgb(color)
-        box = (x - radius, y - radius, x + radius, y + radius)
-        draw.ellipse(box, fill=(*rgb, alpha), outline=outline, width=1)
-
-    def annotate(self, frame: np.ndarray, case_id: str, step: int) -> np.ndarray:
-        overlay = self.base.copy()
-        draw = self.ImageDraw.Draw(overlay, "RGBA")
-        trajectory = self.by_case.get(case_id, [])
-        if trajectory:
-            path = [self._pixel(point["pca"]) for point in trajectory]
-            draw.line(path, fill=(75, 85, 99, 80), width=1)
-            for point in trajectory:
-                self._circle(draw, point["pca"], LATENT_COLORS[point["behavior"]], 42, 1.5)
-        current = next(
-            (point for point in trajectory if int(point["step"]) == step),
-            None,
-        )
-        if current is not None:
-            tail = [
-                point
-                for point in trajectory
-                if step - 19 <= int(point["step"]) <= step
-            ]
-            for index, point in enumerate(tail):
-                self._circle(
-                    draw,
-                    point["pca"],
-                    LATENT_COLORS[point["behavior"]],
-                    70 + round(130 * (index + 1) / len(tail)),
-                    2.0,
-                )
-            x, y = self._pixel(current["pca"])
-            color = LATENT_COLORS[current["behavior"]]
-            if current["phase"] == "PRE":
-                marker = [(x, y - 6), (x - 6, y + 5), (x + 6, y + 5)]
-                draw.polygon(marker, fill=color, outline=(255, 255, 255, 255))
-            elif current["phase"] == "POST":
-                marker = [(x - 6, y - 5), (x + 6, y - 5), (x, y + 6)]
-                draw.polygon(marker, fill=color, outline=(255, 255, 255, 255))
-            else:
-                self._circle(draw, current["pca"], color, 255, 5.0, "#ffffff")
-            draw.text(
-                (8, self.height - 11),
-                str(current["phase"]),
-                fill=(17, 24, 39, 255),
-                font=self.font,
-            )
-        image = self.Image.fromarray(frame).convert("RGBA")
-        x = image.width - self.width - 18
-        image.alpha_composite(overlay, (x, 18))
-        return np.asarray(image.convert("RGB"))
-
-
-def render(
-    writer: Any,
-    renderer: mujoco.Renderer,
-    env: HuskyBfmOnlineEnv,
-    latent_inset: LatentInset | None = None,
-    case_id: str | None = None,
-    step: int | None = None,
-) -> None:
-    renderer.update_scene(env.env.data, camera="robot/tracking")
-    frame = renderer.render()
-    if latent_inset is not None and case_id is not None and step is not None:
-        frame = latent_inset.annotate(frame, case_id, step)
-    writer.append_data(frame)
-
-
-def run_policy(
-    agent: Any,
-    tracking: AlignedSkateTrackingContext,
-    tracking_key: str,
-    raw: Mapping[str, np.ndarray],
-    metadata: Mapping[str, Any],
-    case: Mapping[str, Any],
-    env: HuskyBfmOnlineEnv,
-    steps: int,
-    model_video: Path | None = None,
-    collect_latent: bool = False,
-    latent_projection: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    z, ranges = tracking.encode(agent._model, tracking_key, 0, steps)
-    if z.shape != (steps, 256) or not torch.isfinite(z).all():
-        raise RuntimeError("Temporary raw-window tracking z is invalid.")
-    if any(item["future_start"] != index + 1 for index, item in enumerate(ranges)):
-        raise RuntimeError("Tracking future timing is not t+1 aligned.")
-    trajectory = tracking.trajectories[tracking_key]
-    final_context = trajectory["length"] - steps
-    if final_context < agent._model.cfg.seq_length:
-        raise RuntimeError("Temporary MotionLib lacks the required final seq-length context.")
-    reset = int(case["reset_raw_frame"])
-    qpos = np.asarray(raw["qpos"][reset], dtype=np.float64)
-    qvel = np.asarray(raw["qvel"][reset], dtype=np.float64)
-    writer = renderer = None
-    latent_inset = LatentInset(latent_projection) if model_video and latent_projection else None
-    actual = []
-    first_action = None
-    terminated = truncated = False
-    try:
-        observation = env.reset(
-            qpos=qpos, qvel=qvel, source_physics=metadata["physics_randomization"]
-        )
-        if not (
-            np.allclose(env.env.data.qpos, qpos, atol=1e-8, rtol=0)
-            and np.allclose(env.env.data.qvel, qvel, atol=1e-8, rtol=0)
-        ):
-            raise RuntimeError("Canonical raw reset mismatch.")
-        diagnostics = ControlDiagnostics(env)
-        if model_video:
-            writer, renderer = open_writer(model_video, env)
-        for step in range(steps):
-            model_observation = {
-                key: value.unsqueeze(0).to(agent.device) for key, value in observation.items()
-            }
+        observation = env.reset()
+        files = checkpoint_manifest(checkpoint_report["model_file"])
+        recorder = attach_recording(env, output, files, args.seed)
+        if context is not None:
+            context_path = output / "context.npy"
+            np.save(context_path, context)
+            recorder.write("context_source", files=checkpoint_manifest(str(context_path)),
+                           alignment="independent_offline_condition", initial_state_aligned=False)
+        z = agent._model.sample_z(args.num_envs, device=agent.device)
+        horizon = math.ceil(args.duration_s / env.env.backend.config.control_dt)
+        for index in range(horizon):
+            if context is not None:
+                z = torch.as_tensor(context[min(index, len(context) - 1)], device=agent.device).expand(args.num_envs, -1)
             with torch.no_grad():
-                action = agent.act(model_observation, z[step].unsqueeze(0), mean=True)[0]
-            if action.shape != (29,) or not torch.isfinite(action).all():
-                raise RuntimeError("Frozen actor produced invalid action.")
-            if first_action is None:
-                first_action = hash_data(action)
-            transition = env.step(action, z[step], truncated=step == steps - 1)
-            diagnostics.update(transition.action_husky, env.env.data.qfrc_actuator)
-            actual.append(dict(transition.raw_metadata))
-            if writer:
-                render(writer, renderer, env, latent_inset, str(case["case_id"]), step)
-            observation = transition.next_observation
-            terminated, truncated = transition.terminated, transition.truncated
-            if terminated or truncated:
-                break
+                action = agent.act(obs={key: value.to(agent.device) for key, value in observation.items()}, z=z, mean=args.mean_action)
+                transition = env.step(action, z)
+            if not all(bool(torch.isfinite(value).all()) for value in transition["next"]["observation"].values()):
+                raise RuntimeError("Native29 rollout produced non-finite observations.")
+            backend = env.env.backend
+            state = backend.get_state()
+            q, dq, pos, quat, vel, omega = [numpy(value) for value in env.env._fields()]
+            sample = dict(qpos=numpy(state["qpos"]), qvel=numpy(state["qvel"]), time=numpy(state["time"]),
+                          action=numpy(transition["action"]), actor_action=numpy(action), z=numpy(z),
+                          joint_position=q, joint_velocity=dq,
+                          root_position=pos[:, env.env.root], root_quaternion=quat[:, env.env.root],
+                          root_linear_velocity=vel[:, env.env.root], root_angular_velocity=omega[:, env.env.root],
+                          board_position=pos[:, env.env.deck], board_quaternion=quat[:, env.env.deck],
+                          board_linear_velocity=vel[:, env.env.deck], board_angular_velocity=omega[:, env.env.deck],
+                          terminated=numpy(transition["next"]["terminated"]),
+                          truncated=numpy(transition["next"]["truncated"]))
+            sample.update({name: numpy(transition["aux_rewards"][name]) for name in AUX_REWARD_KEYS})
+            if not all(np.isfinite(value).all() for value in sample.values()):
+                raise RuntimeError("Native29 record contains non-finite physical/control state.")
+            samples.append(sample)
+            recorder.write("control", control_index=index, **sample)
+            done = (transition["next"]["terminated"] | transition["next"]["truncated"]).flatten()
+            ids = done.nonzero().flatten().cpu().tolist()
+            terminations += int(transition["next"]["terminated"].sum())
+            truncations += int(transition["next"]["truncated"].sum())
+            observation = transition["next"]["observation"]
+            if ids and index + 1 < horizon:
+                observation = env.reset(env_ids=ids)
+                if context is None:
+                    z[ids] = agent._model.sample_z(len(ids), device=agent.device)
+                resets += len(ids)
+        np.savez_compressed(output / "raw_rollout.npz", **{
+            key: np.stack([sample[key] for sample in samples]) for key in samples[0]
+        })
+        result = dict(schema=SCHEMA, source_joint_support=29, backend=args.backend,
+                      num_envs=args.num_envs, seed=args.seed, control_steps=horizon,
+                      transitions=horizon * args.num_envs, duration_s=horizon * .02,
+                      physics_ticks=recorder.tick_index, model=env.metadata,
+                      scene_config=env.env.backend.scene_config, protocol=protocol,
+                      checkpoint=checkpoint_report, context_mode="independent_offline_condition" if context is not None else "sampled_bfm_prior",
+                      initial_state_aligned=False, source_physics_aligned=False,
+                      terminated_transitions=terminations, truncated_transitions=truncations,
+                      reset_worlds=resets, all_recorded_values_finite=True,
+                      dynamics_skill_or_generalization_claim=False,
+                      replay_command=f"{SIM_ROOT}/play.py --replay {output} --mode visual")
+        write_json(output / "metadata.json", result)
+        print(json.dumps(result, indent=2))
+        return result
     finally:
-        if writer:
-            writer.close()
-        if renderer:
-            renderer.close()
-    if not actual:
-        raise RuntimeError("Policy rollout executed no transitions.")
-    series = metric_series(actual, raw, reset)
-    phases = []
-    for index in range(reset + 1, reset + len(actual) + 1):
-        phases.append(str(case.get("frame_phase", {}).get(str(index), "")))
-    retention, stability = retention_stability(actual)
-    control = diagnostics.summary()
-    full_completion = len(actual) == steps and not terminated
-    completion_ratio = len(actual) / steps
-    result = {
-        "case": dict(case),
-        "evaluation": {
-            "control_dt": CONTROL_DT,
-            "T_eval": steps,
-            "T_exec": len(actual),
-            "completion_ratio": completion_ratio,
-            "full_completion": full_completion,
-            "final_is_horizon": full_completion,
-            "terminated": bool(terminated),
-            "truncated": bool(truncated),
-            "fall_reason": str(actual[-1].get("fall_reason", "")) if terminated else "",
-        },
-        "metrics": {
-            "full": {name: summarize_valid(values) for name, values in series.items()},
-            "pre": section_metrics(series, phases, case.get("pre_phase", "")),
-            "transition": section_metrics(series, phases, case.get("transition_phase", "")),
-            "post": section_metrics(series, phases, case.get("post_phase", "")),
-        },
-        "retention": retention,
-        "stability": stability,
-        "task_metrics": task_metric_values(
-            series,
-            actual,
-            raw,
-            reset,
-            retention,
-            stability,
-            full_completion,
-            bool(terminated),
-            completion_ratio,
-            control,
-        ),
-        "control": control,
-        "tracking": {
-            "z_shape": list(z.shape),
-            "finite": True,
-            "future_start_first": ranges[0]["future_start"],
-            "future_start_last": ranges[-1]["future_start"],
-        },
-        "alignment": {
-            "canonical_reset": True,
-            "post_step_reference_start": reset + 1,
-            "post_step_reference_end": reset + len(actual),
-            "t_plus_one": True,
-        },
-        "first_action_fingerprint": first_action,
-    }
-    return {
-        "result": result,
-        "actual": actual,
-        "raw": raw,
-        "metadata": metadata,
-        "source_path": case["source_raw_npz"],
-        "latent": (
-            {
-                "z": z[: len(actual)].detach().cpu().numpy(),
-                "phases": phases,
-            }
-            if collect_latent
-            else None
-        ),
-    }
-
-
-def render_expert(
-    path: Path,
-    run: Mapping[str, Any],
-    frames: int,
-    latent_projection: Mapping[str, Any] | None = None,
-) -> None:
-    env = HuskyBfmOnlineEnv()
-    writer = renderer = None
-    latent_inset = LatentInset(latent_projection) if latent_projection else None
-    raw = run["raw"]
-    reset = int(run["result"]["case"]["reset_raw_frame"])
-    try:
-        env.reset(
-            qpos=raw["qpos"][reset],
-            qvel=raw["qvel"][reset],
-            source_physics=run["metadata"]["physics_randomization"],
-        )
-        writer, renderer = open_writer(path, env)
-        for frame in range(reset + 1, reset + frames + 1):
-            env.env.data.qpos[:] = raw["qpos"][frame]
-            env.env.data.qvel[:] = raw["qvel"][frame]
-            mujoco.mj_forward(env.env.model, env.env.data)
-            render(
-                writer,
-                renderer,
-                env,
-                latent_inset,
-                str(run["result"]["case"]["case_id"]),
-                frame - reset - 1,
-            )
-    finally:
-        if writer:
-            writer.close()
-        if renderer:
-            renderer.close()
+        if recorder is not None:
+            recorder.close()
         env.close()
 
 
-def build_frame_phase(
-    record: Mapping[str, Any], ranges: Sequence[Mapping[str, Any]], reset: int, end: int
-) -> dict[str, str]:
-    result = {}
-    for item in ranges:
-        for frame in range(int(item["start"]), int(item["end"])):
-            result[str(frame)] = str(item["phase"])
+def native_record(path, *, require_control_context=False):
+    rows = read_record(path)
+    meta = next((row for row in rows if row.get("event") == "meta"), {})
+    if meta.get("format_version") != 2 or meta.get("source_joint_support") != 29:
+        raise ValueError("This evaluator accepts native29 Recorder v2 only; legacy raw23 replay is retired.")
+    initial = next((row for row in rows if row.get("event") == "initial"), None)
+    asset = next((row for row in rows if row.get("event") == "asset_model"), None)
+    mode = next((row for row in rows if row.get("event") == "mode"), None)
+    if not initial or not asset or not mode or not initial.get("backend_kwargs", {}).get("scene_config"):
+        raise ValueError("Native29 recording requires initial runtime/scene, compiled model identity and mode.")
+    if require_control_context and mode.get("controller") == "external_bfm29":
+        controls = [(offset, row) for offset, row in enumerate(rows) if row.get("event") == "control"]
+        updates = [(offset, row) for offset, row in enumerate(rows)
+                   if row.get("event") == "tick" and row.get("command", {}).get("external_action_update")]
+        if not controls or len(controls) != len(updates):
+            raise ValueError("BFM dynamics replay requires one context/control row per external action update.")
+        previous_control = -1
+        for index, ((offset, control), (tick_offset, tick)) in enumerate(zip(controls, updates, strict=True)):
+            if type(control.get("control_index")) is not int or control["control_index"] != index:
+                raise ValueError("BFM control indices must be contiguous and start at zero.")
+            if not previous_control < tick_offset < offset:
+                raise ValueError("BFM control/context rows are out of order relative to physics action updates.")
+            previous_control = offset
+            action, z = np.asarray(control.get("action")), np.asarray(control.get("z"))
+            if action.shape != (meta["num_envs"], 29) or z.shape != (meta["num_envs"], 256):
+                raise ValueError("Native29 BFM control/context record shape mismatch.")
+            if not np.isfinite(action).all() or not np.isfinite(z).all():
+                raise ValueError("Native29 BFM control/context record is non-finite.")
+            raw = np.asarray(tick.get("action"))
+            if raw.shape == (29,) and meta["num_envs"] == 1:
+                raw = raw[None]
+            if raw.shape != action.shape or not np.isfinite(raw).all() or not np.array_equal(np.clip(raw, -1, 1), action):
+                raise ValueError("BFM control action differs from the recorded physics action update.")
+            if "actor_action" in control and not np.array_equal(np.asarray(control["actor_action"]), raw):
+                raise ValueError("BFM raw actor action differs from the physics action update.")
+    return rows, meta
+
+
+def run_replay(args):
+    native_record(args.record, require_control_context=args.mode == "dynamics")
+    if not args.headless:
+        # The sole interactive viewer entry point remains the simulator root CLI.
+        if args.report:
+            raise ValueError("Use --headless for a machine-readable replay report; interactive replay delegates to skate-sim/play.py.")
+        completed = subprocess.run([sys.executable, str(SIM_ROOT / "play.py"),
+                                    "--replay", str(args.record), "--mode", args.mode], check=False)
+        return {"status": "PASS" if completed.returncode == 0 else "FAIL",
+                "delegated_to": str(SIM_ROOT / "play.py")}
+    result = replay(str(args.record), mode=args.mode, headless=args.headless,
+                    atol=1e-7, horizon_seconds=1.0)
+    if args.report:
+        write_json(args.report, result)
     return result
 
 
-def prepare_case(
-    case: Mapping[str, Any],
-    records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    steps: int,
-    seq_length: int,
-    visible_end: int | None = None,
-) -> dict[str, Any]:
-    result = dict(case)
-    source_key = str(case.get("transition_motion_key", case["motion_key"]))
-    source = records[source_key]
-    raw, metadata, path = resolver.load(source)
-    start = int(case["reset_raw_frame"])
-    bridge_end = start + steps + seq_length + 1
-    if visible_end is not None:
-        bridge_end = max(bridge_end, visible_end + seq_length)
-    if bridge_end > len(raw["qpos"]):
-        raise RuntimeError(f"Case raw window is too short: {case['case_id']}")
-    result["source_raw_npz"] = str(path)
-    result["source_physics"] = metadata["physics_randomization"]
-    result["dataset_split"] = resolver.metadata_split
-    result["steps"] = steps
-    result["frame_phase"] = {}
-    for item in case.get("phase_ranges", []):
-        for frame in range(int(item["start"]), int(item["end"])):
-            result["frame_phase"][str(frame)] = str(item["phase"])
-    return result
+def run_video(args):
+    """Render recorded states with their own model; never integrate dynamics."""
+    import imageio.v2 as imageio
+    import mujoco
 
-
-def make_cases(
-    command: str,
-    records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    args: argparse.Namespace,
-    seq_length: int,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if command == "eval":
-        steady_steps = round(args.steady_duration_s / CONTROL_DT)
-        if steady_steps <= 0:
-            raise ValueError("steady-duration-s must be positive.")
-        bank, excluded_by_behavior = formal_candidates(
-            records, resolver, steady_steps, seq_length
-        )
-        if args.case_spec:
-            if args.max_cases_per_behavior is not None:
-                raise RuntimeError("case-spec already fixes case selection.")
-            payload = json.loads(args.case_spec.read_text())
-            spec_split = payload.get("split")
-            if spec_split is None:
-                raw_marker = f"/{args.split}/raw/"
-                if any(
-                    raw_marker not in str(case.get("source_raw_npz", ""))
-                    for case in payload.get("cases", [])
-                ):
-                    raise RuntimeError("Legacy case spec raw paths do not match --split.")
-                spec_split = args.split
-            if spec_split != args.split:
-                raise RuntimeError(
-                    f"Case spec split {spec_split!r} does not match "
-                    f"--split {args.split!r}."
-                )
-            cases = payload.get("cases", [])
-            if not cases:
-                raise RuntimeError("Case spec has no cases.")
-            normalized = []
-            for case in cases:
-                item = dict(case)
-                if "behavior" not in item and item.get("transition") in BEHAVIORS:
-                    item["behavior"] = item["transition"]
-                if item.get("behavior") not in BEHAVIORS:
-                    raise RuntimeError(f"Case spec has invalid behavior: {item}")
-                if "dataset_split" not in item:
-                    item["dataset_split"] = resolver.metadata_split
-                if item["dataset_split"] != resolver.metadata_split:
-                    raise RuntimeError("Case spec provenance split does not match evaluator split.")
-                steps = int(item.get("steps", EVAL_STEPS))
-                prepared = prepare_case(item, records, resolver, steps, seq_length)
-                for name in (
-                    "source_raw_npz",
-                    "source_round",
-                    "source_rollout",
-                    "source_episode",
-                    "physics_seed",
-                    "reset_raw_frame",
-                    "steps",
-                ):
-                    if str(prepared[name]) != str(item[name]):
-                        raise RuntimeError(f"Case spec provenance mismatch for {name}.")
-                normalized.append(prepared)
-            selected_by_behavior = {
-                behavior: sorted(
-                    [
-                        case
-                        for case in normalized
-                        if case["behavior"] == behavior
-                    ],
-                    key=case_sort_key,
-                )
-                for behavior in BEHAVIORS
-            }
-            selection = selection_stats(
-                bank,
-                selected_by_behavior,
-                "case_spec",
-                None,
-                None,
-            )
-            selection["excluded_reasons"] = {}
-            return normalized, selection
-        selected_behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
-        selected_by_behavior: dict[str, list[Mapping[str, Any]]] = {}
-        for name in BEHAVIORS:
-            selected_by_behavior[name] = (
-                select_balanced_cases(
-                    bank[name],
-                    args.max_cases_per_behavior,
-                    args.seed,
-                    name,
-                )
-                if name in selected_behaviors
-                else []
-            )
-        cases = []
-        for name in selected_behaviors:
-            cases.extend(
-                prepare_case(item, records, resolver, int(item["steps"]), seq_length)
-                for item in selected_by_behavior[name]
-            )
-        cases.sort(
-            key=lambda case: (
-                BEHAVIORS.index(str(case["behavior"])),
-                case_sort_key(case),
-            )
-        )
-        mode = (
-            "rollout_balanced_without_replacement"
-            if args.max_cases_per_behavior is not None
-            and any(
-                len(selected_by_behavior[name]) < len(bank[name])
-                for name in selected_behaviors
-            )
-            else "all"
-        )
-        selection = selection_stats(
-            bank,
-            selected_by_behavior,
-            mode,
-            args.seed,
-            args.max_cases_per_behavior,
-        )
-        selection["excluded_reasons"] = {
-            f"{behavior}:{reason}": count
-            for behavior, values in excluded_by_behavior.items()
-            for reason, count in values.items()
-        }
-        return cases, selection
-
-    cases = []
-    behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
-    for behavior in behaviors:
-        if behavior in ("push2steer", "steer2push"):
-            options = behavior_candidates(
-                records,
-                resolver,
-                behavior,
-                1,
-                round(args.context_s / CONTROL_DT),
-                args.steer_direction,
-                seq_length,
-            )
-            if not options:
-                raise RuntimeError(f"No Val {behavior} video candidate.")
-            selected = options[
-                int(np.random.default_rng(args.seed + len(cases)).integers(len(options)))
-            ]
-            start, end = selected["clip_start_raw"], selected["clip_end_raw"]
-            selected = prepare_case(
-                selected, records, resolver, end - start - 1, seq_length, end
-            )
-        else:
-            steps = round(args.clip_s / CONTROL_DT)
-            options = behavior_candidates(
-                records, resolver, behavior, steps, 0, args.steer_direction, seq_length
-            )
-            if not options:
-                raise RuntimeError(f"No Val {behavior} video candidate.")
-            selected = prepare_case(
-                options[0], records, resolver, steps, seq_length, options[0]["clip_end_raw"]
-            )
-        cases.append(selected)
-    return cases, {}
-
-
-def training_date(summary_path: Path) -> str:
-    summary = json.loads(summary_path.read_text())
-    started = summary.get("run_provenance", {}).get("started_at")
-    if not isinstance(started, str) or len(started) < 10:
-        raise RuntimeError("Training summary lacks run_provenance.started_at.")
-    return started[:10]
-
-
-def output_root(args: argparse.Namespace) -> Path:
-    date = training_date(args.training_summary)
-    suffix = (
-        f"{args.split}_phase_eval"
-        if args.command == "eval"
-        else "videos"
-        if args.command == "video"
-        else "viewer"
-    )
-    return REPOSITORY_ROOT / "train/eval_res" / date / f"{args.label}_{suffix}"
-
-
-def invocation_config(
-    args: argparse.Namespace,
-    phase_path: Path,
-    manifest_path: Path,
-    raw_root: Path,
-    checkpoint: Path,
-    checkpoint_sha: str,
-    provenance: Mapping[str, Any],
-    candidates: Mapping[str, int],
-    excluded: Mapping[str, int],
-    full_test: bool,
-    full_behavior: Mapping[str, bool],
-    steady_steps: int | None = None,
-    case_selection: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "command": args.command,
-        "split": args.split if args.command == "eval" else "val",
-        "git_head": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True
-        ).strip(),
-        "evaluator_sha256": hash_file(Path(__file__)),
-        "checkpoint": {"label": args.label, "path": str(checkpoint), "sha256": checkpoint_sha},
-        "training_summary": str(args.training_summary.resolve()),
-        "training_date": training_date(args.training_summary),
-        "phase_motionlib": str(phase_path),
-        "phase_manifest": str(manifest_path),
-        "phase_manifest_sha256": hash_file(manifest_path),
-        "phase_motionlib_sha256": hash_file(phase_path),
-        "raw_root": str(raw_root),
-        "phase_boundary_convention": "exact source_end_frame == next source_start_frame",
-        "candidate_counts": dict(candidates),
-        "excluded_reasons": dict(excluded),
-        "tracking_bridge": provenance,
-        "control_dt": CONTROL_DT,
-        "eval_behaviors": args.behavior if args.command == "eval" else None,
-        "steady_duration_s": args.steady_duration_s if args.command == "eval" else None,
-        "steady_steps": steady_steps if args.command == "eval" else None,
-        "transition_duration_s": EVAL_SECONDS if args.command == "eval" else None,
-        "transition_steps": EVAL_STEPS if args.command == "eval" else None,
-        "transition_lead_s": LEAD_SECONDS if args.command == "eval" else None,
-        "transition_lead_steps": LEAD_STEPS if args.command == "eval" else None,
-        "formal_full_test": full_test,
-        "formal_full_behavior": dict(full_behavior),
-        "latent_analysis": bool(getattr(args, "latent_analysis", False)),
-        "latent_inset": bool(getattr(args, "latent_inset", False)),
-        "case_selection": dict(case_selection or {}),
-        "protocol": (
-            {
-                "push": {
-                    "duration_s": args.steady_duration_s,
-                    "duration_steps": steady_steps,
-                },
-                "steer": {
-                    "duration_s": args.steady_duration_s,
-                    "duration_steps": steady_steps,
-                },
-                "push2steer": {
-                    "duration_s": EVAL_SECONDS,
-                    "duration_steps": EVAL_STEPS,
-                    "lead_s": LEAD_SECONDS,
-                    "lead_steps": LEAD_STEPS,
-                },
-                "steer2push": {
-                    "duration_s": EVAL_SECONDS,
-                    "duration_steps": EVAL_STEPS,
-                    "lead_s": LEAD_SECONDS,
-                    "lead_steps": LEAD_STEPS,
-                },
-            }
-            if args.command == "eval"
-            else None
-        ),
-        "evaluation_only": True,
-        "training": False,
-        "test": args.command == "eval" and args.split == "test",
-        "continuous_dataset_dependency": False,
-        "raw_to_bfm_converter": "data_collection.convert_continuous.convert_record",
-    }
-
-
-def parity_audit(
-    agent: Any,
-    phase_records: Mapping[str, Mapping[str, Any]],
-    resolver: RawResolver,
-    temp_path: Path,
-    temp_records: Mapping[str, Mapping[str, Any]],
-    phase_tracking: AlignedSkateTrackingContext,
-    temp_tracking: AlignedSkateTrackingContext,
-) -> dict[str, Any]:
-    max_diff = {"state": 0.0, "privileged_state": 0.0, "last_action": 0.0}
-    max_z_diff = 0.0
-    max_action_diff = 0.0
-    first_action_match = True
-    selected = []
-    env = HuskyBfmOnlineEnv()
-    for label in ("push", "push2steer", "steer_left", "steer2push"):
-        key = next(
-            key
-            for key, value in phase_records.items()
-            if value["phase_label"] == label and len(value["dof"]) >= 10
-        )
-        temp_key = f"parity_{label}"
-        # The temporary bridge is loaded once by the caller; parity uses its explicit key.
-        if temp_key not in temp_records:
-            raise RuntimeError(f"Missing parity bridge record: {temp_key}")
-        old = phase_tracking.trajectories[key]
-        new = temp_tracking.trajectories[temp_key]
-        rows = min(old["length"], new["length"])
-        old_start, new_start = old["start"], new["start"]
-        for name in ("state", "privileged_state", "last_action"):
-            diff = torch.max(
-                torch.abs(
-                    phase_tracking.observations[name][old_start : old_start + rows]
-                    - temp_tracking.observations[name][new_start : new_start + rows]
-                )
-            ).item()
-            max_diff[name] = max(max_diff[name], float(diff))
-        steps = min(5, old["length"] - 1)
-        old_z, old_ranges = phase_tracking.encode(agent._model, key, 0, steps)
-        new_z, new_ranges = temp_tracking.encode(agent._model, temp_key, 0, steps)
-        if (
-            old_z.shape != new_z.shape
-            or not torch.isfinite(old_z).all()
-            or not torch.isfinite(new_z).all()
-        ):
-            raise RuntimeError(f"Invalid parity z for {label}.")
-        max_z_diff = max(max_z_diff, float(torch.max(torch.abs(old_z - new_z)).item()))
-        if any(
-            old_item["future_start"] != new_item["future_start"]
-            for old_item, new_item in zip(old_ranges, new_ranges, strict=True)
-        ):
-            raise RuntimeError(f"Parity future timing differs for {label}.")
-        raw, metadata, _ = resolver.load(phase_records[key])
-        reset_frame = int(phase_records[key]["source_start_frame"])
-        observation = env.reset(
-            qpos=np.asarray(raw["qpos"][reset_frame], dtype=np.float64),
-            qvel=np.asarray(raw["qvel"][reset_frame], dtype=np.float64),
-            source_physics=metadata["physics_randomization"],
-        )
-        model_observation = {
-            name: value.unsqueeze(0).to(agent.device) for name, value in observation.items()
-        }
-        with torch.no_grad():
-            old_action = agent.act(model_observation, old_z[0].unsqueeze(0), mean=True)[0]
-            new_action = agent.act(model_observation, new_z[0].unsqueeze(0), mean=True)[0]
-        action_diff = float(torch.max(torch.abs(old_action - new_action)).item())
-        max_action_diff = max(max_action_diff, action_diff)
-        first_action_match = first_action_match and torch.allclose(
-            old_action, new_action, atol=1e-4, rtol=1e-4
-        )
-        selected.append({"phase": label, "motion_key": key, "rows_compared": rows})
-    env.close()
-    if (
-        max_diff["state"] > 1e-5
-        or max_diff["privileged_state"] > 1e-5
-        or max_diff["last_action"] > 0
-    ):
-        raise RuntimeError(f"Raw-window converter parity failed: {max_diff}")
-    if max_z_diff > 1e-3 or not first_action_match:
-        raise RuntimeError(
-            f"Tracking parity failed: z_max_abs_diff={max_z_diff}, "
-            f"action_max_abs_diff={max_action_diff}, "
-            f"first_action_match={first_action_match}"
-        )
-    return {
-        "status": "PASS",
-        "max_abs_diff": max_diff,
-        "z_max_abs_diff": max_z_diff,
-        "first_action_max_abs_diff": max_action_diff,
-        "first_action_match": first_action_match,
-        "selected": selected,
-        "last_action_zero": True,
-    }
-
-
-def write_expert_video(
-    path: Path,
-    run: Mapping[str, Any],
-    steps: int,
-    latent_projection: Mapping[str, Any] | None = None,
-) -> None:
-    render_expert(path, run, steps, latent_projection)
-
-
-def write_summary_markdown(
-    path: Path, summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
-) -> None:
-    aggregation = summary["aggregation"]
-
-    def value(behavior: str, metric: str) -> str:
-        group = aggregation.get(behavior, {})
-        metric_data = group.get(metric) or group.get("task", {}).get(metric)
-        return "-" if not metric_data else f"{metric_data['mean']:.5g}"
-
-    def completion(behavior: str) -> str:
-        data = aggregation.get(behavior, {}).get("completion", {})
-        if not data:
-            return "-"
-        return f"{data['full_completion_rate']:.3f}"
-
-    lines = [
-        f"# Formal {summary['split'].title()} Phase Evaluation",
-        "",
-        "| Behavior | Cases | Full completion | Board planar velocity | Board speed | "
-        "Board direction | Board heading | Final board XY | Feet on board | "
-        "Coupling XY | Joint MAE |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-    ]
-    for behavior in BEHAVIORS:
-        group = aggregation.get(behavior, {})
-        count = group.get("completion", {}).get("case_count", 0)
-        retention = group.get("retention", {}).get("feet_on_board_ratio", {}).get("mean")
-        lines.append(
-            f"| {behavior} | {count} | {completion(behavior)} | "
-            f"{value(behavior, 'board_planar_velocity_error_mps')} | "
-            f"{value(behavior, 'board_speed_error_mps')} | "
-            f"{value(behavior, 'board_velocity_direction_error_deg')} | "
-            f"{value(behavior, 'board_heading_error_deg')} | "
-            f"{value(behavior, 'board_final_xy_error_m')} | "
-            f"{'-' if retention is None else f'{retention:.3f}'} | "
-            f"{value(behavior, 'coupling_xy_error_m')} | "
-            f"{value(behavior, 'joint_position_mae_rad')} | "
-        )
-    lines.extend(
-        [
-            "",
-            "## Steer",
-            "",
-            "| Direction | Cases | Joint MAE | Full completion |",
-            "|---|---:|---:|---:|",
-        ]
-    )
-    for direction in ("left", "forward", "right"):
-        key = "steer_by_direction"
-        group = aggregation.get(key, {}).get(direction, {})
-        count = group.get("completion", {}).get("case_count", 0)
-        rate = group.get("completion", {}).get("full_completion_rate")
-        mae = group.get("joint_position_mae_rad", {}).get("mean")
-        lines.append(
-            f"| {direction} | {count} | {'-' if mae is None else f'{mae:.5g}'} | "
-            f"{'-' if rate is None else f'{rate:.3f}'} |"
-        )
-    lines.extend(["", "## Transition Sections", ""])
-    for behavior in ("push2steer", "steer2push"):
-        lines.append(f"### {behavior}")
-        group = aggregation.get(behavior, {})
-        section_lines = []
-        for section in ("pre", "transition", "post"):
-            section_rows = [
-                row["metrics"][section]
-                for row in rows
-                if row["case"]["behavior"] == behavior and row["metrics"].get(section)
-            ]
-
-            def section_value(name: str) -> str:
-                values = [
-                    item[name]["mean"] for item in section_rows if item.get(name) is not None
-                ]
-                return "-" if not values else f"{np.mean(values):.5g}"
-
-            section_lines.append(
-                f"| {section} | {len(section_rows)} | "
-                f"{section_value('board_planar_velocity_error_mps')} | "
-                f"{section_value('board_speed_error_mps')} | "
-                f"{section_value('board_velocity_direction_error_deg')} | "
-                f"{section_value('board_heading_error_deg')} | "
-                f"{section_value('coupling_xy_error_m')} | "
-                f"{section_value('board_velocity_direction_valid_fraction')} | "
-                f"{section_value('feet_on_board_ratio')} | "
-                f"{section_value('joint_position_mae_rad')} |"
-            )
-        lines.extend(
-            [
-                "",
-                "| Section | Cases | Board planar velocity | Board speed | Board direction | "
-                "Board heading | Coupling XY | Direction valid fraction | Feet on board | "
-                "Joint MAE |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-                *section_lines,
-            ]
-        )
-        lines.append("")
-    lines.extend(
-        [
-            "## Protocol",
-            "",
-            f"- Split: `{summary['split']}`",
-            f"- Full test: `{summary.get('formal_full_test', False)}`",
-            f"- Tracking parity: `{summary.get('tracking_parity', {}).get('status', 'UNKNOWN')}`",
-            f"- Binary task success: `{summary['task_metrics']['binary_success']}`",
-            f"- Training: `{summary.get('training', False)}`",
-            "",
-        ]
-    )
-    path.write_text("\n".join(lines))
-
-
-def aggregate_results(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    def aggregate(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-        if not items:
-            return {"count": 0}
-        result = {}
-        for metric in (*REFERENCE_METRICS, *TASK_SERIES_METRICS):
-            values = np.asarray(
-                [
-                    item["metrics"]["full"][metric]["mean"]
-                    for item in items
-                    if item["metrics"]["full"][metric] is not None
-                ],
-                dtype=np.float64,
-            )
-            if values.size:
-                result[metric] = summarize(values)
-        completion = np.asarray([item["evaluation"]["completion_ratio"] for item in items])
-        result["completion"] = {
-            "case_count": len(items),
-            "full_completion_count": int(
-                sum(item["evaluation"]["full_completion"] for item in items)
-            ),
-            "full_completion_rate": float(
-                np.mean([item["evaluation"]["full_completion"] for item in items])
-            ),
-            "mean_completion_ratio": float(completion.mean()),
-            "termination_count": int(sum(item["evaluation"]["terminated"] for item in items)),
-            "termination_rate": float(
-                np.mean([item["evaluation"]["terminated"] for item in items])
-            ),
-        }
-        for section in ("retention", "stability", "control"):
-            keys = set().union(*(item[section] for item in items))
-            result[section] = {
-                key: summarize(np.asarray([item[section][key] for item in items]))
-                for key in sorted(keys)
-                if all(
-                    item[section].get(key) is not None
-                    and not isinstance(item[section].get(key), (dict, list, str))
-                    and np.isfinite(float(item[section][key]))
-                    for item in items
-                )
-            }
-        task_values: dict[str, list[float]] = {}
-        for item in items:
-            for group, values in item["task_metrics"].items():
-                if group in ("binary_success", "final_is_horizon") or not isinstance(
-                    values, Mapping
-                ):
-                    continue
-                for name, value in values.items():
-                    if isinstance(value, bool) or value is None:
-                        continue
-                    task_values.setdefault(name, []).append(float(value))
-        result["task"] = {
-            name: summarize(np.asarray(values, dtype=np.float64))
-            for name, values in sorted(task_values.items())
-        }
-        return result
-
-    result = {"all": aggregate(rows)}
-    for behavior in BEHAVIORS:
-        result[behavior] = aggregate(
-            [row for row in rows if row["case"]["behavior"] == behavior]
-        )
-    result["steer_by_direction"] = {
-        direction: aggregate(
-            [
-                row
-                for row in rows
-                if row["case"]["behavior"] == "steer"
-                and row["case"].get("steer_direction") == direction
-            ]
-        )
-        for direction in ("left", "forward", "right")
-    }
-    return result
-
-
-def task_metric_summary(aggregation: Mapping[str, Any]) -> dict[str, Any]:
-    groups = {
-        "board_trajectory": (
-            "board_planar_velocity_error_mps",
-            "board_speed_error_mps",
-            "board_velocity_direction_error_deg",
-            "board_velocity_direction_valid_fraction",
-            "board_heading_error_deg",
-            "board_final_heading_error_deg",
-            "board_xy_displacement_error_m",
-            "board_final_xy_error_m",
-            "board_net_displacement_direction_error_deg",
-        ),
-        "coupling": (
-            "feet_on_board_ratio",
-            "longest_off_board_streak_steps",
-            "longest_off_board_streak_s",
-            "coupling_xy_error_m",
-        ),
-        "stability_plausibility": (
-            "horizon_completion",
-            "termination_rate",
-            "root_tilt_mean_deg",
-            "root_tilt_p95_deg",
-            "root_tilt_max_deg",
-            "root_height_min_m",
-            "illegal_contact_ratio",
-            "action_soft_saturation_fraction",
-            "action_hard_saturation_fraction",
-            "torque_utilization_p95",
-        ),
-        "humanoid_motion_quality": (
-            "joint_position_mae_rad",
-            "joint_velocity_mae_rad_s",
-            "root_orientation_geodesic_error_deg",
-        ),
-    }
-    result: dict[str, Any] = {"binary_success": "NOT_YET_CALIBRATED"}
-    for group, names in groups.items():
-        result[group] = {}
-        for behavior in ("all", *BEHAVIORS):
-            aggregate = aggregation.get(behavior, {})
-            values = {}
-            for name in names:
-                if name == "termination_rate":
-                    rate = aggregate.get("completion", {}).get("termination_rate")
-                    source = None if rate is None else {"mean": rate}
-                else:
-                    source = (
-                        aggregate.get("task", {}).get(name)
-                        or aggregate.get(name)
-                        or aggregate.get("retention", {}).get(name)
-                        or aggregate.get("stability", {}).get(name)
-                        or aggregate.get("control", {}).get(name)
-                    )
-                if source is not None:
-                    values[name] = source
-            result[group][behavior] = values
-    return result
-
-
-def select_representatives(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
-    selected = {}
-    for behavior in BEHAVIORS:
-        items = [row for row in rows if row["case"]["behavior"] == behavior]
-        if not items:
-            continue
-        complete = [row for row in items if row["evaluation"]["full_completion"]]
-        if complete:
-            median = float(
-                np.median(
-                    [row["metrics"]["full"]["joint_position_mae_rad"]["mean"] for row in complete]
-                )
-            )
-            selected[behavior] = min(
-                complete,
-                key=lambda row: (
-                    abs(row["metrics"]["full"]["joint_position_mae_rad"]["mean"] - median),
-                    row["case"]["case_id"],
-                ),
-            )
-        else:
-            median = float(np.median([row["evaluation"]["completion_ratio"] for row in items]))
-            selected[behavior] = min(
-                items,
-                key=lambda row: (
-                    abs(row["evaluation"]["completion_ratio"] - median),
-                    row["metrics"]["full"]["joint_position_mae_rad"]["mean"],
-                    row["case"]["case_id"],
-                ),
-            )
-    return selected
-
-
-def run_eval(args: argparse.Namespace) -> int:
-    records, manifest, phase_path, manifest_path = load_phase_records(args.split)
-    resolver = RawResolver(args.split)
-    agent, load_report = load_frozen_agent(args.checkpoint.resolve())
-    seq_length = tracking_seq_length(agent)
-    if agent._model.training or any(
-        parameter.requires_grad for parameter in agent._model.parameters()
-    ):
-        raise RuntimeError("Checkpoint is not frozen.")
-    steady_steps = round(args.steady_duration_s / CONTROL_DT)
-    if steady_steps <= 0:
-        raise ValueError("steady-duration-s must be positive.")
-    selected_behaviors = BEHAVIORS if args.behavior == "all" else (args.behavior,)
-    cases, selection = make_cases("eval", records, resolver, args, seq_length)
-    if not cases:
-        counts = {
-            name: selection.get("eligible_counts", {}).get(name, 0)
-            for name in selected_behaviors
-        }
-        raise RuntimeError(f"No eligible cases for {args.behavior}: {counts}")
-    print(
-        "Latent inset: "
-        + ("enabled (shared PCA over eval cases and prior)." if args.latent_inset else "disabled.")
-    )
-    candidate_counts = selection["eligible_counts"]
-    excluded = selection["excluded_reasons"]
-    limit = args.max_cases_per_behavior
-    full_behavior = {
-        name: (
-            name in selected_behaviors
-            and selection["selected_counts"][name] == selection["eligible_counts"][name]
-            and args.case_spec is None
-        )
-        for name in BEHAVIORS
-    }
-    formal_full_test = (
-        args.split == "test"
-        and args.behavior == "all"
-        and limit is None
-        and args.case_spec is None
-    )
-    with tempfile.TemporaryDirectory(prefix="skate_bfm_eval_") as temp:
-        temp_dir = Path(temp)
-        temp_cases = []
-        for case in cases:
-            temp_cases.append(dict(case))
-        # Include explicit parity records in the same official MotionLib load.
-        for label in ("push", "push2steer", "steer_left", "steer2push"):
-            key = next(
-                key
-                for key, value in records.items()
-                if value["phase_label"] == label and len(value["dof"]) >= 10
-            )
-            temp_cases.append(
-                {
-                    "case_id": f"parity_{label}",
-                    "motion_key": key,
-                    "transition_motion_key": key,
-                    "reset_raw_frame": int(records[key]["source_start_frame"]),
-                    "steps": min(20, len(records[key]["dof"]) - 2),
-                    "bridge_frame_count": len(records[key]["dof"]),
-                }
-            )
-        temp_path, temp_records, bridge = build_temp_motionlib(
-            temp_cases, records, resolver, agent, temp_dir, seq_length
-        )
-        temp_tracking = AlignedSkateTrackingContext.load(agent, temp_path)
-        phase_tracking = AlignedSkateTrackingContext.load(agent, phase_path)
-        bridge["coverage"] = {
-            case["case_id"]: {
-                "raw_frames": temp_tracking.trajectories[case["case_id"]]["raw_frames"],
-                "observation_rows": temp_tracking.trajectories[case["case_id"]]["length"],
-                "required_policy_steps": int(case["steps"]),
-                "seq_length": agent._model.cfg.seq_length,
-                "final_future_context": (
-                    temp_tracking.trajectories[case["case_id"]]["length"] - int(case["steps"])
-                ),
-                "gap_free": True,
-            }
-            for case in cases
-        }
-        parity = parity_audit(
-            agent, records, resolver, temp_path, temp_records, phase_tracking, temp_tracking
-        )
-        env = HuskyBfmOnlineEnv()
-        before = checkpoint_mutation(agent)
-        rows = []
-        latent_runs = []
-        try:
-            for index, case in enumerate(cases):
-                source = records[str(case.get("transition_motion_key", case["motion_key"]))]
-                raw, metadata, _ = resolver.load(source)
-                run = run_policy(
-                    agent,
-                    temp_tracking,
-                    case["case_id"],
-                    raw,
-                    metadata,
-                    case,
-                    env,
-                    int(case["steps"]),
-                    collect_latent=args.latent_analysis or args.latent_inset,
-                )
-                result = run["result"]
-                result["checkpoint"] = {
-                    "label": args.label,
-                    "path": str(args.checkpoint.resolve()),
-                    "sha256": hash_file(checkpoint_model_path(args.checkpoint.resolve())),
-                }
-                result["load_report"] = load_report
-                rows.append(result)
-                if args.latent_analysis or args.latent_inset:
-                    latent_runs.append(
-                        {
-                            "case": dict(case),
-                            "z": run["latent"]["z"],
-                            "phases": run["latent"]["phases"],
-                        }
-                    )
-                print(f"\rEval {index + 1}/{len(cases)}", end="", flush=True)
-        finally:
-            env.close()
-        print()
-        after = checkpoint_mutation(agent)
-        if before != after:
-            raise RuntimeError("Frozen model mutated during Test evaluation.")
-        root = output_root(args)
-        root.mkdir(parents=True, exist_ok=True)
-        checkpoint_sha = hash_file(checkpoint_model_path(args.checkpoint.resolve()))
-        write_json(
-            root / "cases.json",
-            {
-                "split": args.split,
-                "protocol": {
-                    "steady_duration_s": args.steady_duration_s,
-                    "steady_steps": steady_steps,
-                    "transition_duration_s": EVAL_SECONDS,
-                    "transition_steps": EVAL_STEPS,
-                    "transition_lead_s": LEAD_SECONDS,
-                    "transition_lead_steps": LEAD_STEPS,
-                },
-                "selection": selection,
-                "cases": cases,
-                "formal_full_test": formal_full_test,
-            },
-        )
-        config = invocation_config(
-            args,
-            phase_path,
-            manifest_path,
-            resolver.root,
-            args.checkpoint.resolve(),
-            checkpoint_sha,
-            bridge,
-            candidate_counts,
-            excluded,
-            formal_full_test,
-            full_behavior,
-            steady_steps,
-            selection,
-        )
-        config["tracking_parity"] = parity
-        write_json(root / "config.json", config)
-        with (root / "results.jsonl").open("w") as handle:
+    if args.fps <= 0 or args.width <= 0 or args.height <= 0:
+        raise ValueError("Video dimensions and fps must be positive.")
+    rows, meta = native_record(args.record)
+    root = args.record if args.record.is_dir() else args.record.parent
+    model_path = root / "model.xml"
+    asset = next(row for row in rows if row.get("event") == "asset_model")
+    if hashlib.sha256(model_path.read_bytes()).hexdigest() != asset["files"][0]["sha256"]:
+        raise ValueError("Recorded model.xml identity changed.")
+    if args.world < 0 or args.world >= meta["num_envs"]:
+        raise ValueError("Requested video world is outside the recorded batch.")
+    model = mujoco.MjModel.from_xml_path(str(model_path))
+    data = mujoco.MjData(model)
+    renderer = mujoco.Renderer(model, height=args.height, width=args.width)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    frames = 0
+    frame_digest = hashlib.sha256()
+    try:
+        with imageio.get_writer(str(args.output), fps=args.fps, codec="libx264",
+                                macro_block_size=1, ffmpeg_params=["-threads", "1"]) as writer:
             for row in rows:
-                handle.write(json.dumps(row, sort_keys=True) + "\n")
-        summary = {
-            "aggregation": aggregate_results(rows),
-            "split": args.split,
-            "candidate_counts": candidate_counts,
-            "excluded_reasons": excluded,
-            "selection": {
-                key: selection[key]
-                for key in ("mode", "seed", "selection_fingerprint")
-            },
-            "source_group_coverage": {
-                behavior: {
-                    "eligible": selection["eligible_source_groups"][behavior],
-                    "selected": selection["selected_unique_source_groups"][behavior],
-                }
-                for behavior in BEHAVIORS
-            },
-            "selected_direction_counts": selection["selected_direction_counts"],
-            "selection_warnings": selection["warnings"],
-            "tracking_parity": parity,
-            "evaluation_only": True,
-            "training": False,
-            "mutation": {
-                "parameters_changed": False,
-                "buffers_changed": False,
-                "normalizer_changed": False,
-                "components_changed": False,
-            },
-            "protocol": {
-                "push": {"duration_s": args.steady_duration_s, "duration_steps": steady_steps},
-                "steer": {"duration_s": args.steady_duration_s, "duration_steps": steady_steps},
-                "push2steer": {
-                    "duration_s": EVAL_SECONDS,
-                    "duration_steps": EVAL_STEPS,
-                    "lead_s": LEAD_SECONDS,
-                    "lead_steps": LEAD_STEPS,
-                },
-                "steer2push": {
-                    "duration_s": EVAL_SECONDS,
-                    "duration_steps": EVAL_STEPS,
-                    "lead_s": LEAD_SECONDS,
-                    "lead_steps": LEAD_STEPS,
-                },
-            },
-            "full_test_executed": formal_full_test,
-            "formal_full_test": formal_full_test,
-            "formal_full_behavior": full_behavior,
-        }
-        summary["task_metrics"] = task_metric_summary(summary["aggregation"])
-        latent_projection = None
-        if args.latent_analysis or args.latent_inset:
-            latent_projection = latent_render_projection(agent, latent_runs, args.seed)
-            if args.latent_analysis:
-                summary["latent_analysis"] = run_latent_analysis(
-                    root,
-                    agent,
-                    args.checkpoint.resolve(),
-                    args.split,
-                    cases,
-                    latent_runs,
-                    args.seed,
-                    latent_projection,
-                )
-            if args.latent_inset:
-                summary["latent_inset"] = {
-                    "enabled": True,
-                    "projection": "latent_projection.json",
-                    "overlay": "representative model.mp4 and expert.mp4",
-                }
-                write_latent_projection(root / "latent_projection.json", latent_projection)
-            if before != checkpoint_mutation(agent):
-                raise RuntimeError("Frozen model mutated during latent projection setup.")
-        selected = select_representatives(rows)
-        summary["representative_selection_rule"] = (
-            "full completion first; closest joint MAE to category median; "
-            "otherwise closest completion ratio, then joint MAE, then case_id."
-        )
-        videos = root / "videos"
-        replay_checks = {}
-        for behavior, row in selected.items():
-            case = row["case"]
-            source = records[str(case.get("transition_motion_key", case["motion_key"]))]
-            raw, metadata, _ = resolver.load(source)
-            replay_env = HuskyBfmOnlineEnv()
-            replay_before = checkpoint_mutation(agent)
-            try:
-                run = run_policy(
-                    agent,
-                    temp_tracking,
-                    case["case_id"],
-                    raw,
-                    metadata,
-                    case,
-                    env=replay_env,
-                    steps=int(case["steps"]),
-                    model_video=videos / behavior / "model.mp4",
-                    latent_projection=latent_projection,
-                )
-            finally:
-                replay_env.close()
-            if replay_before != checkpoint_mutation(agent):
-                raise RuntimeError("Frozen model mutated during representative replay.")
-            replay_result = run["result"]
-            checks = {
-                "first_action_match": (
-                    replay_result["first_action_fingerprint"] == row["first_action_fingerprint"]
-                ),
-                "T_exec_match": (
-                    replay_result["evaluation"]["T_exec"] == row["evaluation"]["T_exec"]
-                ),
-                "termination_match": (
-                    replay_result["evaluation"]["terminated"] == row["evaluation"]["terminated"]
-                ),
-            }
-            for metric in (
-                "joint_position_mae_rad",
-                "root_orientation_geodesic_error_deg",
-                "board_xy_displacement_error_m",
-                "coupling_xy_error_m",
-            ):
-                checks[f"{metric}_match"] = bool(
-                    np.isclose(
-                        replay_result["metrics"]["full"][metric]["mean"],
-                        row["metrics"]["full"][metric]["mean"],
-                        atol=1e-10,
-                        rtol=1e-10,
-                    )
-                )
-            if not all(checks.values()):
-                raise RuntimeError(f"Representative replay mismatch for {behavior}: {checks}")
-            replay_checks[behavior] = checks
-            write_expert_video(
-                videos / behavior / "expert.mp4",
-                run,
-                int(case["steps"]),
-                latent_projection,
-            )
-            write_json(videos / behavior / "case.json", case)
-        summary["representative_replay"] = replay_checks
-        summary["representative_selection"] = {
-            behavior: row["case"]["case_id"] for behavior, row in selected.items()
-        }
-        write_json(root / "summary.json", summary)
-        write_summary_markdown(root / "summary.md", summary, rows)
-    print(
-        json.dumps(
-            {
-                "status": "PASS",
-                "formal_full_test": formal_full_test,
-                "cases": len(rows),
-                "output": str(output_root(args)),
-                "latent_inset": bool(args.latent_inset),
-            },
-            indent=2,
-        )
-    )
-    return 0
+                if row.get("event") != "tick":
+                    continue
+                # Tick index remains monotonic across episode resets.
+                if row["tick"] * meta["physics_dt"] + 1e-12 < frames / args.fps:
+                    continue
+                state = row["state"]
+                for key, destination in (("qpos", data.qpos), ("qvel", data.qvel)):
+                    value = np.asarray(state[key])
+                    if value.ndim == 2:
+                        value = value[args.world]
+                    if value.shape != destination.shape or not np.isfinite(value).all():
+                        raise ValueError(f"Recorded {key} does not match its own native model.")
+                    destination[:] = value
+                data.time = float(np.asarray(state["time"]).reshape(-1)[args.world if np.asarray(state["time"]).size > 1 else 0])
+                mujoco.mj_forward(model, data)
+                camera = int(args.camera) if str(args.camera).lstrip("-").isdigit() else args.camera
+                renderer.update_scene(data, camera=camera)
+                image = renderer.render()
+                frame_digest.update(image.tobytes())
+                writer.append_data(image)
+                frames += 1
+    finally:
+        renderer.close()
+    result = dict(schema=SCHEMA, mode="stored_state_video_no_integration", frames=frames,
+                  fps=args.fps, world=args.world, model_sha256=asset["files"][0]["sha256"],
+                  rendered_frames_sha256=frame_digest.hexdigest(),
+                  output=str(args.output), video_sha256=hashlib.sha256(args.output.read_bytes()).hexdigest())
+    write_json(args.output.with_suffix(args.output.suffix + ".json"), result)
+    print(json.dumps(result, indent=2))
+    return result
 
 
-def run_video(args: argparse.Namespace) -> int:
-    records, _, phase_path, manifest_path = load_phase_records("val")
-    resolver = RawResolver("val")
-    agent, load_report = load_frozen_agent(args.checkpoint.resolve())
-    seq_length = tracking_seq_length(agent)
-    cases, _ = make_cases("video", records, resolver, args, seq_length)
-    with tempfile.TemporaryDirectory(prefix="skate_bfm_video_") as temp:
-        temp_path, _, bridge = build_temp_motionlib(
-            cases, records, resolver, agent, Path(temp), seq_length
-        )
-        tracking = AlignedSkateTrackingContext.load(agent, temp_path)
-        env = HuskyBfmOnlineEnv()
-        before = checkpoint_mutation(agent)
-        root = output_root(args)
-        root.mkdir(parents=True, exist_ok=True)
-        videos = []
-        latent_projection = None
-        try:
-            if args.latent_inset:
-                print("Latent inset: enabled (shared PCA over video cases and prior).")
-                latent_runs = []
-                for case in cases:
-                    source = records[str(case.get("transition_motion_key", case["motion_key"]))]
-                    raw, metadata, _ = resolver.load(source)
-                    run = run_policy(
-                        agent,
-                        tracking,
-                        case["case_id"],
-                        raw,
-                        metadata,
-                        case,
-                        env,
-                        case["steps"],
-                        collect_latent=True,
-                    )
-                    latent_runs.append(
-                        {
-                            "case": dict(case),
-                            "z": run["latent"]["z"],
-                            "phases": run["latent"]["phases"],
-                        }
-                    )
-                latent_projection = latent_render_projection(agent, latent_runs, args.seed)
-                write_latent_projection(root / "latent_projection.json", latent_projection)
-            else:
-                print("Latent inset: disabled.")
-            for case in cases:
-                source = records[str(case.get("transition_motion_key", case["motion_key"]))]
-                raw, metadata, _ = resolver.load(source)
-                video_path = root / f"{case['behavior']}.mp4"
-                run = run_policy(
-                    agent,
-                    tracking,
-                    case["case_id"],
-                    raw,
-                    metadata,
-                    case,
-                    env,
-                    case["steps"],
-                    video_path,
-                    latent_projection=latent_projection,
-                )
-                if args.with_expert:
-                    write_expert_video(
-                        root / f"{case['behavior']}_expert.mp4",
-                        run,
-                        case["steps"],
-                        latent_projection,
-                    )
-                videos.append(
-                    {
-                        "behavior": case["behavior"],
-                        "case": case,
-                        "T_exec": run["result"]["evaluation"]["T_exec"],
-                        "terminated": run["result"]["evaluation"]["terminated"],
-                        "fall_reason": run["result"]["evaluation"]["fall_reason"],
-                    }
-                )
-        finally:
-            env.close()
-        if before != checkpoint_mutation(agent):
-            raise RuntimeError("Frozen model mutated during video generation.")
-        write_json(
-            root / "videos.json",
-            {
-                "checkpoint": str(args.checkpoint.resolve()),
-                "checkpoint_sha256": hash_file(checkpoint_model_path(args.checkpoint.resolve())),
-                "phase_motionlib": str(phase_path),
-                "phase_manifest": str(manifest_path),
-                "videos": videos,
-                "bridge": bridge,
-                "training": False,
-                "test": False,
-                "latent_inset": bool(args.latent_inset),
-            },
-        )
-    print(
-        json.dumps(
-            {
-                "status": "PASS",
-                "output": str(output_root(args)),
-                "behaviors": [item["behavior"] for item in videos],
-            },
-            indent=2,
-        )
-    )
-    return 0
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    evaluate = commands.add_parser("eval", help="Native29 frozen BFM rollout and Recorder v2 capture.")
+    evaluate.add_argument("--checkpoint", required=True, type=Path)
+    evaluate.add_argument("--checkpoint-sha256")
+    evaluate.add_argument("--output", required=True, type=Path)
+    evaluate.add_argument("--protocol", default=PROTOCOL, type=Path)
+    evaluate.add_argument("--backend", choices=("mujoco", "mjlab"), default="mujoco")
+    evaluate.add_argument("--num-envs", type=int, default=1)
+    evaluate.add_argument("--duration-s", type=float, default=1.0)
+    evaluate.add_argument("--preset", choices=("steer_start", "push_start"), default="steer_start")
+    evaluate.add_argument("--scene-config", type=Path)
+    evaluate.add_argument("--seed", type=int, default=4728)
+    evaluate.add_argument("--device", choices=("cpu", "cuda"))
+    evaluate.add_argument("--context-npy", type=Path, help="Independent offline z condition; never an aligned raw-state reset.")
+    evaluate.add_argument("--mean-action", action="store_true")
+    playback = commands.add_parser("replay", help="Use skate-sim public replay with its strict dynamics gate.")
+    playback.add_argument("--record", required=True, type=Path)
+    playback.add_argument("--mode", choices=("visual", "dynamics"), default="visual")
+    playback.add_argument("--headless", action="store_true")
+    playback.add_argument("--report", type=Path)
+    video = commands.add_parser("video", help="Offscreen video of stored native states; no integration.")
+    video.add_argument("--record", required=True, type=Path)
+    video.add_argument("--output", required=True, type=Path)
+    video.add_argument("--world", type=int, default=0)
+    video.add_argument("--fps", type=int, default=50)
+    video.add_argument("--width", type=int, default=640)
+    video.add_argument("--height", type=int, default=480)
+    video.add_argument("--camera", default="-1", help="Recorded model camera name or -1 for free camera.")
+    return parser.parse_args(argv)
 
 
-def run_viewer(args: argparse.Namespace) -> int:
-    records, _, phase_path, manifest_path = load_phase_records("val")
-    resolver = RawResolver("val")
-    agent, _ = load_frozen_agent(args.checkpoint.resolve())
-    seq_length = tracking_seq_length(agent)
-    cases, _ = make_cases("video", records, resolver, args, seq_length)
-    with tempfile.TemporaryDirectory(prefix="skate_bfm_viewer_") as temp:
-        temp_path, _, bridge = build_temp_motionlib(
-            cases, records, resolver, agent, Path(temp), seq_length
-        )
-        tracking = AlignedSkateTrackingContext.load(agent, temp_path)
-        env = HuskyBfmOnlineEnv(viewer=True, realtime=True)
-        before = checkpoint_mutation(agent)
-        sequence = []
-        interrupted = False
-
-        def stop(_signum: int, _frame: Any) -> None:
-            nonlocal interrupted
-            interrupted = True
-
-        old_int, old_term = signal.signal(signal.SIGINT, stop), signal.signal(signal.SIGTERM, stop)
-        index = 0
-        try:
-            while env.env.is_running and not interrupted:
-                case = cases[index % len(cases)]
-                source = records[str(case.get("transition_motion_key", case["motion_key"]))]
-                raw, metadata, _ = resolver.load(source)
-                run = run_policy(
-                    agent, tracking, case["case_id"], raw, metadata, case, env, case["steps"]
-                )
-                sequence.append(
-                    {
-                        "behavior": case["behavior"],
-                        "case_id": case["case_id"],
-                        "motion_key": case["motion_key"],
-                        "reset_raw_frame": case["reset_raw_frame"],
-                        "T_exec": run["result"]["evaluation"]["T_exec"],
-                        "terminated": run["result"]["evaluation"]["terminated"],
-                    }
-                )
-                index += 1
-        finally:
-            signal.signal(signal.SIGINT, old_int)
-            signal.signal(signal.SIGTERM, old_term)
-            env.close()
-        if before != checkpoint_mutation(agent):
-            raise RuntimeError("Frozen model mutated during viewer.")
-        root = output_root(args)
-        root.mkdir(parents=True, exist_ok=True)
-        write_json(
-            root / "viewer_session.json",
-            {
-                "checkpoint": str(args.checkpoint.resolve()),
-                "checkpoint_sha256": hash_file(checkpoint_model_path(args.checkpoint.resolve())),
-                "phase_motionlib": str(phase_path),
-                "phase_manifest": str(manifest_path),
-                "segments_completed": len(sequence),
-                "segments": sequence,
-                "closed_by_user": not interrupted,
-                "bridge": bridge,
-                "mutation": {
-                    "parameters_changed": False,
-                    "buffers_changed": False,
-                    "normalizer_changed": False,
-                    "components_changed": False,
-                },
-            },
-        )
-    return 0
-
-
-def main() -> int:
+def main():
     args = parse_args()
-    checkpoint = args.checkpoint.expanduser().resolve()
-    if not checkpoint.is_dir():
-        raise FileNotFoundError(checkpoint)
-    if (
-        args.checkpoint_sha256
-        and hash_file(checkpoint_model_path(checkpoint)) != args.checkpoint_sha256
-    ):
-        raise RuntimeError("Checkpoint SHA256 mismatch.")
-    if args.command == "eval":
-        return run_eval(args)
-    if args.command == "video":
-        return run_video(args)
-    return run_viewer(args)
+    result = {"eval": run_eval, "replay": run_replay, "video": run_video}[args.command](args)
+    return 0 if result.get("status", "PASS") == "PASS" else 1
 
 
 if __name__ == "__main__":

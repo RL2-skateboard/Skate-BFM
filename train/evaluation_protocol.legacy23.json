@@ -1,0 +1,51 @@
+{
+  "evaluator_version": "skate-bfm-fixed-eval-v1",
+  "protocol_seed": 20260810,
+  "rollout_horizon": 128,
+  "control_dt_s": 0.02,
+  "reset_condition": {
+    "source": "HUSKY MuJoCo keyframe 0",
+    "robot_and_board_state": "official test-scene keyframe",
+    "joint_offset": "fixed per-rollout official HUSKY reset randomization"
+  },
+  "dynamics": {
+    "source": "husky_sim official play-time randomization",
+    "lifecycle": "sampled_once_per_rollout",
+    "training": "nominal HUSKY dynamics only",
+    "evaluation": "deterministic official randomization from each dynamics_seed"
+  },
+  "rollouts": [
+    {
+      "rollout_id": "eval_seen_001",
+      "dynamics_split": "seen",
+      "rollout_seed": 12001,
+      "dynamics_seed": 22001,
+      "command_v": 0.75,
+      "command_h": -0.35
+    },
+    {
+      "rollout_id": "eval_seen_002",
+      "dynamics_split": "seen",
+      "rollout_seed": 12002,
+      "dynamics_seed": 22002,
+      "command_v": 1.25,
+      "command_h": 0.35
+    },
+    {
+      "rollout_id": "eval_unseen_001",
+      "dynamics_split": "unseen",
+      "rollout_seed": 13001,
+      "dynamics_seed": 23001,
+      "command_v": 0.75,
+      "command_h": 0.35
+    },
+    {
+      "rollout_id": "eval_unseen_002",
+      "dynamics_split": "unseen",
+      "rollout_seed": 13002,
+      "dynamics_seed": 23002,
+      "command_v": 1.25,
+      "command_h": -0.35
+    }
+  ]
+}

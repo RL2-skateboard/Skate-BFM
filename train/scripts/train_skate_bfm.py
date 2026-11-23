@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402, E501, I001
-"""Train the formal Skate-BFM M2.6 closed-loop baseline.
+"""Train Skate-BFM on the native29 skateboard environment.
 
 This is intentionally a small project-owned entrypoint. The vendored
 ``isaac_env/humanoidverse`` package retains the official BFM-Zero algorithms;
-this file only connects their agent and MotionLib data to HUSKY MuJoCo.
+this file connects their agent and MotionLib data to native29 skate-sim.
 """
 
 from __future__ import annotations
@@ -32,13 +32,11 @@ if not (ISAAC_ENV_ROOT / "humanoidverse").is_dir():
     raise FileNotFoundError(f"Skate-BFM Isaac runtime not found: {ISAAC_ENV_ROOT}")
 sys.path[:0] = [
     str(REPOSITORY_ROOT / "src"),
-    str(REPOSITORY_ROOT / "husky_sim" / "src"),
     str(ISAAC_ENV_ROOT),
     str(SCRIPT_DIRECTORY),
 ]
 
 import gymnasium
-import mujoco
 import numpy as np
 import torch
 from torch.utils._pytree import tree_map
@@ -53,8 +51,7 @@ from humanoidverse.agents.envs.humanoidverse_isaac import (
 )
 from humanoidverse.agents.fb_cpr_aux.agent import FBcprAuxAgentConfig
 from humanoidverse.agents.utils import set_seed_everywhere
-from skate_bfm.integration import HuskyBfmOnlineEnv, install_husky_action_projection
-from skate_husky import AUX_REWARD_KEYS
+from skate_bfm.integration import SkateSimOnlineEnv, AUX_REWARD_KEYS
 from train_runner import (
     OFFICIAL_BFM0_SHA256,
     checkpoint_model_path,
@@ -64,14 +61,11 @@ from train_runner import (
     hash_file,
     hash_params,
     load_bfm_checkpoint,
-    load_source_rollout,
     module_state_is_finite,
     optimizer_step_report,
-    resolve_source_rollout_path,
-    validate_raw_layout,
 )
 
-os.environ["OMP_NUM_THREADS"] = "1"
+os.environ.setdefault("OMP_NUM_THREADS", "8")
 torch.set_float32_matmul_precision("high")
 
 CHECKPOINT_DIR_NAME = "checkpoint"
@@ -84,7 +78,6 @@ DEFAULT_UPDATES_PER_BLOCK = 50
 DATASET_ROOT = REPOSITORY_ROOT / "train/dataset"
 BASE_MOTION_FILE = DATASET_ROOT / "base/lafan_29dof_10s-clipped.pkl"
 SKATE_DATASET_ROOT = DATASET_ROOT / "sim_collected"
-RAW_DATASET_ROOT = SKATE_DATASET_ROOT / "train/raw"
 EXPERT_DATASETS = {
     "phase": (
         SKATE_DATASET_ROOT
@@ -151,6 +144,9 @@ class TrainConfig(BaseConfig):
     update_interval: int = DEFAULT_UPDATE_INTERVAL
     updates_per_block: int = DEFAULT_UPDATES_PER_BLOCK
     online_envs: int = 4
+    online_env_backend: str = "skate-sim-mjlab"
+    native_reset_preset: str = "steer_start"
+    aligned_online_tracking: bool = False
     skate_expert_ratio: float = 0.5
     buffer_size: int = DEFAULT_MAX_STEPS
     buffer_device: str = "cpu"
@@ -168,6 +164,14 @@ class TrainConfig(BaseConfig):
             raise ValueError("SKATE_UPDATE_INTERVAL must be positive.")
         if self.updates_per_block <= 0:
             raise ValueError("SKATE_UPDATES_PER_BLOCK must be positive.")
+        if self.online_env_backend not in ("skate-sim-cpu", "skate-sim-mjlab"):
+            raise ValueError("Only native29 skate-sim-cpu/skate-sim-mjlab backends are supported; legacy23 is retired.")
+        if self.native_reset_preset not in ("steer_start", "push_start"):
+            raise ValueError("Unknown native reset preset.")
+        if self.aligned_online_tracking:
+            raise ValueError("Native29 preset resets cannot reproduce aligned legacy expert motion/frame tracking.")
+        if self.online_env_backend == "skate-sim-cpu" and self.online_envs != 1:
+            raise ValueError("skate-sim CPU currently supports online_envs=1; use mjlab for batched worlds.")
         if self.online_envs <= 0:
             raise ValueError("SKATE_ONLINE_ENVS must be positive.")
         if self.buffer_size < self.skate_max_steps:
@@ -239,7 +243,7 @@ def assemble_expert_replay(expert_base: Any, expert_skate: Any) -> dict[str, Any
 
 
 def register_skate_replay(replay_buffer: dict[str, Any], train_skate: Any) -> None:
-    """Keep the official BFM ``train`` key as an alias of HUSKY replay."""
+    """Keep the official BFM ``train`` key as an alias of online skate replay."""
 
     replay_buffer["train_skate"] = train_skate
     replay_buffer["train"] = train_skate
@@ -625,25 +629,129 @@ def encode_target(agent: Any, observations: dict[str, torch.Tensor]) -> np.ndarr
     return z.detach().cpu().numpy().astype(np.float32)
 
 
-def load_frozen_agent(checkpoint: Path) -> tuple[Any, dict[str, Any]]:
-    """Build the Skate-BFM architecture and freeze a validated checkpoint."""
+def make_native_online_env(cfg: TrainConfig) -> Any:
+    """Construct one native backend owning all worlds, without HUSKY projection."""
+    sim_src = REPOSITORY_ROOT.parent / "skate-sim" / "src"
+    if str(sim_src) not in sys.path:
+        sys.path.insert(0, str(sim_src))
+    if cfg.online_env_backend not in ("skate-sim-cpu", "skate-sim-mjlab"):
+        raise ValueError("Only native29 online backends are supported; legacy23 is retired")
+    return SkateSimOnlineEnv(
+        backend="mujoco" if cfg.online_env_backend == "skate-sim-cpu" else "mjlab",
+        num_envs=cfg.online_envs, preset=cfg.native_reset_preset, seed=cfg.seed,
+    )
 
-    cfg = build_train_config()
-    env = HuskyBfmOnlineEnv()
-    try:
-        observation = env.reset()
-    finally:
-        env.close()
+
+def load_frozen_agent(checkpoint: Path, *, online_env_backend: str = "skate-sim-mjlab", device: str | None = None) -> tuple[Any, dict[str, Any]]:
+    """Load a complete native29 BFM model without initializing a simulator."""
+    cfg = build_train_config(SimpleNamespace(
+        online_env_backend=online_env_backend, online_envs=1,
+        **({"device":device} if device is not None else {}),
+    ))
     obs_space = gymnasium.spaces.Dict({
-        key: gymnasium.spaces.Box(-np.inf, np.inf, tuple(value.shape), np.float32)
-        for key, value in observation.items()
+        key:gymnasium.spaces.Box(-np.inf,np.inf,(width,),np.float32)
+        for key,width in (("state",64),("privileged_state",463),("last_action",29),("history_actor",372))
     })
-    agent = cfg.agent.build(obs_space=obs_space, action_dim=29)
-    report = load_bfm_checkpoint(agent, checkpoint)
-    install_husky_action_projection(agent._model)
+    agent=cfg.agent.build(obs_space=obs_space,action_dim=29)
+    report=load_bfm_checkpoint(agent,checkpoint)
     agent._model.eval()
     agent._model.requires_grad_(False)
-    return agent, report
+    return agent,report
+
+
+def load_dataset_report(motion_file: Path, manifest_file: Path, kind: str) -> dict[str, Any]:
+    """Validate provenance at the trainer's actual offline-data loading boundary."""
+    from skate_bfm.integration.source import SOURCE_MISSING_JOINTS
+
+    manifest = json.loads(manifest_file.read_text())
+    records = joblib.load(motion_file)
+    if not isinstance(records, dict) or not records:
+        raise ValueError("Offline dataset must be a non-empty motion dictionary")
+
+    def supports(value):
+        values = value if isinstance(value, list) else [value]
+        if not values or any(type(item) is not int or item not in (23, 29) for item in values):
+            raise ValueError("source_joint_support must be 23/29 or a nonempty list of these integers")
+        if len(set(values)) != len(values):
+            raise ValueError("source_joint_support contains duplicates")
+        return sorted(values)
+
+    def missing(value, expected):
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError("missing_joint_names must be a list of joint names")
+        if len(set(value)) != len(value) or set(value) != set(expected):
+            raise ValueError("missing_joint_names disagrees with source_joint_support")
+        return sorted(value)
+
+    def quality(value):
+        values = value if isinstance(value, list) else [value]
+        if not values or any(not isinstance(item, str) or not item.strip() for item in values):
+            raise ValueError("source_quality must contain nonempty strings")
+        return sorted(set(values))
+
+    declared = supports(manifest.get("source_joint_support", 23))
+    expected_missing = list(SOURCE_MISSING_JOINTS) if 23 in declared else []
+    missing(manifest.get("missing_joint_names", expected_missing), expected_missing)
+    manifest_quality = quality(manifest.get("source_quality", "historical_expert_unvalidated"))
+    manifest_expert = manifest.get("native29_expert", False)
+    if type(manifest_expert) is not bool:
+        raise ValueError("native29_expert must be an explicit boolean")
+    provenance = {}
+    for name, record in records.items():
+        if not isinstance(record, dict):
+            raise ValueError(f"Invalid offline record {name}")
+        fallback = declared[0] if len(declared) == 1 else None
+        support = supports(record.get("source_joint_support", fallback))
+        if len(support) != 1:
+            raise ValueError("Each record must declare one source_joint_support")
+        support = support[0]
+        absent = list(SOURCE_MISSING_JOINTS) if support == 23 else []
+        absent = missing(record.get("missing_joint_names", absent), absent)
+        source_quality = record.get("source_quality", manifest_quality[0] if len(manifest_quality) == 1 else None)
+        if not isinstance(source_quality, str) or not source_quality.strip():
+            raise ValueError("Each record must declare one source_quality")
+        expert = record.get("native29_expert", False)
+        if type(expert) is not bool or (expert and support != 29):
+            raise ValueError("native29_expert must be boolean and cannot certify a 23-joint source")
+        provenance[str(name)] = {
+            "source_joint_support": support, "missing_joint_names": absent,
+            "source_quality": source_quality, "native29_expert": expert,
+            "source_raw_npz": record.get("source_raw_npz"),
+            "source_round": record.get("source_round"),
+            "source_rollout": record.get("source_rollout"),
+        }
+        if "quality_review" in record:
+            provenance[str(name)]["quality_review"] = copy.deepcopy(record["quality_review"])
+    actual_support = sorted({item["source_joint_support"] for item in provenance.values()})
+    actual_quality = sorted({item["source_quality"] for item in provenance.values()})
+    if actual_support != declared:
+        raise ValueError("Manifest source_joint_support disagrees with records")
+    if actual_quality != manifest_quality:
+        raise ValueError("Manifest source_quality disagrees with records")
+    fields = {
+        "dataset_stage":"dataset_stage", "dataset_type":"dataset_type",
+        "motion_count":"total_motion_count", "expert_frames":"expert_frames",
+        "expert_minutes":"expert_minutes", "fps":"fps",
+    }
+    report = {
+        "kind":kind, "motion_file":str(motion_file), "manifest_file":str(manifest_file),
+        "motion_file_sha256":hash_file(motion_file), "manifest_sha256":hash_file(manifest_file),
+        **{out:manifest[key] for out,key in fields.items() if key in manifest},
+        "source_joint_support":declared,
+        "missing_joint_names":sorted({joint for item in provenance.values() for joint in item["missing_joint_names"]}),
+        "source_quality":actual_quality,
+        "native29_expert":manifest_expert and actual_support == [29] and all(item["native29_expert"] for item in provenance.values()),
+        "record_provenance":provenance,
+        "source_rollout_count":len({(str(item["source_round"]),str(item["source_rollout"]),str(item["source_raw_npz"])) for item in provenance.values()}),
+    }
+    if "quality_review" in manifest:
+        report["quality_review"] = copy.deepcopy(manifest["quality_review"])
+    missing_fields = [key for key in fields.values() if key not in manifest]
+    if missing_fields:
+        report["missing_manifest_fields"] = missing_fields
+    return report
+
+
 
 
 class Workspace:
@@ -651,6 +759,8 @@ class Workspace:
 
     def __init__(self, cfg: TrainConfig) -> None:
         self.cfg = cfg
+        if cfg.agent.train.rollout_expert_trajectories or cfg.agent.train.rollout_expert_trajectories_percentage != 0:
+            raise ValueError("Native29 preset resets do not support aligned historical expert rollouts.")
         self.run_started_at = datetime.now().isoformat(timespec="seconds")
         self.git_head = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True
@@ -662,160 +772,39 @@ class Workspace:
 
         expert_path = Path(cfg.skate_expert_motion_file).expanduser().resolve()
         manifest_path = Path(cfg.expert_manifest_file).expanduser().resolve()
-        manifest = json.loads(manifest_path.read_text())
-        fields = {
-            "dataset_stage": "dataset_stage",
-            "dataset_type": "dataset_type",
-            "motion_count": "total_motion_count",
-            "expert_frames": "expert_frames",
-            "expert_minutes": "expert_minutes",
-            "fps": "fps",
-        }
-        self.dataset_report = {
-            "kind": cfg.expert_dataset_kind,
-            "motion_file": str(expert_path),
-            "manifest_file": str(manifest_path),
-            "motion_file_sha256": hash_file(expert_path),
-            "manifest_sha256": hash_file(manifest_path),
-            **{
-                output_name: manifest[source_name]
-                for output_name, source_name in fields.items()
-                if source_name in manifest
-            },
-        }
-        missing_fields = [
-            source_name for source_name in fields.values() if source_name not in manifest
-        ]
-        if missing_fields:
-            self.dataset_report["missing_manifest_fields"] = missing_fields
-        loaded_records = joblib.load(expert_path)
-        if not isinstance(loaded_records, dict) or not loaded_records:
-            raise RuntimeError("Expert reset dataset must be a non-empty motion dictionary.")
-        self.reset_records = {}
-        for motion_key, record in loaded_records.items():
-            required = (
-                "source_raw_npz",
-                "source_start_frame",
-                "source_end_frame",
-                "source_round",
-                "source_rollout",
-                "source_episode",
-                "physics_seed",
-                "dof",
-            )
-            if any(field not in record for field in required):
-                raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
-            self.reset_records[motion_key] = {
-                "source_raw_npz": record["source_raw_npz"],
-                "source_start_frame": int(record["source_start_frame"]),
-                "source_end_frame": int(record["source_end_frame"]),
-                "motion_frames": int(np.asarray(record["dof"]).shape[0]),
-                "source_round": record["source_round"],
-                "source_rollout": record["source_rollout"],
-                "source_episode": record["source_episode"],
-                "command_v": record.get("command_v"),
-                "command_h": record.get("command_h"),
-                "physics_seed": int(record["physics_seed"]),
-            }
-        self.dataset_report["source_rollout_count"] = len({
-            (str(record["source_round"]), str(record["source_rollout"]))
-            for record in loaded_records.values()
-        })
-        del loaded_records, record
-        self.reset_motion_keys = tuple(self.reset_records)
-        self.reset_rng = np.random.default_rng(cfg.seed)
-        self.reset_raw_cache: dict[
-            Path,
-            tuple[np.ndarray, np.ndarray, dict[str, object]],
-        ] = {}
+        self.dataset_report = load_dataset_report(expert_path, manifest_path, cfg.expert_dataset_kind)
 
         self.work_dir.mkdir(parents=True, exist_ok=False)
-        self.train_envs = [HuskyBfmOnlineEnv() for _ in range(cfg.online_envs)]
-        observation = self.train_envs[0].reset()
-        self.obs_space = gymnasium.spaces.Dict({
-            key: gymnasium.spaces.Box(-np.inf, np.inf, tuple(value.shape), np.float32)
-            for key, value in observation.items()
-        })
-        self.action_dim = 29
-        self.agent = cfg.agent.build(obs_space=self.obs_space, action_dim=self.action_dim)
-        self.agent.pretrained_load_report = load_bfm_checkpoint(
-            self.agent, Path(cfg.pretrained_checkpoint)
-        )
-        install_husky_action_projection(self.agent._model)
-        if self.agent.pretrained_load_report["model_sha256"] != OFFICIAL_BFM0_SHA256:
-            raise RuntimeError("Formal Skate-BFM requires the verified official BFM0 checkpoint.")
-        self.agent.checkpoint_source = "official_bfm0_pretrained"
-        self.agent._model.eval()
-        self.agent_update_calls = 0
-        expert_percentage = (
-            self.agent.cfg.train.rollout_expert_trajectories_percentage
-            if self.agent.cfg.train.rollout_expert_trajectories
-            else 0.0
-        )
-        self.expert_rollout_env_indices = select_expert_rollout_envs(
-            cfg.online_envs,
-            expert_percentage,
-            cfg.seed + 1,
-        )
-        self.rollout_context = SkateRolloutContext(
-            self.agent,
-            cfg.online_envs,
-            self.expert_rollout_env_indices,
-        )
-        self.tracking_context: AlignedSkateTrackingContext | None = None
-        (self.work_dir / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
-
-    def _sample_expert_reset(
-        self,
-    ) -> tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, object]]:
-        motion_key = self.reset_motion_keys[
-            int(self.reset_rng.integers(len(self.reset_motion_keys)))
-        ]
-        record = self.reset_records[motion_key]
-        required = (
-            "source_raw_npz",
-            "source_start_frame",
-            "source_end_frame",
-            "source_round",
-            "source_rollout",
-            "source_episode",
-            "physics_seed",
-            "motion_frames",
-        )
-        if any(field not in record for field in required):
-            raise RuntimeError(f"Expert motion {motion_key} lacks reset provenance.")
-        motion_frames = int(record["motion_frames"])
-        source_start = int(record["source_start_frame"])
-        source_end = int(record["source_end_frame"])
-        if motion_frames <= 0 or source_end - source_start != motion_frames:
-            raise RuntimeError(f"Expert motion {motion_key} has an invalid frame range.")
-        local_frame = int(self.reset_rng.integers(motion_frames))
-        source_frame = source_start + local_frame
-        source_path = resolve_source_rollout_path(record)
-        if source_path not in self.reset_raw_cache:
-            self.reset_raw_cache[source_path] = load_source_rollout(
-                source_path,
-                self.train_envs[0],
-                int(record["physics_seed"]),
+        self.native_env = None
+        try:
+            self.native_env = make_native_online_env(cfg)
+            observation = {key: value[0] for key, value in self.native_env.reset().items()}
+            self.online_metadata = {"backend": cfg.online_env_backend, **self.native_env.metadata}
+            self.obs_space = gymnasium.spaces.Dict({
+                key: gymnasium.spaces.Box(-np.inf, np.inf, tuple(value.shape), np.float32)
+                for key, value in observation.items()
+            })
+            self.action_dim = 29
+            self.agent = cfg.agent.build(obs_space=self.obs_space, action_dim=self.action_dim)
+            self.agent.pretrained_load_report = load_bfm_checkpoint(
+                self.agent, Path(cfg.pretrained_checkpoint)
             )
-        raw_qpos, raw_qvel, source_physics = self.reset_raw_cache[source_path]
-        if not 0 <= source_frame < raw_qpos.shape[0] or source_frame >= raw_qvel.shape[0]:
-            raise RuntimeError(f"Expert reset frame is outside raw rollout: {source_path}")
-        qpos = np.asarray(raw_qpos[source_frame], dtype=np.float64).copy()
-        qvel = np.asarray(raw_qvel[source_frame], dtype=np.float64).copy()
-        return qpos, qvel, source_physics, {
-            "motion_key": motion_key,
-            "local_frame": local_frame,
-            "source_raw_npz": str(source_path),
-            "source_frame": source_frame,
-            "source_round": record["source_round"],
-            "source_rollout": record["source_rollout"],
-            "source_episode": record["source_episode"],
-            "command_v": record.get("command_v"),
-            "command_h": record.get("command_h"),
-            "physics_seed": int(record["physics_seed"]),
-            "source_physics_aligned": True,
-        }
+            if self.agent.pretrained_load_report["model_sha256"] != OFFICIAL_BFM0_SHA256:
+                raise RuntimeError("Formal Skate-BFM requires the verified official BFM0 checkpoint.")
+            self.agent.checkpoint_source = "official_bfm0_pretrained"
+            self.agent._model.eval()
+            self.agent_update_calls = 0
+            self.expert_rollout_env_indices = ()
+            self.rollout_context = SkateRolloutContext(
+                self.agent,
+                cfg.online_envs,
+                self.expert_rollout_env_indices,
+            )
+            (self.work_dir / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
+        except BaseException:
+            self.close()
+            raise
+
 
     def _load_experts(self) -> dict[str, Any]:
         expert_env = make_expert_env(self.cfg.env)
@@ -840,13 +829,6 @@ class Workspace:
         expert_skate = load_expert_trajectories_from_motion_lib(
             skate_env, self.cfg.agent, device=self.cfg.buffer_device
         )
-        self.tracking_context = AlignedSkateTrackingContext.from_buffer(
-            expert_skate,
-            {
-                str(name): int(record["motion_frames"])
-                for name, record in self.reset_records.items()
-            },
-        )
         return assemble_expert_replay(expert_base, expert_skate)
 
     def _build_replay(self) -> dict[str, Any]:
@@ -855,33 +837,10 @@ class Workspace:
             replay, DictBuffer(capacity=self.cfg.buffer_size, device=self.cfg.buffer_device)
         )
         replay.update(self._load_experts())
+        # MotionLib's loader sets one thread; restore the training CPU budget.
+        torch.set_num_threads(8)
         return replay
 
-    def _reset_online_env(self, env_index: int) -> dict[str, torch.Tensor]:
-        qpos, qvel, source_physics, provenance = self._sample_expert_reset()
-        observation = self.train_envs[env_index].reset(
-            qpos=qpos,
-            qvel=qvel,
-            source_physics=source_physics,
-        )
-        tracking = None
-        if env_index in self.rollout_context.expert_envs:
-            if self.tracking_context is None:
-                raise RuntimeError("Skate tracking context is unavailable.")
-            trajectory = self.tracking_context.trajectories[provenance["motion_key"]]
-            available = trajectory["length"] - int(provenance["local_frame"]) - 1
-            if available > 0:
-                tracking, _ = self.tracking_context.encode(
-                    self.agent._model,
-                    str(provenance["motion_key"]),
-                    int(provenance["local_frame"]),
-                    min(
-                        available,
-                        self.agent.cfg.train.rollout_expert_trajectories_length,
-                    ),
-                )
-        self.rollout_context.reset(env_index, tracking)
-        return observation
 
     def _preflight(self, replay: dict[str, Any]) -> dict[str, int]:
         if replay["train"] is not replay["train_skate"]:
@@ -976,8 +935,19 @@ class Workspace:
             "normalizer_present": (checkpoint_dir / "model" / "model.safetensors").is_file(),
         }
 
+    def close(self) -> None:
+        if self.native_env is not None:
+            self.native_env.close()
+
     def train(self) -> dict[str, Any]:
-        """Collect HUSKY online data and call only native ``agent.update``."""
+        """Run training and close every backend even if replay setup fails."""
+        try:
+            return self._train()
+        finally:
+            self.close()
+
+    def _train(self) -> dict[str, Any]:
+        """Collect online skate transitions and call the existing ``agent.update``."""
 
         update_steps = training_update_steps(
             self.cfg.skate_max_steps,
@@ -1010,7 +980,7 @@ class Workspace:
             "\n".join(
                 (
                     "=" * 50,
-                    "M2.6 FORMAL TRAINING PLAN",
+                    "NATIVE29 TRAINING PLAN",
                     "=" * 50,
                     f"Expert dataset: {dataset['kind']}",
                     f"Expert pkl: {dataset['motion_file']}",
@@ -1054,10 +1024,12 @@ class Workspace:
         observations: list[dict[str, torch.Tensor]] = []
         episode_steps = [0] * self.cfg.online_envs
         reset_counts = [0] * self.cfg.online_envs
+        initial = self.native_env.reset()
         for index in range(self.cfg.online_envs):
-            observations.append(self._reset_online_env(index))
+            observations.append({key: value[index] for key, value in initial.items()})
+            self.rollout_context.reset(index, None)
             reset_counts[index] += 1
-        transitions: list[Any] = []
+        transition_count = 0
         update_blocks: list[dict[str, Any]] = []
         checkpoints: dict[str, Any] = {}
         actor_hashes = {"A0": hash_params(model._actor)}
@@ -1087,6 +1059,7 @@ class Workspace:
                 "checkpoints": list(checkpoint_steps),
             },
             rollout_latent=self.rollout_context.report(),
+            online_environment=self.online_metadata,
             optimizer={
                 name: optimizer_step_report(item)
                 for name, item in optimizers.items()
@@ -1094,13 +1067,13 @@ class Workspace:
         )
         progress = tqdm(
             total=self.cfg.skate_max_steps,
-            desc="M2.6 training",
+            desc="Native29 training",
             unit="transition",
             dynamic_ncols=True,
         )
 
         def collect(end: int) -> None:
-            nonlocal episodes, falls, start
+            nonlocal episodes, falls, start, transition_count
             model.eval()
             while start <= end:
                 obs_batch = {
@@ -1114,31 +1087,30 @@ class Workspace:
                         z=z_batch,
                         mean=False,
                     )
-                for index, env in enumerate(self.train_envs):
-                    episode_steps[index] += 1
-                    transition_z = z_batch[index]
-                    transition = env.step(
-                        actions[index],
-                        transition_z,
-                        truncated=episode_steps[index] >= SKATE_EPISODE_HORIZON,
-                    )
-                    replay["train"].extend(transition.as_buffer_data())
-                    transitions.append(transition)
-                    if transition.terminated or transition.truncated:
+                episode_steps[:] = [step + 1 for step in episode_steps]
+                batch = self.native_env.step(
+                    actions, z_batch,
+                    truncated=[step >= SKATE_EPISODE_HORIZON for step in episode_steps],
+                )
+                # Transfer once per batch; terminal next observations precede reset.
+                replay["train"].extend(tree_map(lambda value: value.detach().cpu(), batch))
+                transition_count += self.cfg.online_envs
+                terminated_mask = batch["next"]["terminated"].flatten().cpu()
+                truncated_mask = batch["next"]["truncated"].flatten().cpu()
+                done_ids = (terminated_mask | truncated_mask).nonzero().flatten().tolist()
+                next_obs = batch["next"]["observation"]
+                for index in range(self.cfg.online_envs):
+                    observations[index] = {key: value[index] for key, value in next_obs.items()}
+                if done_ids:
+                    reset_obs = self.native_env.reset(env_ids=done_ids)
+                    for index in done_ids:
                         episodes += 1
-                        falls += int(transition.terminated)
-                        if transition.terminated:
-                            reason = str(
-                                transition.raw_metadata.get("fall_reason", "")
-                            ).strip() or "unknown"
-                            termination_reasons[reason] += 1
-                        else:
-                            termination_reasons["truncated"] += 1
-                        observations[index] = self._reset_online_env(index)
+                        falls += int(terminated_mask[index])
+                        termination_reasons["native_terminated" if terminated_mask[index] else "truncated"] += 1
+                        observations[index] = {key: value[index] for key, value in reset_obs.items()}
+                        self.rollout_context.reset(index, None)
                         episode_steps[index] = 0
                         reset_counts[index] += 1
-                    else:
-                        observations[index] = transition.next_observation
                 progress.update(self.cfg.online_envs)
                 start += self.cfg.online_envs
             progress.set_postfix(
@@ -1290,14 +1262,12 @@ class Workspace:
             raise
         finally:
             progress.close()
-            for env in self.train_envs:
-                env.close()
 
         full_replay = replay["train"].get_full_buffer()
         terminated = full_replay["next"]["terminated"]
         truncated = full_replay["next"]["truncated"]
         replay_size = self.cfg.skate_max_steps
-        if len(transitions) != replay_size or len(replay["train"]) != replay_size:
+        if transition_count != replay_size or len(replay["train"]) != replay_size:
             raise RuntimeError("Formal Skate-BFM replay length mismatch.")
         if self.agent_update_calls != expected_updates:
             raise RuntimeError("Formal Skate-BFM native update count mismatch.")
@@ -1306,6 +1276,13 @@ class Workspace:
             or tuple(full_replay["z"].shape) != (replay_size, 256)
         ):
             raise RuntimeError("Formal Skate-BFM replay action/latent schema mismatch.")
+        for observations_key in (full_replay["observation"], full_replay["next"]["observation"]):
+            for key, size in (("state", 64), ("privileged_state", 463), ("last_action", 29), ("history_actor", 372)):
+                value = observations_key[key]
+                if tuple(value.shape) != (replay_size, size) or not bool(torch.isfinite(value).all()):
+                    raise RuntimeError(f"Online replay observation contract mismatch: {key}.")
+        if tuple(terminated.shape) != (replay_size, 1) or tuple(truncated.shape) != (replay_size, 1):
+            raise RuntimeError("Online replay terminal masks must have shape [transitions, 1].")
         if bool((terminated & truncated).any()) or tuple(full_replay["aux_rewards"]) != AUX_REWARD_KEYS:
             raise RuntimeError("Formal Skate-BFM terminal or auxiliary-reward contract mismatch.")
         for value in full_replay["aux_rewards"].values():
@@ -1320,7 +1297,7 @@ class Workspace:
             raise RuntimeError("Formal Skate-BFM optimizer contract mismatch.")
 
         summary = {
-            "milestone": "M2.6 Formal Skate-BFM Training",
+            "milestone": "Native29 Skate-BFM Training",
             "run_provenance": {
                 "run_name": self.work_dir.name,
                 "started_at": self.run_started_at,
@@ -1349,14 +1326,18 @@ class Workspace:
                 "online_env_count": self.cfg.online_envs,
                 "warmup_source": "pretrained_actor_stochastic",
                 "domain_randomization": False,
-                "physics_mode": "canonical_source_physics",
-                "source_physics_aligned": True,
+                "physics_mode": "native_model_preset",
+                "source_physics_aligned": False,
+                "online_environment": self.online_metadata,
             },
             "online_reset": {
-                "mode": "expert_raw_qpos_qvel_source_physics",
+                "mode": "native_preset",
+                "metadata": self.online_metadata,
+                "distribution_changed_from_legacy": True,
+                "aligned_online_expert_tracking": False,
                 "dataset": self.cfg.expert_dataset_kind,
                 "total_resets": sum(reset_counts),
-                "uniform_motion_uniform_local_frame": True,
+                "uniform_motion_uniform_local_frame": False,
             },
             "episodes": {
                 "episodes": episodes,
@@ -1390,7 +1371,7 @@ class Workspace:
             and module_state_is_finite(model._aux_reward_normalizer),
             "native_closed_loop": "PASS",
             "performance_evaluated": False,
-            "next_milestone": "M2.6 Formal Phase/Continuous 100k Training",
+            "next_milestone": "Native29 Phase/Continuous 100k Training",
         }
         summary_text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
         (self.work_dir / "summary.json").write_text(summary_text)
@@ -1417,7 +1398,7 @@ class Workspace:
         )
         print(
             "Formal Skate-BFM complete: "
-            f"{len(transitions)} transitions, {self.agent_update_calls} updates"
+            f"{transition_count} transitions, {self.agent_update_calls} updates"
         )
         return summary
 
@@ -1455,12 +1436,17 @@ def build_train_config(args: argparse.Namespace | None = None) -> TrainConfig:
             "HumanoidVerseIsaacConfig": HumanoidVerseIsaacConfig,
         }
     )
+    online_backend = str(value("online_env_backend", "SKATE_ONLINE_ENV_BACKEND", "skate-sim-mjlab"))
+    training_device = str(value("device", "SKATE_TRAIN_DEVICE", "cuda"))
     return TrainConfig(
         name="TrainConfig",
+        online_env_backend=online_backend,
+        native_reset_preset=str(value("native_reset_preset", "SKATE_NATIVE_RESET_PRESET", "steer_start")),
+        aligned_online_tracking=bool(getattr(args, "aligned_online_tracking", False)),
         agent=FBcprAuxAgentConfig(
             name="FBcprAuxAgent",
             model=FBcprAuxModelConfig(
-                name="FBcprAuxModel", device="cuda",
+                name="FBcprAuxModel", device=training_device,
                 archi=FBcprAuxModelArchiConfig(
                     name="FBcprAuxModelArchiConfig", z_dim=256, norm_z=True,
                     f=ForwardArchiConfig(name="ForwardArchi", hidden_dim=2048, model="residual", hidden_layers=6, embedding_layers=2, num_parallel=2, ensemble_mode="batch", input_filter=DictInputFilterConfig(name="DictInputFilterConfig", key=["state", "privileged_state", "last_action", "history_actor"])),
@@ -1483,8 +1469,8 @@ def build_train_config(args: argparse.Namespace | None = None) -> TrainConfig:
                 train_goal_ratio=0.2, fb_pessimism_penalty=0.0, actor_pessimism_penalty=0.5,
                 stddev_clip=0.3, q_loss_coef=0.0, batch_size=1024, discount=0.98,
                 use_mix_rollout=True, update_z_every_step=100, z_buffer_size=8192,
-                rollout_expert_trajectories=True, rollout_expert_trajectories_length=250,
-                rollout_expert_trajectories_percentage=0.5, lr_discriminator=1e-05,
+                rollout_expert_trajectories=False, rollout_expert_trajectories_length=250,
+                rollout_expert_trajectories_percentage=0.0, lr_discriminator=1e-05,
                 lr_critic=0.0003, critic_target_tau=0.005, critic_pessimism_penalty=0.5,
                 reg_coeff=0.05, scale_reg=True, expert_asm_ratio=0.6, relabel_ratio=0.8,
                 grad_penalty_discriminator=10.0, weight_decay_discriminator=0.0,
@@ -1500,7 +1486,7 @@ def build_train_config(args: argparse.Namespace | None = None) -> TrainConfig:
             cudagraphs=False, compile=False,
         ),
         env=HumanoidVerseIsaacConfig(
-            name="humanoidverse_isaac", device="cuda:0",
+            name="humanoidverse_isaac", device="cuda:0" if training_device == "cuda" else training_device,
             lafan_tail_path=str(BASE_MOTION_FILE),
             enable_cameras=False, camera_render_save_dir="isaac_videos", max_episode_length_s=None,
             disable_obs_noise=False, disable_domain_randomization=False,
@@ -1590,6 +1576,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--update-interval", type=int)
     parser.add_argument("--updates-per-block", type=int)
     parser.add_argument("--online-envs", type=int)
+    parser.add_argument("--online-env-backend", choices=("skate-sim-cpu", "skate-sim-mjlab"))
+    parser.add_argument("--native-reset-preset", choices=("steer_start", "push_start"))
+    parser.add_argument("--aligned-online-tracking", action="store_true", help="Require motion/frame aligned online tracking (unsupported by native29).")
+    parser.add_argument("--device", help="BFM training and offline MotionLib device (default cuda).")
     parser.add_argument("--expert-ratio", type=float)
     parser.add_argument("--buffer-size", type=int)
     return parser.parse_args()

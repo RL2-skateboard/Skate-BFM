@@ -7,24 +7,25 @@ name = "skate-bfm"
 version = "0.1.0"
 description = "Predictive behavior foundation models for humanoid interaction with underactuated moving supports"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.11,<3.12"
 dependencies = [
+    "skate-sim>=0.1,<0.2",
     "easydict>=1.13,<2",
     "gymnasium>=1.1,<2",
     "imageio[ffmpeg]>=2.36,<3",
     "joblib>=1.4,<2",
     "matplotlib>=3.9,<4",
     "mujoco>=3.3,<4",
-    "numpy>=1.26,<3",
+    "numpy>=1.26,<2",
     "pydantic>=2.10,<3",
     "pyyaml>=6,<7",
     "safetensors>=0.5,<1",
     "scikit-learn>=1.6,<2",
     "scipy>=1.13,<2",
     "tensordict>=0.7,<1",
-    "torch>=2.5,<3",
+    "torch>=2.7,<2.8",
     "tqdm>=4.67,<5",
-    "tyro>=0.9,<1",
+    "tyro>=1,<2",
 ]
 
 [project.optional-dependencies]
@@ -40,20 +41,20 @@ motionlib = [
     "lxml>=5.3,<7",
     "mediapy>=1.2,<2",
     "ml-collections>=1.1,<2",
-    "numpy-stl>=3.2,<5",
-    "open3d>=0.19,<1",
     "pot>=0.9.5,<1",
     "rich>=14,<16",
     "termcolor>=3,<4",
     "wandb>=0.19,<1",
 ]
 
+mesh = ["numpy-stl>=3.2,<5", "open3d>=0.19,<1"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
-pythonpath = ["src", "husky_sim/src"]
+pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]

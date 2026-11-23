@@ -139,17 +139,18 @@ are dataset-quality checks, not trained-policy performance videos.
 
 ### Current Formal Summary
 
-The current authoritative result for Experiment 3 is the fixed 80-case R5
+The current authoritative results for Experiment 3 are the fixed 80-case R5
 held-out comparison in
 [`eval_res/2026-08-20/20k-50k-100k-s20b/comparison.md`](eval_res/2026-08-20/20k-50k-100k-s20b/comparison.md).
 The table below summarizes the nearest training diagnostics for the three
-formal checkpoints.
+formal checkpoints and the later 200k Phase extension.
 
 | Checkpoint | Env transitions | Native updates | Episodes | Falls | Tracking ratio | FB loss | Critic loss | Aux critic loss | Actor loss | Disc loss |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 20k | 20,000 | 1,900 | 17 | 1 | 0.0228 | -245.13 | 1.11 | 1.30 | 42,843.37 | 0.266 |
 | 50k | 50,000 | 4,900 | 236 | 212 | 0.0612 | -5,135.21 | 39.37 | 29.26 | 9,395.31 | 0.139 |
 | 100k | 100,000 | 9,900 | 1,917 | 1,893 | 0.1886 | -10,463.11 | 4.18 | 1.74 | 2,467.11 | 0.103 |
+| 200k | 200,000 | 19,900 | 3,831 | 3,807 | 0.2158 | -11,947.38 | 5.44 | 1.57 | 3,697.49 | 0.0820 |
 
 **Caption.** `FB loss`, `critic loss`, `aux critic loss`, `actor loss`, and
 `disc loss` are the actual metric names produced by the training code.
@@ -253,6 +254,7 @@ Checkpoint integrity:
 | 20k | `b758f01fd960` | 1,900 | PASS |
 | 50k | `b1f16d00ae80` | 4,900 | PASS |
 | 100k | `ab8ef719d613` | 9,900 | PASS |
+| 200k | `ec0f4c041950` | 19,900 | PASS |
 
 **Caption.** `SHA256 prefix` is a shortened checkpoint content hash,
 `optimizer step` is the number of saved update calls, and `reload` verifies
@@ -262,6 +264,10 @@ integrity, not behavior.
 The complete 100k artifact, frozen evaluations, and training summary are
 published as
 [`m2.6-phase-100k-seed4728`](https://huggingface.co/Yak9Ce3teeh/skate-bfm/tree/main/motion_library/m2.6-phase-100k-seed4728).
+The 200k Phase artifact is
+[`m2.6-p2-phase-200k-seed4728`](../model/motion_library/m2.6-p2-phase-200k-seed4728);
+its model SHA256 is
+`ec0f4c04195024e5c47a3d8003e89de7b7cf71a9d82bdd86e96a4a39c6c4627b`.
 
 Optimization endpoints:
 
@@ -271,6 +277,7 @@ Optimization endpoints:
 | 20,000 | 6,070.78 | 0.20310 | 52.17 | 45.79 | 8,131.50 |
 | 50,000 | -3,871.08 | 0.15599 | 12.75 | 3.10 | 954.92 |
 | 100,000 | -10,048.30 | 0.08824 | 5.08 | 2.30 | 1,116.23 |
+| 200,000 | -11,947.38 | 0.08204 | 5.44 | 1.57 | 3,697.49 |
 
 **Caption.** `FB loss` may be negative because its objective contains a
 negative diagonal term. `Disc.` is discriminator loss; `Critic` and `Aux
@@ -374,6 +381,46 @@ failure.
 Artifacts: [Phase100k summary](eval_res/2026-08-20/p100k-v20b_val_phase_eval/summary.md),
 [fixed case bank](eval_res/2026-08-20/p100k-v20b_val_phase_eval/cases.json),
 and [task-oriented comparison](eval_res/2026-08-24/p100k-c100k-v20b/comparison.md).
+
+### Phase 200k Extension Results
+
+This is the continuation of Experiment 3 from the 100k milestone, not a new
+experiment. The Phase 200k run used fresh official BFM0, the same 6,038-motion
+Phase train library, seed `4728`, four online environments, exact source
+physics resets, aligned tracking latents, and the same FB-CPR-Aux update
+schedule. It completed 200,000 transitions, 398 update blocks, 19,900 native
+updates, 3,831 episodes, 3,807 falls, and 24 horizon truncations. The final
+replay size was 200,000; 43,158 transitions used tracking latents, the
+tracking ratio was `0.21579`, and the z-buffer reached 8,192 entries.
+
+The 200k checkpoint was evaluated on the same fixed Phase-Val bank above:
+
+| Behavior | Full completion rate | Mean completion ratio | Board XY error (m) | Coupling XY error (m) |
+|---|---:|---:|---:|---:|
+| push | 0.650 | 0.8405 | 0.0990 | 0.0634 |
+| steer | 1.000 | 1.0000 | 0.0809 | 0.0379 |
+| push2steer | 0.500 | 0.7686 | 0.8830 | 0.6640 |
+| steer2push | 0.250 | 0.7628 | 0.6307 | 0.2907 |
+
+**Caption.** `Full completion rate` is the fraction of 20 cases reaching the
+planned horizon; `mean completion ratio` is executed steps divided by the
+planned horizon. Board XY and coupling XY errors are metres averaged over
+executed frames. Early-fall prefix errors must not be interpreted as success.
+The 200k checkpoint is stable on steer, but transition completion remains
+limited.
+
+The same evaluation generated a shared latent-space analysis from 11,338
+actual tracking `z_t` points and 4,096 deterministic prior samples. The
+projection uses normalized directions `u=z/||z||` and one shared PCA basis.
+The first three explained-variance ratios are `0.0720`, `0.0490`, and
+`0.0477`; nearest-centroid accuracy is `0.5062`; cosine silhouette is
+`0.0155`. Adjacent latent cosine distance is `0.00830` mean / `0.01990` p95
+for push2steer and `0.00969` mean / `0.02029` p95 for steer2push. These are
+latent access diagnostics, not task-success proof.
+
+The unified plot, raw metrics, latent projection, summary, and representative
+model/expert videos with the right-corner latent inset are in
+[`p2-200k-v20b-latent_val_phase_eval/`](eval_res/2026-08-24/p2-200k-v20b-latent_val_phase_eval/).
 
 ### Historical Failure Diagnosis and Semantics Correction Results
 
@@ -521,8 +568,9 @@ lower is better. Counts are reset contexts, and these first-action metrics do
 not establish closed-loop success.
 
 **Conclusion.** Hard-waist controller restoration is structurally and
-one-step-response validated. No post-restoration P0 or training run has been
-performed, so closed-loop Skate behavior remains unverified.
+one-step-response validated. The later Phase 200k run is numerically finite
+and improves steady steer on the fixed Val bank, but it does not establish
+robust transition behavior.
 
 ### Experiment 3 Verified and Unverified Conclusions
 
@@ -531,7 +579,9 @@ Verified:
 - [x] Base/Skate expert sequences enter the native BFM update at the required
   50/50 sequence ratio.
 - [x] Fixed-replay and closed-loop optimization remain finite through the
-  completed 20k and 100k runs.
+  completed 20k, 100k, and 200k runs.
+- [x] The Phase extension completed 200,000 transitions, 398 update blocks,
+  and 19,900 native updates with finite reloadable checkpoints.
 - [x] Checkpoints reload with model, optimizer, and normalizer state.
 - [x] The historical 32-case matched evaluation found the 100k checkpoints
   less stable than official BFM0.
@@ -545,6 +595,9 @@ Verified:
   restored and improve one-step response over target-only correction.
 - [x] The P0 check made zero training/update/backward/optimizer calls and did
   not change model, normalizer, or buffer hashes.
+- [x] The 200k checkpoint replayed the fixed Phase-Val 80-case bank with
+  tracking parity, frozen mutation checks, latent metrics, and representative
+  videos passing.
 
 Unverified:
 
@@ -554,6 +607,8 @@ Unverified:
 - [ ] A single action translation reproduces every source physical target.
 - [ ] The projected source action is a valid universal BFM expert action.
 - [ ] A revised post-alignment training run improves robust phase behavior.
+- [ ] Extending the Phase run from the 100k milestone to 200k establishes
+  robust push2steer and steer2push reproduction.
 - [ ] The current checkpoint is a usable Skate motion library.
 - [x] A fixed 80-case held-out Test subset was replayed identically for 20k,
   50k, and 100k, with frozen mutation and tracking-parity checks passing.

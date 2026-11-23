@@ -1,23 +1,11 @@
-name: skatebfm
+name: skate-sim
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
 dependencies:
-  - python=3.12
+  - python=3.11
   - pip
-  - pytorch>=2.5
-  - pytorch-cuda=12.4
-  - numpy>=1.26
-  - pyyaml>=6
   - pip:
-      - mujoco>=3.3,<4
-      - easydict>=1.13,<2
-      - gymnasium>=1.1,<2
-      - pydantic>=2.10,<3
-      - safetensors>=0.5,<1
-      - tensordict>=0.7,<1
-      - tyro>=0.9,<1
+      - torch>=2.7,<2.8
+      - numpy>=1.26,<2
       - pytest>=8,<9
       - ruff>=0.9,<1
-      - -e .[motionlib]

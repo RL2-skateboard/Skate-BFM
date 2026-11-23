@@ -1,6 +1,5 @@
-"""Project-owned HUSKY integration for the Skate-BFM training baseline."""
+"""Native 29-DoF Skate-BFM training integration."""
+from .integration import AUX_REWARD_KEYS, SkateSimOnlineEnv
 
-from skate_bfm.integration import Bfm0ToHusky23
-
-__all__ = ["Bfm0ToHusky23"]
+__all__ = ["AUX_REWARD_KEYS", "SkateSimOnlineEnv"]
 __version__ = "0.1.0"

@@ -1,51 +1,21 @@
 {
-  "evaluator_version": "skate-bfm-fixed-eval-v1",
-  "protocol_seed": 20260810,
-  "rollout_horizon": 128,
+  "schema": "skate-bfm-native29-evaluation-v1",
+  "source_joint_support": 29,
+  "physics_dt_s": 0.002,
   "control_dt_s": 0.02,
-  "reset_condition": {
-    "source": "HUSKY MuJoCo keyframe 0",
-    "robot_and_board_state": "official test-scene keyframe",
-    "joint_offset": "fixed per-rollout official HUSKY reset randomization"
+  "environment": "skate-sim shared current robot+board scene",
+  "reset": "explicit native preset+scene+seed+compiled model identity",
+  "historical_raw23_reset_supported": false,
+  "historical_teacher_parity_supported": false,
+  "offline_context": "independent condition; initial-state/source-physics alignment is not claimed",
+  "replay": {
+    "format": "skate-sim Recorder v2 with model.xml and actual per-physics-tick inputs/state",
+    "dynamics_atol": 1e-7,
+    "minimum_physics_ticks_per_segment": 500,
+    "same_backend_model_numerics_required": true,
+    "visual": "stored-state readback only; no dynamics integration"
   },
-  "dynamics": {
-    "source": "husky_sim official play-time randomization",
-    "lifecycle": "sampled_once_per_rollout",
-    "training": "nominal HUSKY dynamics only",
-    "evaluation": "deterministic official randomization from each dynamics_seed"
-  },
-  "rollouts": [
-    {
-      "rollout_id": "eval_seen_001",
-      "dynamics_split": "seen",
-      "rollout_seed": 12001,
-      "dynamics_seed": 22001,
-      "command_v": 0.75,
-      "command_h": -0.35
-    },
-    {
-      "rollout_id": "eval_seen_002",
-      "dynamics_split": "seen",
-      "rollout_seed": 12002,
-      "dynamics_seed": 22002,
-      "command_v": 1.25,
-      "command_h": 0.35
-    },
-    {
-      "rollout_id": "eval_unseen_001",
-      "dynamics_split": "unseen",
-      "rollout_seed": 13001,
-      "dynamics_seed": 23001,
-      "command_v": 0.75,
-      "command_h": 0.35
-    },
-    {
-      "rollout_id": "eval_unseen_002",
-      "dynamics_split": "unseen",
-      "rollout_seed": 13002,
-      "dynamics_seed": 23002,
-      "command_v": 1.25,
-      "command_h": -0.35
-    }
-  ]
+  "skill_success_thresholds": null,
+  "short_rollout_establishes_riding_or_generalization": false,
+  "retired_protocol_archive": "evaluation_protocol.legacy23.json"
 }

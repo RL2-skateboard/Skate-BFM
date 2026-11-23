@@ -269,6 +269,7 @@ class HuskyLiteEnv:
         fall_root_height_min: float = DEFAULT_FALL_ROOT_HEIGHT_MIN,
         fall_confirm_time: float = DEFAULT_FALL_CONFIRM_TIME,
     ) -> None:
+        raise RuntimeError("HuskyLiteEnv 23-DoF runtime is retired; use native29 SkateSimOnlineEnv.")
         husky_root = Path(__file__).resolve().parents[2]
         default_xml = husky_root / "upstream/test_scene/mjlab_scene.xml"
         self.xml_path = Path(xml_path) if xml_path else default_xml

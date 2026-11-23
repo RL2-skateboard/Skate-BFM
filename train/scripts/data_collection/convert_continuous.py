@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the fixed-window continuous BFM MotionLib from canonical HUSKY raw data."""
+"""Build the fixed-window continuous BFM MotionLib from native29 rollouts or historical23 offline raw data."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from tqdm import tqdm
 
-PHASES = ("push", "push2steer", "steer_left", "steer_forward", "steer_right", "steer2push")
+PHASES = ("push", "push2steer", "steer_left", "steer_forward", "steer_right", "steer2push", "unlabelled_rollout")
 PHASE_IDS = {
     "push": 0,
     "push2steer": 1,
@@ -30,6 +30,7 @@ PHASE_IDS = {
     "steer_forward": 4,
     "steer2push": 5,
     "fall": 6,
+    "unlabelled_rollout": 7,
 }
 PHASE_LABELS = {value: key for key, value in PHASE_IDS.items()}
 BFM_REQUIRED = {
@@ -120,7 +121,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--bfm-repo", type=Path, required=True)
     p.add_argument("--bfm-reference", type=Path, required=True)
     p.add_argument("--robot-xml", type=Path, required=True)
-    p.add_argument("--husky-xml", type=Path)
+    p.add_argument("--model-xml", "--husky-xml", dest="husky_xml", type=Path, help="recorded native29 model.xml; legacy23 rendering is rejected")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--manifest", type=Path)
     p.add_argument("--qc-root", type=Path)
@@ -232,6 +233,13 @@ def load_raw(path: Path) -> tuple[Path, dict[str, Any], dict[str, np.ndarray]]:
 def validate_raw(
     raw_path: Path, metadata: Mapping[str, Any], state: Mapping[str, np.ndarray]
 ) -> tuple[int, dict[str, Any]]:
+    support = int(metadata.get("source_joint_support", len(metadata.get("joint_order", []))))
+    if support not in (23, 29):
+        raise ValueError("only historical23 or native29 raw data are supported")
+    if len(metadata.get("joint_order", [])) != support:
+        raise ValueError("source_joint_support disagrees with joint_order")
+    if support == 29 and metadata.get("fixed_bfm_joints"):
+        raise ValueError("native29 data cannot have projected/fixed wrist joints")
     frame_count = int(metadata.get("num_frames", 0))
     if frame_count <= 0:
         raise ValueError(f"{raw_path} has invalid num_frames")
@@ -268,7 +276,8 @@ def validate_raw(
     randomization = metadata["physics_randomization"]
     if not isinstance(randomization, Mapping) or "seed" not in randomization:
         raise ValueError(f"{raw_path} has invalid physics_randomization")
-    missing = [name for name in RAW_REQUIRED if name not in state]
+    command_available = metadata.get("command_annotation") != "unavailable"
+    missing = [name for name in RAW_REQUIRED if name not in state and (command_available or name not in ("command_v", "command_h"))]
     if missing:
         raise ValueError(f"{raw_path} missing raw fields: {missing}")
     for name, value in state.items():
@@ -278,14 +287,15 @@ def validate_raw(
             finite(f"{raw_path}:{name}", value)
     if not np.array_equal(state["frame_idx"], np.arange(frame_count)):
         raise ValueError(f"{raw_path}:frame_idx is not contiguous")
-    if np.any(np.diff(state["sim_time"]) < 0):
-        raise ValueError(f"{raw_path}:sim_time is not monotonic")
+    time_reversal = np.diff(state["sim_time"]) < 0
+    if np.any(time_reversal & ~np.asarray(state["reset"][1:], dtype=bool)):
+        raise ValueError(f"{raw_path}:sim_time reversed without a recorded reset")
     expected = {
         "root_pos": (frame_count, 3),
         "root_quat": (frame_count, 4),
-        "dof_pos": (frame_count, 23),
-        "dof_vel": (frame_count, 23),
-        "action": (frame_count, 23),
+        "dof_pos": (frame_count, support),
+        "dof_vel": (frame_count, support),
+        "action": (frame_count, support),
         "board_root_pos": (frame_count, 3),
         "board_root_quat": (frame_count, 4),
         "board_root_lin_vel": (frame_count, 3),
@@ -299,28 +309,31 @@ def validate_raw(
         "board_heading_delta": (frame_count,),
     }
     for name, shape in expected.items():
+        if not command_available and name in ("command_v", "command_h"):
+            continue
         if state[name].shape != shape:
             raise ValueError(f"{raw_path}:{name} has {state[name].shape}, expected {shape}")
     phase_ids = np.asarray(state["phase_id"])
     if not np.issubdtype(phase_ids.dtype, np.integer):
         raise ValueError(f"{raw_path}:phase_id must be integer")
-    unknown = sorted(set(phase_ids.tolist()) - set(range(7)))
+    unknown = sorted(set(phase_ids.tolist()) - set(range(8)))
     if unknown:
         raise ValueError(f"{raw_path} contains unknown phase IDs: {unknown}")
     phase_fall = phase_ids == PHASE_IDS["fall"]
     if not np.array_equal(np.asarray(state["fall"], dtype=bool), phase_fall):
         raise ValueError(f"{raw_path}:fall and phase_id are inconsistent")
-    if not np.all((0 <= state["command_v"]) & (state["command_v"] <= 1.5)):
-        raise ValueError(f"{raw_path}:command_v outside [0, 1.5]")
-    if not np.all(np.abs(state["command_h"]) <= math.pi / 4):
-        raise ValueError(f"{raw_path}:command_h outside [-pi/4, pi/4]")
-    if len(np.unique(state["command_v"])) != 1 or len(np.unique(state["command_h"])) != 1:
-        raise ValueError(f"{raw_path}: command is not fixed within rollout")
+    if command_available:
+        if not np.all((0 <= state["command_v"]) & (state["command_v"] <= 1.5)):
+            raise ValueError(f"{raw_path}:command_v outside [0, 1.5]")
+        if not np.all(np.abs(state["command_h"]) <= math.pi / 4):
+            raise ValueError(f"{raw_path}:command_h outside [-pi/4, pi/4]")
+        if len(np.unique(state["command_v"])) != 1 or len(np.unique(state["command_h"])) != 1:
+            raise ValueError(f"{raw_path}: command is not fixed within rollout")
     if not math.isclose(float(metadata["dt"]), 1.0 / float(metadata["fps"]), abs_tol=1e-5):
         raise ValueError(f"{raw_path}: fps/dt mismatch")
     return frame_count, {
-        "command_v": float(state["command_v"][0]),
-        "command_h": float(state["command_h"][0]),
+        "command_v": float(state["command_v"][0]) if metadata.get("command_annotation") != "unavailable" else None,
+        "command_h": float(state["command_h"][0]) if metadata.get("command_annotation") != "unavailable" else None,
         "physics_seed": int(randomization["seed"]),
     }
 
@@ -421,12 +434,12 @@ def convert_record(
     clip_frames: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     frame_count = end - start
-    if frame_count < seq_length + 1:
-        raise ValueError(f"segment is shorter than BFM minimum {seq_length + 1}")
+    if frame_count < seq_length + 2:
+        raise ValueError(f"segment is shorter than BFM minimum {seq_length + 2}")
     if frame_count != clip_frames:
         raise ValueError(f"continuous clip has {frame_count} frames, expected {clip_frames}")
     phase_ids = np.asarray(state["phase_id"][start:end], dtype=np.int16)
-    if np.any((phase_ids < 0) | (phase_ids >= PHASE_IDS["fall"])):
+    if np.any(~np.isin(phase_ids, (0, 1, 2, 3, 4, 5, 7))):
         raise ValueError("continuous clip contains invalid or fall phase")
     if np.any(np.asarray(state["reset"][start:end], dtype=bool)):
         raise ValueError("continuous clip crosses reset")
@@ -496,10 +509,22 @@ def convert_record(
             "source_start_frame": int(start),
             "source_end_frame": int(end),
             "source_raw_npz": str(source_path.resolve()),
-            "command_v": float(state["command_v"][0]),
-            "command_h": float(state["command_h"][0]),
+            "command_v": float(state["command_v"][0]) if metadata.get("command_annotation") != "unavailable" else None,
+            "command_h": float(state["command_h"][0]) if metadata.get("command_annotation") != "unavailable" else None,
             "physics_seed": int(metadata["physics_randomization"]["seed"]),
             "dataset_split": str(metadata["dataset_split"]),
+            "source_joint_support": int(metadata.get("source_joint_support", len(metadata["joint_order"]))),
+            "missing_joint_names": list(metadata["fixed_bfm_joints"]),
+            "native29_expert": bool(metadata.get("native29_expert", False)),
+            "source_quality": metadata.get("quality", "historical_expert_unvalidated"),
+            "phase_annotation": metadata.get("phase_annotation", "historical_controller_phase"),
+            "source_model_sha256": metadata.get("model_sha256"),
+            "source_schema": metadata.get("schema", "historical23"),
+            "source_action_contract": metadata.get("action_contract"),
+            "source_scene_config": metadata.get("scene_config"),
+            "source_policy_checkpoint_files": metadata.get("policy_checkpoint_files"),
+            "smpl_joints_available": False,
+            "command_annotation": metadata.get("command_annotation", "historical_command"),
         }
     )
     for name in SKATE_REQUIRED:
@@ -733,9 +758,19 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
     if len(fps_values) != 1:
         raise ValueError(f"QC requires one dataset FPS, got {sorted(fps_values)}")
     fps = fps_values.pop()
+    model_hash = hashlib.sha256(husky_xml.resolve().read_bytes()).hexdigest()
+    for record in records.values():
+        source = Path(record["source_raw_npz"])
+        metadata = json.loads(source.with_suffix(".json").read_text())
+        if int(metadata.get("source_joint_support", len(metadata["joint_order"]))) != 29:
+            raise ValueError("historical23 raw is offline conversion only; new legacy physics/video rendering is retired")
+        if metadata.get("model_sha256") != model_hash:
+            raise ValueError("QC model.xml hash does not match recorded native29 model")
     model = mujoco.MjModel.from_xml_path(str(husky_xml.resolve()))
     data = mujoco.MjData(model)
-    renderer = mujoco.Renderer(model, height=720, width=1280)
+    render_width = min(1280, model.vis.global_.offwidth)
+    render_height = min(720, model.vis.global_.offheight)
+    renderer = mujoco.Renderer(model, height=render_height, width=render_width)
     camera = mujoco.MjvCamera()
     camera.type = mujoco.mjtCamera.mjCAMERA_FREE
     camera.distance, camera.azimuth, camera.elevation = 4.0, 135.0, -18.0
@@ -791,13 +826,13 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
                     f"Source Frames: {start} : {end}",
                     f"Duration: {duration:.1f}s",
                     f"FPS: {record['fps']}",
-                    f"Command: v={record['command_v']:.2f}, h={record['command_h']:.2f}",
+                    f"Command: v={record['command_v'] if record['command_v'] is not None else 'unavailable'}, h={record['command_h'] if record['command_h'] is not None else 'unavailable'}",
                     f"Physics Seed: {record['physics_seed']}",
                     "Phase Sequence:",
                     *textwrap.wrap(sequence, width=100),
                 ]
                 for _ in range(max(1, round(0.4 * fps))):
-                    writer.append_data(text_frame(1280, 720, title))
+                    writer.append_data(text_frame(render_width, render_height, title))
                 for local, raw_index in enumerate(range(start, end)):
                     data.qpos[:] = raw["qpos"][raw_index]
                     data.qvel[:] = raw["qvel"][raw_index]
@@ -815,13 +850,13 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
                                 f"local frame={local} | local time={local / fps:.2f}s",
                                 f"source raw frame={raw_index}",
                                 (
-                                    f"v={record['command_v']:.2f} | "
-                                    f"h={record['command_h']:.2f} | "
+                                    f"v={record['command_v'] if record['command_v'] is not None else 'unavailable'} | "
+                                    f"h={record['command_h'] if record['command_h'] is not None else 'unavailable'} | "
                                     f"physics={record['physics_seed']}"
                                 ),
                                 (
                                     f"phase={PHASE_LABELS[phase_id]} | id={phase_id} | "
-                                    f"value={record['phase_value'][local]:.3f}"
+                                    f"value={record['phase_value'][local] if record.get('phase_annotation') != 'unavailable' else 'unavailable'}"
                                 ),
                                 (
                                     f"board_heading_delta="
@@ -847,8 +882,8 @@ def generate_qc(motion_file: Path, qc_root: Path, husky_xml: Path, seed: int) ->
                         "phase_sequence": record["phase_sequence"],
                         "phase_id_start": int(record["phase_id"][0]),
                         "phase_id_end": int(record["phase_id"][-1]),
-                        "phase_value_start": float(record["phase_value"][0]),
-                        "phase_value_end": float(record["phase_value"][-1]),
+                        "phase_value_start": float(record["phase_value"][0]) if record.get("phase_annotation") != "unavailable" else None,
+                        "phase_value_end": float(record["phase_value"][-1]) if record.get("phase_annotation") != "unavailable" else None,
                         "board_heading_delta_start": float(record["board_heading_delta"][0]),
                         "board_heading_delta_end": float(record["board_heading_delta"][-1]),
                     }
@@ -943,8 +978,8 @@ def print_continuous_summary(
 ) -> None:
     print("\n[Continuous Conversion Summary]")
     print(f"continuous motions: {motion_count}")
-    print(f"expert frames: {expert_frames}")
-    print(f"expert duration: {expert_frames / fps / 60.0:.3f} min")
+    print(f"dataset frames: {expert_frames}")
+    print(f"dataset duration: {expert_frames / fps / 60.0:.3f} min")
     print(f"clip frames: {clip_frames}")
     print(f"clip duration: {clip_frames / fps:.1f}s")
     print(f"valid rollouts: {valid_rollouts}")
@@ -985,8 +1020,8 @@ def print_final_summary(
     print(f"Accepted continuous motions: {manifest['total_motion_count']}")
     print(f"Clip frames: {manifest['clip_frames']}")
     print(f"Clip seconds: {manifest['clip_seconds']:.1f}")
-    print(f"Expert frames: {manifest['expert_frames']}")
-    print(f"Expert duration: {manifest['expert_minutes']:.3f} min")
+    print(f"Dataset frames: {manifest['expert_frames']}")
+    print(f"Dataset duration: {manifest['expert_minutes']:.3f} min")
     print("\nPhase frame distribution:")
     for phase in PHASES:
         print(f"{phase}: {manifest['phase_frame_distribution'][phase]}")
@@ -1161,7 +1196,7 @@ def aggregate(args: argparse.Namespace) -> int:
             for phase_id, count in zip(*np.unique(phase_ids, return_counts=True), strict=True):
                 phase_frame_counts[PHASE_LABELS[int(phase_id)]] += int(count)
             phase_run_counts.append(len(record["phase_sequence"]))
-            command_key = f"{source['command_v']:.6g},{source['command_h']:.6g}"
+            command_key = str((source["command_v"], source["command_h"]))
             command = command_stats.setdefault(
                 command_key,
                 {
@@ -1214,8 +1249,8 @@ def aggregate(args: argparse.Namespace) -> int:
     )
     print("\n[Writing Dataset]")
     print(f"motions: {len(records)}")
-    print(f"expert frames: {expert_frames}")
-    print(f"expert duration: {expert_seconds / 60:.3f} min")
+    print(f"dataset frames: {expert_frames}")
+    print(f"dataset duration: {expert_seconds / 60:.3f} min")
     print(f"output: {output}")
     args.failed_stage = "aggregation"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1227,6 +1262,14 @@ def aggregate(args: argparse.Namespace) -> int:
     for command in command_stats.values():
         command["rollout_count"] = len(command.pop("rollout_ids"))
     manifest = {
+        "source_joint_support": sorted({int(record["source_joint_support"]) for record in records.values()}),
+        "source_quality": sorted({record["source_quality"] for record in records.values()}),
+        "phase_annotation": sorted({record["phase_annotation"] for record in records.values()}),
+        "command_annotation": sorted({record["command_annotation"] for record in records.values()}),
+        "native29_expert": bool(records) and all(record["native29_expert"] for record in records.values()),
+        "quality_review": "unvalidated; conversion and MotionLib loading do not certify expert behavior",
+        "legacy_metric_names": "expert_frames/expert_seconds/expert_minutes count dataset samples, not certified expert quality",
+        "missing_joint_names": sorted({joint for record in records.values() for joint in record["missing_joint_names"]}),
         "dataset_stage": "M2.5c-C",
         "dataset_type": "continuous_fixed_window",
         "dataset_split": args.dataset_split,
@@ -1291,7 +1334,7 @@ def aggregate(args: argparse.Namespace) -> int:
         "phase_frame_distribution": phase_distribution,
         "phase_transition_statistics": phase_transitions,
         "command_statistics": sorted(
-            command_stats.values(), key=lambda item: (item["command_v"], item["command_h"])
+            command_stats.values(), key=lambda item: (str(item["command_v"]), str(item["command_h"]))
         ),
         "rollout_provenance": rollout_provenance,
         "discard_frame_counts": dict(discard_frames),
@@ -1302,7 +1345,7 @@ def aggregate(args: argparse.Namespace) -> int:
             output.open("rb"), "sha256"
         ).hexdigest(),
         "structural_validation": "PENDING",
-        "bfm_min_motion_frames": args.seq_length + 1,
+        "bfm_min_motion_frames": args.seq_length + 2,
     }
     write_json(manifest_path, manifest)
     print("Manifest: PASS")
@@ -1358,11 +1401,11 @@ def main() -> int:
             raise SystemExit(f"--{name.replace('_', '-')} does not exist")
     if args.seq_length <= 0:
         raise SystemExit("--seq-length must be positive")
-    if args.clip_frames < args.seq_length + 1:
-        raise SystemExit("--clip-frames must be at least --seq-length + 1")
+    if args.clip_frames < args.seq_length + 2:
+        raise SystemExit("--clip-frames must be at least --seq-length + 2")
     if args.qc_root is not None:
         if args.husky_xml is None:
-            raise SystemExit("--qc-root requires an explicit --husky-xml")
+            raise SystemExit("--qc-root requires the recorded native29 --model-xml")
         if not args.husky_xml.is_file():
             raise SystemExit(f"--husky-xml does not exist: {args.husky_xml}")
     if args.manifest is None:
