@@ -40,6 +40,26 @@ def official_robot_scene() -> Path:
     return path
 
 
+def inspection_scene() -> Path:
+    """Official asset with an explicit, releasable pelvis/world weld.
+
+    Retain the free joint and its observation addresses. The weld is an
+    inspection fixture, never used for free-base pose or policy evaluation.
+    """
+    import xml.etree.ElementTree as ET
+    root = ET.parse(official_robot_scene()).getroot()
+    equality = root.find("equality")
+    if equality is None:
+        equality = ET.SubElement(root, "equality")
+    ET.SubElement(equality, "weld", name="inspection_base", body1="pelvis",
+                  solref=".002 1", solimp=".999 .999 .001")
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".xml",
+                                     prefix=".inspection-", dir=official_robot_scene().parent,
+                                     delete=False) as file:
+        file.write(ET.tostring(root, encoding="unicode"))
+        return Path(file.name)
+
+
 def rider_scene(style: str = "standard", preset: str = "separate", dynamics=None) -> Path:
     """Compose the official G1 free-base asset with a real movable board.
 

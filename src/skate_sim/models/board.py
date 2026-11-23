@@ -45,9 +45,17 @@ _STYLES = {
 }
 
 
+# Explicit geometry-only experiment; retain the original five-style gallery.
+_GEOMETRY_VARIANTS = {"standard_shortwheelbase_044": replace(
+    _STYLES["standard"], name="standard_shortwheelbase_044", wheelbase=.44),
+    "standard_compact_072": replace(_STYLES["standard"], name="standard_compact_072",
+        deck_length=.72, deck_width=.20, wheelbase=.46, kick_length=.09, kick_height=.027)}
+
 def board_styles(style: str = "all") -> dict[str, BoardStyle]:
     if style == "all":
         return dict(_STYLES)
+    if style in _GEOMETRY_VARIANTS:
+        return {style: _GEOMETRY_VARIANTS[style]}
     if style not in _STYLES:
         raise ValueError(f"unknown board style {style!r}; choose all or one of {', '.join(_STYLES)}")
     return {style: _STYLES[style]}
@@ -195,3 +203,41 @@ def build_board_xml(style: BoardStyle, *, gallery: bool = False, dynamics=None, 
                           polycoef='0 -.577 0 0 0', solref='.005 1')
         xml = ET.tostring(root, encoding='unicode')
     return xml
+
+
+def build_motion_board_xml(style: str = "standard") -> str:
+    """Original board assets with coupled deck roll and truck steering.
+
+    The vertical bridges belong to the free chassis; the horizontal axles
+    steer. This is a reduced kinematic assumption, with all original geometry
+    and mass preserved at neutral configuration.
+    """
+    selected = board_styles(style)[style]
+    root = ET.fromstring(build_board_xml(selected, dynamics={"model": "truck"}))
+    root.set("model", f"skate-sim-board-{style}-motion")
+    world = root.find("worldbody")
+    chassis = world.find("body[@name='deck']")
+    for child in list(world):
+        if child is not chassis:
+            world.remove(child)
+    chassis.set("name", "chassis")
+    deck = ET.SubElement(chassis, "body", name="deck")
+    ET.SubElement(deck, "joint", name="deck_roll", type="hinge", axis="-1 0 0",
+                  range=f"{-.577*selected.truck_limit} {.577*selected.truck_limit}")
+    for child in list(chassis):
+        if child.tag in ("geom", "site"):
+            chassis.remove(child)
+            deck.append(child)
+    equality = ET.SubElement(root, "equality")
+    for end, sign in (("front", -1), ("rear", 1)):
+        truck = chassis.find(f"body[@name='{end}_truck']")
+        bridge = truck.find(f"geom[@name='{end}_truck_collision']")
+        bridge.set("pos", " ".join(format(float(a)+float(b), ".12g") for a, b in
+                                   zip(truck.get("pos").split(), bridge.get("pos").split())))
+        truck.remove(bridge)
+        chassis.append(bridge)
+        truck.find("joint").set("axis", f"0 0 {sign}")
+        truck.find(f"site[@name='{end}_truck_axis']").set("fromto", f"0 0 0 0 0 {sign*.09}")
+        ET.SubElement(equality, "joint", joint1="deck_roll", joint2=f"{end}_truck_tilt",
+                      polycoef="0 -.577 0 0 0", solref=".005 1")
+    return ET.tostring(root, encoding="unicode")

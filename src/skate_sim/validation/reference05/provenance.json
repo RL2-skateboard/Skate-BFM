@@ -1,0 +1,74 @@
+{
+  "fixtures": [
+    {
+      "local_path": "config/exp/tracking/walking.yaml",
+      "source_path": "config/exp/tracking/walking.yaml",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/config/exp/tracking/walking.yaml",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "4f148fa63c6fcdb0de203bef87cf3ce5872cee55d5fc7153a1e88452dbb08d0b",
+      "git_blob_sha1": "c988d5a912a6076b249b578e306a5bbfe37f9edf",
+      "fixture_path": "walking.yaml"
+    },
+    {
+      "local_path": "config/policy/motivo_newG1.yaml",
+      "source_path": "config/policy/motivo_newG1.yaml",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/config/policy/motivo_newG1.yaml",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "87ef74c51972f418aedc0838802965ef8238c08b958d58cebe4c41159977cfc9",
+      "git_blob_sha1": "1126eb31c36c86ef3f1220433b198d03bac3a6cb",
+      "fixture_path": "policy.yaml"
+    },
+    {
+      "local_path": "config/robot/g1.yaml",
+      "source_path": "config/robot/g1.yaml",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/config/robot/g1.yaml",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "5a255ece4a10f6b0f412846fb593107cee969ffa2b0fcd4451acb52df762a75a",
+      "git_blob_sha1": "209c30bdad89e1177a2b4024af66fc08395b83ec",
+      "fixture_path": "robot.yaml"
+    }
+  ],
+  "external_reference_entries": [
+    {
+      "local_path": null,
+      "source_path": "rl_policy/bfm_zero.py",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/rl_policy/bfm_zero.py",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "2901ab0a53533400a03659dfc29cf7b184df820ab3c09572e00c9181630ceb48",
+      "git_blob_sha1": "1f368bd70fd5ecadd08848a590bc2dd84a095f33"
+    },
+    {
+      "local_path": null,
+      "source_path": "rl_policy/observations/bfm_zero.py",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/rl_policy/observations/bfm_zero.py",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "060b4bb6847b5036e21c8f3afcf9461d99ef0c9117a0b163bf5fc52170316482",
+      "git_blob_sha1": "17dd1e445e0623cb2aedade49454004bb7c9a4fb"
+    },
+    {
+      "local_path": null,
+      "source_path": "rl_policy/utils/state_processor.py",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/rl_policy/utils/state_processor.py",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "662b184d7a0f1c651b0a08ff796c35b242273ae5199c173a1fa67a77e0e0b66b",
+      "git_blob_sha1": "3b8f39cd3815f36d2f99f6cdf1007157d0ab312b"
+    },
+    {
+      "local_path": null,
+      "source_path": "sim_env/utils/simulation_bridge.py",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/sim_env/utils/simulation_bridge.py",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "267d431069bd0cc530ffb53bdaf7e77d3a1eeca92be3887fb3c2e227d29c9fbd",
+      "git_blob_sha1": "84ba589e1be14e6e84afcb08f47e6f1bddbd31d1"
+    },
+    {
+      "local_path": null,
+      "source_path": "utils/math.py",
+      "url": "https://github.com/LeCAR-Lab/BFM-Zero/blob/de9e248ce8b315508aafaecc8f15def3e057fccc/utils/math.py",
+      "commit": "de9e248ce8b315508aafaecc8f15def3e057fccc",
+      "sha256": "6b8c688d984abe02d9319598223384ca71ed1bcf485a41aa41d780b84448eb9a",
+      "git_blob_sha1": "af53a7adc4bd28bd7ba73bfd1fac3c83276316bd"
+    }
+  ],
+  "attribution": "LeCAR-Lab BFM-Zero, fixed commit de9e248ce8b315508aafaecc8f15def3e057fccc. YAML fixtures are unmodified bytes. CC BY-NC 4.0; full upstream LICENSE retained."
+}

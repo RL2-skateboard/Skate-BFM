@@ -130,7 +130,7 @@ def build_actor_input(state: RobotState, action: np.ndarray, history: HistorySta
 
 
 def build_official_actor_input(q, dq, quat_wxyz, angvel_b, previous_action,
-                               history, z):
+                               history, z, *, sensor_noise_std=0.0, rng=None):
     """Construct the official deploy observation used by motivo_newG1.yaml.
 
     Field order follows the public deploy observation config: current
@@ -151,11 +151,25 @@ def build_official_actor_input(q, dq, quat_wxyz, angvel_b, previous_action,
     g=np.array([0,0,-1],dtype=np.float32)
     # wxyz quaternion inverse rotation, matching deploy's projected_gravity.
     qw,qx,qy,qz=quat; qv=np.array([qx,qy,qz],dtype=np.float32)
-    gravity=g + 2*np.cross(qv, np.cross(qv,g)+qw*g)
+    norm = np.linalg.norm(quat)
+    if not np.isclose(norm, 1.0, atol=1e-5):
+        raise ValueError("base quaternion must be unit length")
+    gravity=g + 2*np.cross(qv, np.cross(qv,g)-qw*g)
     pos=q-DEFAULT_POS
-    frame=np.concatenate((pos,dq,gravity,.25*w,action))
+    w = .25*w
+    # Noise belongs to measured state, never latent or remembered actions.
+    # Store the same noisy measurements in history as in the current frame.
+    if sensor_noise_std:
+        if sensor_noise_std < 0:
+            raise ValueError("sensor noise standard deviation must be nonnegative")
+        rng = np.random.default_rng() if rng is None else rng
+        pos = pos + rng.normal(0, sensor_noise_std, 29).astype(np.float32)
+        dq = dq + rng.normal(0, sensor_noise_std, 29).astype(np.float32)
+        gravity = gravity + rng.normal(0, sensor_noise_std, 3).astype(np.float32)
+        w = w + rng.normal(0, sensor_noise_std, 3).astype(np.float32)
+    frame=np.concatenate((pos,dq,gravity,w,action))
     hist_action=history.push_field('action',action)
-    hist_w=history.push_field('angvel',.25*w)
+    hist_w=history.push_field('angvel',w)
     hist_pos=history.push_field('pos',pos)
     hist_vel=history.push_field('vel',dq)
     hist_g=history.push_field('gravity',gravity)
@@ -167,3 +181,36 @@ def build_official_actor_input(q, dq, quat_wxyz, angvel_b, previous_action,
 
 
 DEFAULT_POS=np.array((-.1,0,0,.3,-.2,0,-.1,0,0,.3,-.2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),dtype=np.float32)
+
+
+def tracking_context(contexts, index, *, gamma=0.8, window_size=3):
+    """Fixed official walking.yaml context: truncated future discounted mean.
+
+    The window does not wrap at the end of the recorded motion. Its direction
+    is normalized to the first context's norm, as official deploy does.
+    """
+    contexts = np.asarray(contexts, dtype=np.float32)
+    index = int(index)
+    if contexts.ndim != 2 or contexts.shape[1] != 256 or not 0 <= index < len(contexts):
+        raise ValueError("invalid tracking context sequence/index")
+    if window_size < 1 or not 0 < gamma <= 1:
+        raise ValueError("invalid tracking context window/discount")
+    window = contexts[index:index + window_size]
+    discounts = gamma ** np.arange(len(window))
+    discounts /= discounts.sum()
+    average = np.sum(window * discounts[:, None], axis=0)
+    norm = np.linalg.norm(average)
+    if norm <= 0 or not np.isfinite(norm):
+        raise ValueError("tracking context has invalid averaged norm")
+    return (average / norm * np.linalg.norm(contexts[0])).astype(np.float32)
+
+
+def next_tracking_cursor(index, active, sequence_length, *, end=2000):
+    """Official walking start/end/stop state after computing the current z.
+
+    CLI auto-start is equivalent to pressing start once. Reset starts a new
+    episode; at end the policy freezes at stop=0 until the next reset.
+    """
+    if active and index < end:
+        return (int(index) + 1) % sequence_length, True
+    return 0, False

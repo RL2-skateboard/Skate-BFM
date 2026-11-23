@@ -1,400 +1,252 @@
-# skate-sim acceptance report
+# skate-sim acceptance record
 
-- Overall status: **PASS**
-- Requested stage: `all`
-- Requested backend: `all`
+Correction: 2026-11-04. The user identified an unintended flat-deck asset
+substitution in the unified scene. The prior asset-consistency signoff is
+withdrawn. The five original BoardStyle assets are now restored, including
+kicked tips, bridge/axle geometry, wheels and original dimensions, masses and
+material parameters. Only the tilt-steer kinematic principle is borrowed.
+Obstacle previews now use actual geometry and new additions are staggered.
+The current 62 unit tests pass. Restored-asset CPU integration passed 500 ticks;
+CUDA no-controller and real BFM-action records each passed 500 continuous ticks
+in independent processes. CUDA partial-reset replay passed two 500-tick segments.
+All qpos/qvel/time errors are zero at the unchanged 1e-7 threshold, with model
+and numerical identities verified. Both backends' visual state/force readback
+passed exactly. Evidence is under `runs/asset_restore_20261104/`.
+Real CUDA registered-callback checks cover obstacle shapes, staggered placement,
+apply, drag/revert, save/load and recording locks; they are not browser pixel
+acceptance. No user window signoff is recorded. Current Warp logs warn that
+cylinder–cylinder/box/mesh pairs support only a single contact for these cases;
+this engine limitation is distinct from display failures and capacity overflow.
+Current-asset stock-vs-hook probes retain the same contact physical payloads
+and constraint counts; contact row addresses reorder and numerical forces are
+not bitwise identical between the two implementations. Strict replay compares
+each pinned implementation to its own recorded trajectory. N64 subset-reset
+and short-run finite/capacity checks pass; N64 is not certified for a 500-tick
+independent replay. Paired GPU timing (3 warmup steps, then three 10-step windows,
+no concurrent stepping) gives N2 median 0.01469/0.52961 s and N64 median
+0.01678/2.66574 s for stock/hook, about 36/159 times slower. This is a material
+throughput limitation, not a claim of efficient training performance.
 
-## Stage 01 / mujoco
+The following numerical evidence used the unintended flat-deck asset and is
+retained as history, not as acceptance of the restored assets. Pinned CUDA execution fixes
+the constraint reduction and contact ordering; two-world no-controller and
+real BFM-action recordings each passed independent-process integration over
+500 continuous ticks at the unchanged 1e-7 threshold. A partial-reset record
+passed two 500-tick segments. Maximum qpos/qvel/time errors were all zero;
+compiled model and numerical implementation identities were verified.
+Latest local evidence: `runs/gpu_strict_20261104/formal/`. The 57 unit tests,
+physical contact-preservation checks, five board styles and N64 subset reset
+checks passed. N64 short-test median step cost increased about 215 times;
+this material performance limitation remains. User signoff is NOT recorded.
+Stage 04 remains frozen and the overall research project remains incomplete.
 
-Status: **PASS**
+The dated evidence below describes the prior numerical implementation. Its
+GPU failures are retained, not rewritten as successes of the new strategy.
 
-| Check | Result |
-| --- | --- |
-| `step_advances_time` | PASS |
-| `wrench_changes_position` | PASS |
-| `reset_restores_time` | PASS |
-| `finite_state` | PASS |
+Updated: 2026-11-02. Scope: complete Stage 05 engineering and later noncontact
+infrastructure. Stage 04 contact research is frozen pending discussion with the
+user. No contact model, learning-data preparation or fitting scheme was changed.
 
-## Stage 01 / mjlab
+**Overall project: INCOMPLETE.** Automatic submatrix passes do not imply user
+window signoff or full-stage completion. Stages 01–03 retain their recorded
+historical user acceptance. Stage 05 is now ACCEPTED: on 2026-11-02 the user
+reopened its review window, completed verification and stated “好了，验证完成”.
+That confirmation applies only to Stage 05, not the other stages.
 
-Status: **PASS**
+## Verified in this iteration
 
-| Check | Result |
-| --- | --- |
-| `cuda_physics` | PASS |
-| `step_advances_time` | PASS |
-| `wrench_changes_position` | PASS |
-| `reset_restores_time` | PASS |
-| `finite_state` | PASS |
+- Stage 05: independent 721-field numerical reference, 128 native entry states,
+  real CUDA 128-state reference (maximum absolute error 4.7684e-7), previous-command
+  scaling, history/reset, dynamic substep PD and official tracking windows.
+- Native joint inspection: all 29 joint directions/limits, explicit fixed-base
+  inspection fixture, free pose/policy switching, state readouts, robot pelvis
+  perturbation, pause/physical-step/control-step/reset semantics.
+- Real CUDA: robot N=1 and N=64 and rider N=64 reward each executed 15,000 physical
+  steps and 1,500 policy updates per environment over the measured 30 simulated
+  seconds. Setup probes are counted separately. Physics is CUDA; ONNX inference
+  uses CPUExecutionProvider. Finite-state/interface checks do not establish
+  autonomous riding or generalization.
+- Native noncontact Stage 06: three presets, ten reset cycles each, atomic
+  state roundtrip, named-body world/body-frame point force, exact duration and
+  clearing, explicit terminated/time-limit-truncated guards, actual policy with
+  force/reset replay. The guard defaults are engineering diagnostics, not
+  calibrated success definitions.
+- GPU interfaces: non-contiguous subset state/reset/force isolation, correct
+  point torque, independent fall/timeout, physical-step offboard latch, pelvis
+  and deck bounds, genuine nonconstant controller diagnostics.
+- Version-2 recording: actual initial integration/control state, commands and
+  events per physical tick including paused steps; checkpoint/latent/config/model
+  hashes. Dynamics replay integrates from initial state; snapshots only compare.
+  Legacy logs remain visual-only when required inputs are missing. Visual replay
+  has no checkpoint dependency and rejects dynamical controls.
+- CLI: each backend runs in its own process. Scope, automatic checks, stage
+  acceptance and overall project status are separate. Missing checkpoint,
+  failed/blocked/not-run/deferred items cannot silently become full acceptance.
+  A successfully written report does not mean the reported checks passed.
+- Existing Stage 09 noncontact parameter/nominal-reset/seed/PD/noise/delay checks
+  and synthetic board-release CEM were rerun. No new contact method was activated.
 
-```json
-{
-  "num_envs": 64,
-  "device": "cuda:0"
-}
-```
-## Stage 02 / mujoco
+## Results and limits
 
-Status: **PASS**
+Native bench/board/robot none/pose/policy recordings and the rider policy record
+had zero error under the registered 1e-7 short-horizon replay comparison. Each
+100-tick record covers 0.20 s and resets at tick 50; its longest continuous
+interval is 0.10 s. This must not be described as a complete continuous 1 s test.
 
-| Check | Result |
-| --- | --- |
-| `style_standard` | PASS |
-| `style_cruiser` | PASS |
-| `style_longboard` | PASS |
-| `style_street` | PASS |
-| `style_downhill` | PASS |
+**GPU robot strict dynamics replay: FAIL at 1e-7.** The latest 100-tick replay
+reached about 1.055e-5 maximum mixed state error. A separate three-way 200-tick
+comparison included original integration, a fresh normally stepped instance and
+a restored replay instance. Both fresh and restored instances showed divergence:
+peak qvel differences about 1.204e-5 and 1.089e-5 respectively. Initial public
+and integration fields, raw actions, targets, external forces and clocks matched.
+PD feedback force differences developed after state differences; actual applied
+joint forces were not claimed to remain identical. This rules out attributing
+all drift to restore alone; no particular GPU kernel cause is established.
+The original failure is preserved and no tolerance was relaxed.
 
-```json
-{
-  "standard": {
-    "nq": 13,
-    "nv": 12,
-    "ncon": 8,
-    "hash": "73293e591509"
-  },
-  "cruiser": {
-    "nq": 13,
-    "nv": 12,
-    "ncon": 8,
-    "hash": "8adf07c01ebc"
-  },
-  "longboard": {
-    "nq": 13,
-    "nv": 12,
-    "ncon": 8,
-    "hash": "2fb2d5a7fa0d"
-  },
-  "street": {
-    "nq": 13,
-    "nv": 12,
-    "ncon": 8,
-    "hash": "94b88340c03c"
-  },
-  "downhill": {
-    "nq": 13,
-    "nv": 12,
-    "ncon": 8,
-    "hash": "0a2d6d02fe8d"
-  }
-}
-```
+Five-style, 2 s coast/release cross-backend comparisons check finite assets and
+report numerical differences. They do not replace Stage 03's full 60 s,
+step-convergence and energy acceptance matrix.
 
-## Stage 03 / mujoco
+The working tree and an isolated source copy passed the formal environment's
+unittest suite. The copy was installed editable in a temporary virtual environment
+with verified existing runtime dependencies exposed via system-site-packages.
+It imported the isolated source, passed pip check and reran Stage 05 with the
+real external checkpoint. This is source isolation and package reconstruction;
+it is not a claim of a fresh network dependency solve or clean conda install.
 
-Status: **PASS**
+Actual native window and Viser service startup succeeded. Real-service callback
+checks verified one continuous physics owner, synchronized pause, one physical
+N-step without policy advancement, visual replay locks and recording/style locks.
+Current Work settings disable local browser use and native computer control;
+the agent did not obtain screenshots or perform clicked UI acceptance. The
+user subsequently completed the native Stage-05 review and confirmed it.
+Stage-06/07 user window confirmation is still outstanding.
 
-| Check | Result |
-| --- | --- |
-| `truck_finite` | PASS |
-| `truck_lean_response` | PASS |
-| `reduced_finite` | PASS |
-| `reduced_lean_response` | PASS |
+## Evidence and reproduction
 
-```json
-{
-  "truck": {
-    "deck_roll_rad": 0.04134932620308689,
-    "steer_rad": {
-      "front": -0.040896043785414934,
-      "rear": 0.04089604378541441
-    }
-  },
-  "reduced": {
-    "deck_roll_rad": 0.009433505133750061,
-    "steer_rad": {
-      "front": -0.01471327977342364,
-      "rear": 0.01471327977342364
-    }
-  }
-}
-```
+Consolidated metrics, exact raw paths, versions, source hashes and frozen-contact
+hashes: `runs/noncontact_completion/verification.json`.
 
-## Stage 04 / mujoco
+Selected raw records:
 
-Status: **PASS**
+- `runs/05_observation_fix/verification.json`: earlier complete native observation
+  repair evidence, including reward/tracking/goal 30 s records.
+- `runs/05_completion/native_joint_guards.json`: native joint/guard tests.
+- `runs/05_completion/ui_review/observations.md`: actual UI access limitation.
+- `runs/noncontact_completion/unittest_final.txt` and `clean_unittest.txt`.
+- `runs/noncontact_completion/clean_stage05_signed_scope/result.json`.
+- `runs/noncontact_completion/cli_native06/result.json` and `cli_native09/result.json`.
+- `runs/noncontact_completion/gpu_oracle_n64.json`, `gpu_robot_n1.json`,
+  `gpu_robot_n64.json`, `gpu_rider_n64.json`, `gpu_interfaces_n64.json`.
+- `runs/noncontact_completion/native_wrench_replay.json`, `native06_records/`,
+  `gpu_replay_final.json`, `gpu_repro_diagnosis.json`, `gpu_web_callbacks.json`.
 
-| Check | Result |
-| --- | --- |
-| `contact_exists` | PASS |
-| `normal_force_positive` | PASS |
-| `pull_reaches_contact` | PASS |
-| `finite_state` | PASS |
+From the project root, using the existing skate-sim-mjlab environment:
 
-```json
-{
-  "diagnostics": {
-    "contacts": 14,
-    "normal_force_N": 15.848193721158294,
-    "tangential_force_N": 9.999386055098306,
-    "relative_slip_speed_m_s": 0.0034229386625247715
-  }
-}
-```
-
-## Stage 05 / mujoco
-
-Status: **PASS**
-
-| Check | Result |
-| --- | --- |
-| `29_joint_mapping` | PASS |
-| `finite_state` | PASS |
-| `pose_torque_path` | PASS |
-| `bfm_checkpoint` | PASS |
-| `bfm_nonzero_action` | PASS |
-| `bfm_torque_injected` | PASS |
-
-```json
-{
-  "pose": {
-    "qfrc_applied_norm": 7.892138574975951e-07,
-    "physics_steps": 20
-  },
-  "policy": {
-    "obs_shape": [
-      721
-    ],
-    "policy_counter": 2
-  }
-}
+```bash
+python -m unittest discover -s tests -v
+python -m skate_sim check --stage 05 --backend mujoco --scope noncontact \
+  --checkpoint checkpoints/bfm-zero --output runs/05_check
+python -m skate_sim check --stage 06 --backend mujoco --scope noncontact \
+  --checkpoint checkpoints/bfm-zero --output runs/06_noncontact
+python -m skate_sim check --stage 07 --backend mjlab --scope noncontact \
+  --num-envs 64 --checkpoint checkpoints/bfm-zero --output runs/07_noncontact
 ```
 
-## Stage 06 / mujoco
+The last command checks the batch/control subset; its output explicitly lists
+unexecuted strict-replay/manual gates. Its scope PASS cannot override the saved
+strict replay FAIL or incomplete user acceptance.
 
-Status: **PASS**
+The sole visualization entry remains `play.py`. For Stage 05 review:
 
-| Check | Result |
-| --- | --- |
-| `separate_finite` | PASS |
-| `separate_penetration` | PASS |
-| `push_start_finite` | PASS |
-| `push_start_penetration` | PASS |
-| `steer_start_finite` | PASS |
-| `steer_start_penetration` | PASS |
-| `rider_policy` | PASS |
-
-```json
-{
-  "separate": {
-    "penetration_min_m": 0.0,
-    "left_deck": 0,
-    "right_deck": 0
-  },
-  "push_start": {
-    "penetration_min_m": -0.00020000007160971955,
-    "left_deck": 0,
-    "right_deck": 4
-  },
-  "steer_start": {
-    "penetration_min_m": -0.0001999999990290567,
-    "left_deck": 4,
-    "right_deck": 4
-  }
-}
+```bash
+python play.py --backend mujoco --scene robot --controller joint --inspect \
+  --checkpoint checkpoints/bfm-zero --record runs/05_joint_review
 ```
 
-## Stage 07 / mjlab
+Select joint with [ / ], adjust with - / +, P selects free pose, O selects policy,
+E releases external force/inspection weld, Space pauses, N advances one physical
+step, M one control step and R resets. The window labels inspection support.
+The user's confirmation required by plan/05_robot.md was provided after the
+reopened Stage-05 review, independently of the agent's programmatic tests.
+New recordings reject overwriting existing logs.
 
-Status: **PASS**
+## Current capability inventory (2026-11-02)
 
-| Check | Result |
-| --- | --- |
-| `cuda_physics` | PASS |
-| `step_advances_time` | PASS |
-| `partial_reset_untouched` | PASS |
-| `partial_reset_target_restored` | PASS |
-| `finite_state` | PASS |
-| `rider_pose` | PASS |
-| `rider_policy` | PASS |
+After user acceptance of Stage05, a fresh read-only run sampled the full
+feature surface. All six scenes on both engines loaded and advanced; five
+board styles, the native truck/reduced experiment variants, native robot
+controllers and three BFM context tasks, rider presets, recorded playback,
+existing offline model evaluation and synthetic calibration were exercised.
+The current unittest suite passed 30 tests. This does not turn every runnable
+contact scene into an accepted physical experiment.
 
-```json
-{
-  "num_envs": 64,
-  "device": "cuda:0",
-  "step_time": 0.02200000174343586,
-  "pre_reset_time": 0.020000001415610313,
-  "rider_pose": {
-    "qfrc_applied_norm": 89.74133089940524,
-    "state_change": 0.17077340185642242
-  },
-  "rider_policy": {
-    "policy_counter": 2,
-    "raw_action_norm": 0.91979587071096,
-    "qfrc_applied_norm": 85.52830942581065
-  }
-}
-```
+Two extra GPU limitations were actually reproduced: a named goal fails to load
+because the name is not passed through, and a custom reward selection silently
+resolves to the default reward. GPU tracking runs. Joint inspection is a
+native-only feature, not a CUDA feature. Explicit experiment flags are rejected
+for mjlab; native model selection is routed through its experiment configuration.
 
-## Stage 09 / mujoco
+The contact fixed-board selector and clamp-release defects were compiled and
+probed, without modifying the frozen implementation. Current force/power
+diagnostics also do not meet the planned signed point-contact definitions.
+Stage04 remains unaccepted. A legacy standalone rider XML has unresolved
+includes; the normal scene factory works.
 
-Status: **PASS**
+A new no-controller GPU board record passed continuous500-tick/1s strict
+dynamics replay with zero error. This does not supersede the failed GPU
+robot-policy/force/reset case. Raw current smoke tests, expected input guards,
+unsupported combinations, historical failures and reused long-run evidence are
+separate rows in `runs/inventory_20261102/validation.json`; compiled asset
+counts and compatibility boundaries are in `assets.json`.
 
-| Check | Result |
-| --- | --- |
-| `parameter_ranges` | PASS |
-| `parameter_response` | PASS |
-| `finite_state` | PASS |
-| `each_board_parameter_applies` | PASS |
-| `same_seed_reproducible` | PASS |
-| `synthetic_calibration` | PASS |
-| `each_policy_parameter_applies` | PASS |
+## Readiness for contact research: latest user target
 
-Disclosure: synthetic calibration only; no real-data sim2real claim
+The user clarified that the current deliverable is an environment-building
+chain: independently select and place/remove the robot, board and other assets
+in both MuJoCo and mjlab, with usable basic board dynamics, before starting
+foot-contact and later skateboard-motion-model research.
 
-```json
-{
-  "nominal_roll": -0.003176641362980832,
-  "random_roll": -0.00891804975594812,
-  "parameters": {
-    "deck_mass_scale": 1.1035224378393704,
-    "truck_mass_scale": 0.9321946182338214,
-    "wheel_mass_scale": 1.0115489094731385,
-    "truck_stiffness_scale": 0.9208479649985628,
-    "truck_damping_scale": 0.828965178137061,
-    "wheel_spin_damping_scale": 0.9429120187945992,
-    "bearing_torque_scale": 0.9640822495468042,
-    "friction_scale": 1.0668058650993884,
-    "pd_kp_scale": 1.0945543482053146,
-    "pd_kd_scale": 0.8061158626386846,
-    "deck_com_offset_x": -0.00983836344829443,
-    "deck_com_offset_y": 0.002082917091278603,
-    "observation_noise_std": 0.0008373669468714318,
-    "control_delay_steps": 2.0
-  },
-  "reset_count": 100,
-  "parameter_effects": {
-    "deck_mass_scale": true,
-    "truck_mass_scale": true,
-    "wheel_mass_scale": true,
-    "truck_stiffness_scale": true,
-    "truck_damping_scale": true,
-    "wheel_spin_damping_scale": true,
-    "bearing_torque_scale": true,
-    "friction_scale": true,
-    "deck_com_offset_x": true,
-    "deck_com_offset_y": true
-  },
-  "nominal_sim_time": 0.16000000000000011,
-  "random_sim_time": 0.16000000000000011,
-  "calibration": {
-    "method": "cem",
-    "train_loss": 0.0002504271770419263,
-    "heldout_loss": 9.156457415364969e-05,
-    "baseline_heldout_loss": 0.02460175449189152,
-    "truth_parameter_rmse": 0.17395434842847657,
-    "experiment": "release",
-    "heldout_trials": [
-      "synthetic-004",
-      "synthetic-005"
-    ]
-  },
-  "policy_parameter_effects": {
-    "observation_noise_std": true,
-    "control_delay_steps": true,
-    "pd_kp_kd_scale": true
-  }
-}
-```
+Against that target the preparation is not yet complete. Existing presets and
+Stage05 robot acceptance are useful components, not a general scene composer.
+The minimum interpretation is configuration before launch and rebuilding the
+scene; a live drag/drop editor or arbitrary multi-robot system is not assumed.
 
-## Stage 09 / mjlab
+Two essential work packages remain:
 
-Status: **PASS**
+1. A shared scene specification/compiler used by both backends. Existing robot,
+   board style and each gallery obstacle need independent enable/disable and
+   pose settings. Current gallery hardcodes all three obstacles, while rider
+   constructs robot+board without those obstacles. Loading/removing assets should
+   remove their bodies/collisions as well as appearance and preserve reproducible
+   reset/recorded configuration.
+2. A shared basic board-dynamics interface and matched tests. Native has the
+   existing accepted truck/reduced board-only baseline. The public experiment
+   path rejects mjlab; model selection without an experiment is ignored. Native
+   and CUDA steer_start also disagree on initial wheel speeds. Board-only and
+   robot+board should retain the same declared passive mechanisms. A common
+   truck baseline is enough to start; a reduced+rider option must either work
+   or be explicitly unavailable, not silently route or fail inside composition.
 
-| Check | Result |
-| --- | --- |
-| `batch_parameter_diversity` | PASS |
-| `partial_reset_state_isolated` | PASS |
-| `partial_reset_parameters_isolated` | PASS |
-| `runtime_parameter_response` | PASS |
-| `finite_state` | PASS |
+New read-only probes in `runs/readiness_20261102/probes.json` confirmed:
 
-Disclosure: mjlab randomized drag/loss terms are explicit runtime forces; no real-data claim
+- All five truck styles compile with G1, with the intended board masses and
+  wheel radii. This is a composition/geometry check, not a new long behavior test.
+- reduced+rider fails in both backends' shared builder: `board XML has no deck`.
+- standard steer_start has native deck/pelvis speed1m/s and four wheel speeds
+  28.5714rad/s; real RTX4060Ti CUDA has the same linear speeds but four zero
+  wheel speeds before any integration.
 
-```json
-{
-  "num_envs": 64,
-  "view_env": 0,
-  "parameter_summary": {
-    "deck_mass_scale": {
-      "min": 0.8515735994048839,
-      "max": 1.1452021855184629,
-      "mean": 1.0135097302388962
-    },
-    "truck_mass_scale": {
-      "min": 0.9016540214388901,
-      "max": 1.0989203957917486,
-      "mean": 1.0013635596783854
-    },
-    "wheel_mass_scale": {
-      "min": 0.90018029830166,
-      "max": 1.0856590008655638,
-      "mean": 0.9968247778149926
-    },
-    "truck_stiffness_scale": {
-      "min": 0.709206558088778,
-      "max": 1.2945073686460715,
-      "mean": 0.9675020580028941
-    },
-    "truck_damping_scale": {
-      "min": 0.7122330287307427,
-      "max": 1.2748960508915412,
-      "mean": 1.0303226591737598
-    },
-    "wheel_spin_damping_scale": {
-      "min": 0.7583904206792833,
-      "max": 1.248761512958377,
-      "mean": 1.0243649494753504
-    },
-    "bearing_torque_scale": {
-      "min": 0.7636782474216466,
-      "max": 1.2459149915222947,
-      "mean": 1.0166468494096248
-    },
-    "friction_scale": {
-      "min": 0.7033180940120863,
-      "max": 1.273032016078411,
-      "mean": 0.9981898148772341
-    },
-    "pd_kp_scale": {
-      "min": 0.8030711594055874,
-      "max": 1.1987588470603445,
-      "mean": 0.9989412594069409
-    },
-    "pd_kd_scale": {
-      "min": 0.8061158626386846,
-      "max": 1.1979844972167346,
-      "mean": 1.0245097913750696
-    },
-    "deck_com_offset_x": {
-      "min": -0.019502014647047646,
-      "max": 0.01914188870634125,
-      "mean": -0.00018701772905236512
-    },
-    "deck_com_offset_y": {
-      "min": -0.009397977963099782,
-      "max": 0.00979489069459791,
-      "mean": -0.0004401350217693752
-    },
-    "observation_noise_std": {
-      "min": 4.073676003176652e-05,
-      "max": 0.009966108359617271,
-      "mean": 0.005126415146341578
-    },
-    "control_delay_steps": {
-      "min": 0.0,
-      "max": 2.0,
-      "mean": 0.984375
-    }
-  },
-  "runtime_parameter_effects": {
-    "truck_stiffness_damping": true,
-    "wheel_loss": true,
-    "com_gravity_torque": true
-  },
-  "reset_ids": [
-    1,
-    63
-  ]
-}
-```
+Minimum completion examples are robot-only, board-only, robot+board, each with
+selected obstacles where requested, and removal of individual assets, under the
+same configuration on both engines. Check all board styles for loading/short
+steps, then use a representative style for matched coast, release and left/right
+turn response. Keep robot and board initially separate when checking passive
+board behavior; stable riding, a new foot-contact law and a full motion-learning
+model are not preparation prerequisites.
+
+Stage04 defects, GPU named-context options and strict robot-policy replay remain
+recorded separately. They should not displace the scene-composition and basic
+dynamics work as the immediate priority for this clarified target. No source
+implementation was changed during this readiness check.

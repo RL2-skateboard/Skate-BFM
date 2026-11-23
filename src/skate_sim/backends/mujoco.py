@@ -8,11 +8,11 @@ import mujoco
 import numpy as np
 import mujoco.viewer
 
-from .base import Backend
+from .base import Backend, validate_env_ids
 from ..config import SimConfig
 from ..models.board import BoardStyle, board_styles, build_board_xml, board_hash
 from ..robot.bfm import (BFMOnnxPolicy, DEPLOY_JOINTS, build_official_actor_input,
-                         load_policy_context, deploy_joint_values)
+                         load_policy_context, deploy_joint_values, tracking_context, next_tracking_cursor)
 from ..robot.contract import HistoryState
 from ..physics.contact import contact_xml, contact_metrics
 from ..physics.randomize import (effective_dynamics, nominal_parameters,
@@ -31,11 +31,41 @@ class MujocoBackend(Backend):
                  controller: str = "none", checkpoint: str | None = None,
                  policy_task: str = "reward", latent_name: str | None = None,
                  preset: str = "separate", params: str | dict | None = None,
-                 randomize: bool = False):
+                 randomize: bool = False, episode_time_limit: float | None = 30.0,
+                 out_of_bounds_distance: float | None = 5.0, offboard_distance: float | None = 1.0, scene_config: dict | None = None,
+                 component_root_fixture: list[float] | None = None):
+        if scene_config is not None and (randomize or (params is not None and params != "nominal") or dynamics or experiment):
+            raise ValueError("composed scene_config does not support legacy dynamics parameters or randomization; use an explicit legacy scene")
+        self.component_root_fixture = component_root_fixture
+        if component_root_fixture is not None and scene_config is None:
+            raise ValueError("Explicit component root fixture requires a composed scene")
+        self.scene_config = None
+        if scene_config is not None:
+            from ..models.scene import normalize_scene_config, scene_kind
+            self.scene_config = normalize_scene_config(scene_config)
+            scene = scene_kind(self.scene_config)
+            style, preset = self.scene_config["style"], self.scene_config["preset"]
+        if self.scene_config is not None and controller == "joint":
+            raise ValueError("joint inspection uses the legacy robot scene; scene_config must be None")
+        self.has_board = bool(self.scene_config["board"]) if self.scene_config is not None else scene in ("board", "gallery", "rider")
         self.config = config or SimConfig()
+        self.episode_time_limit = episode_time_limit
+        self.out_of_bounds_distance = out_of_bounds_distance
+        self.offboard_distance = offboard_distance
+        for value in (episode_time_limit, out_of_bounds_distance, offboard_distance):
+            if value is not None and (not np.isfinite(value) or value <= 0):
+                raise ValueError("episode guard thresholds must be positive finite numbers or None")
         self.scene = scene
         self.style = style
         self.inspect = inspect
+        self.inspection_fixture = controller == "joint" and inspect
+        self.selected_joint = 0
+        self.joint_increment = .05
+        self.checkpoint = checkpoint
+        self.checkpoint_hash = "none"
+        self.asset_hash = "none"
+        if controller == "joint" and (scene != "robot" or not inspect):
+            raise ValueError("joint controller requires --scene robot --inspect (explicit base fixture)")
         self.experiment = experiment
         self.seed = int(seed)
         self.randomize = bool(randomize)
@@ -49,8 +79,10 @@ class MujocoBackend(Backend):
         self.policy_task = policy_task
         self.latent_name = latent_name
         self.policy = None
+        self.policy_values = None
         self.policy_counter = 0
         self.policy_context_index = 0
+        self.policy_tracking_active = True
         self.robot_joint_names = []
         self.robot_history = HistoryState()
         self.initial_roll = initial_roll
@@ -70,14 +102,22 @@ class MujocoBackend(Backend):
         if self.rider_scene and preset not in ("separate", "push_start", "steer_start"):
             raise ValueError("unknown rider preset; choose separate, push_start, or steer_start")
         robot_path = None
-        if self.robot_scene:
-            from ..models.robot import official_robot_scene, rider_scene
+        if self.scene_config is not None:
+            from ..models.scene import build_scene_xml
+            xml = build_scene_xml(self.scene_config)
+            self.board_style = None
+        elif self.robot_scene:
+            from ..models.robot import official_robot_scene, rider_scene, inspection_scene
             # Every robot controller is evaluated on the same official 29-DoF
             # free-base asset. The procedural model is only retained for the
             # old non-robot workbench and is never a policy/pose fallback.
             robot_path = rider_scene(style, preset, dynamics=self.compile_dynamics) if self.rider_scene else official_robot_scene()
-            generated_scene = self.rider_scene
+            if self.inspection_fixture:
+                robot_path = inspection_scene()
+            generated_scene = self.rider_scene or self.inspection_fixture
             xml = robot_path.read_text(encoding="utf-8")
+            import hashlib
+            self.asset_hash = hashlib.sha256(official_robot_scene().read_bytes()).hexdigest()
             self.board_style = None
         elif self.contact_scene:
             xml = contact_xml(freeboard=experiment == "freeboard")
@@ -88,6 +128,18 @@ class MujocoBackend(Backend):
         else:
             self.board_style = None
             xml = self._xml()
+        if component_root_fixture is not None:
+            import xml.etree.ElementTree as ET
+            pose = np.asarray(component_root_fixture, dtype=float)
+            if pose.shape != (7,) or not np.isfinite(pose).all() or abs(np.linalg.norm(pose[3:])-1) > 1e-8:
+                raise ValueError("component root fixture must be finite xyz+unit WXYZ")
+            tree = ET.fromstring(xml)
+            equality = tree.find("equality")
+            if equality is None:
+                equality = ET.SubElement(tree, "equality")
+            ET.SubElement(equality, "weld", name="component_pelvis_fixture", body1="world", body2="pelvis",
+                          relpose=" ".join(map(str, pose)))
+            xml = ET.tostring(tree, encoding="unicode")
         try:
             self.model = mujoco.MjModel.from_xml_path(str(robot_path)) if robot_path else mujoco.MjModel.from_xml_string(xml)
         finally:
@@ -119,6 +171,10 @@ class MujocoBackend(Backend):
         self._nominal_body_pos = self.model.body_pos.copy()
         self._nominal_body_ipos = self.model.body_ipos.copy()
         self.data = mujoco.MjData(self.model)
+        from ..models.gripper import sides
+        self.gripper_command = {side: 0. for side in sides((self.scene_config or {}).get("gripper", "none"))}
+        from ..models.gripper import manifest
+        self.gripper_metadata = manifest() if self.gripper_command else None
         if self.robot_scene:
             self.robot_joint_names = list(DEPLOY_JOINTS)
             if len(self.robot_joint_names) != 29:
@@ -128,26 +184,34 @@ class MujocoBackend(Backend):
             self.robot_joint_ids = [self.model.joint(name).id for name in self.robot_joint_names]
             self.robot_qpos_adr = np.asarray([self.model.joint(name).qposadr[0] for name in self.robot_joint_names], dtype=int)
             self.robot_dof_adr = np.asarray([self.model.joint(name).dofadr[0] for name in self.robot_joint_names], dtype=int)
-            if controller == "policy":
+            if controller == "policy" or checkpoint:
                 if not checkpoint:
                     raise ValueError("policy controller requires --checkpoint")
                 root = Path(checkpoint)
                 onnx = root / "model" / "exported" / "FBcprAuxModel.onnx" if root.is_dir() else root
                 self.policy = BFMOnnxPolicy(onnx)
+                import hashlib
+                self.checkpoint_hash = hashlib.sha256(onnx.read_bytes()).hexdigest()
                 self.policy_z, self.policy_context_name = load_policy_context(root, policy_task, latent_name)
                 self.policy_values = deploy_joint_values(Path(__file__).parents[3]/"configs"/"bfm"/"motivo_newG1.yaml")
-            elif controller == "pose":
+            elif controller in ("pose", "joint") or self.scene_config is not None:
                 self.policy_values = deploy_joint_values(Path(__file__).parents[3]/"configs"/"bfm"/"motivo_newG1.yaml")
                 self.pose_target = self.policy_values["default"].copy()
+        if self.robot_scene and self.policy_values is not None:
+            self.pose_target = self.policy_values["default"].copy()
         self.viewer = None
         self.paused = inspect
         self.closed = False
+        self._wrenches = {}
         self.force = np.zeros(3, dtype=np.float64)
         self.push_force = 20.
         self.push_duration = .2
         self.mouse_force = np.zeros(3, dtype=np.float64)
         body_name = "cube" if scene == "bench" else "foot" if self.contact_scene else "pelvis" if self.robot_scene else "deck"
+        if self.scene_config is not None:
+            body_name = "pelvis" if self.robot_scene else "deck" if self.has_board else "world"
         self._body_id = self.model.body(body_name).id
+        self._force_body_id = self._body_id
         self._deck_id = self.model.body("deck").id if self.contact_scene else None
         self.normal_load = 8.0 if self.contact_scene else 0.0
         self.pull_force = 0.0
@@ -168,6 +232,8 @@ class MujocoBackend(Backend):
         self._parameter_reset_count = 0
         self.rng = np.random.default_rng(self.seed)
         self._action_queue.clear()
+        self._external_control = False
+        self._external_terminated = False
         self._apply_parameters()
         self.reset(seed)
 
@@ -234,9 +300,13 @@ class MujocoBackend(Backend):
             self.parameters, source=self.parameter_source, seed=self.seed,
             randomize=self.randomize)
 
-    def reset(self, seed: int | None = None, env_ids: Any = None) -> None:
-        if env_ids is not None:
-            raise ValueError("native MuJoCo has one environment; env_ids must be omitted")
+    def reset(self, seed: int | None = None, env_ids: Any = None) -> np.ndarray | None:
+        self._validate_env_ids(env_ids)
+        if getattr(self, "recorder", None):
+            if not hasattr(self, "_record_inputs"):
+                self._record_inputs = []
+            self._record_inputs.append({"event": "reset", "seed": seed,
+                                        "env_ids": None if env_ids is None else [0]})
         if seed is not None:
             self.seed = int(seed)
             self.parameters = resolve_parameters(
@@ -244,7 +314,11 @@ class MujocoBackend(Backend):
         self.rng = np.random.default_rng(self.seed)
         self._apply_parameters()
         self._action_queue.clear()
+        self._external_control = False
+        self._external_terminated = False
         mujoco.mj_resetData(self.model, self.data)
+        self.gripper_command = {side: 0. for side in self.gripper_command}
+        self._wrenches.clear()
         self.force[:] = 0
         self.force_point = None
         self.mouse_selection = None
@@ -262,7 +336,7 @@ class MujocoBackend(Backend):
             self.data.qpos[3:7] = (1.0, 0.0, 0.0, 0.0)
             self.data.qpos[self.robot_qpos_adr] = self.policy_values["default"] if self.policy_values is not None else 0.0
             self.data.qvel[:] = 0.0
-            if self.rider_scene:
+            if self.rider_scene and self.scene_config is None:
                 deck_q = self.model.joint("deck_free")
                 deck_qa = int(deck_q.qposadr[0]); deck_da = int(deck_q.dofadr[0])
                 # Use the procedural board's wheel-supported height.
@@ -281,12 +355,20 @@ class MujocoBackend(Backend):
                                 self.data.joint(f"{prefix}_{side}_spin").qvel[:] = 1.0 / style.wheel_radius
                 if self.controller == "pose":
                     self.pose_target = self.data.qpos[self.robot_qpos_adr].copy()
+            if self.scene_config is not None:
+                from ..models.scene import initialize_scene
+                initialize_scene(self.model, self.data, self.scene_config)
+            self.pose_target = self.data.qpos[self.robot_qpos_adr].copy()
+            self.selected_joint = 0
+            if self.inspection_fixture:
+                self.data.eq_active[self.model.equality("inspection_base").id] = int(self.controller == "joint")
             self.robot_history.reset()
             self.policy_counter = 0
             self.policy_context_index = 0
+            self.policy_tracking_active = True
             self.policy_action[:] = 0.0
             self.raw_action[:] = 0.0
-            self.q_target[:] = self.policy_values["default"] if self.policy_values is not None else 0.0
+            self.q_target[:] = self.pose_target
             self.last_tau[:] = 0.0
             self.last_qfrc_applied[:] = 0.0
             self.last_q[:] = 0.0
@@ -295,6 +377,9 @@ class MujocoBackend(Backend):
             self.physics_step_counter = 0
             self._last_q_change = 0.0
             self.last_obs[:] = 0.0
+        if self.scene_config is not None and not self.robot_scene:
+            from ..models.scene import initialize_scene
+            initialize_scene(self.model, self.data, self.scene_config)
         if self.board_style is not None:
             self.data.qpos[3:7] = (np.cos(self.initial_roll/2), np.sin(self.initial_roll/2), 0, 0)
         self.external_work = 0.0
@@ -322,30 +407,65 @@ class MujocoBackend(Backend):
             self.data.joint('deck_free').qpos[2] += .08
         mujoco.mj_forward(self.model, self.data)
         if self.rider_scene:
+            self._rider_origin = {name: self.data.xpos[self.model.body(name).id].copy() for name in ("pelvis", "deck")}
+            self._episode_start_time = float(self.data.time)
+            self._rider_seen_near_board = self.preset != "separate"
             self._print_rider_initial_state()
+        if self.robot_scene and self.controller == "policy":
+            base = self.model.body("pelvis").id
+            context = tracking_context(self.policy_z, 0) if self.policy_task == "tracking" else self.policy_z
+            # Preview from reset state without advancing history, cursor or RNG.
+            self.last_obs = build_official_actor_input(
+                self._robot_q(), self._robot_dq(), self.data.xquat[base],
+                self.data.xmat[base].reshape(3, 3).T @ self.data.cvel[base, :3],
+                np.zeros(29), HistoryState(), context)
+            return self.last_obs.copy()
 
-    def step(self, action: Any = None) -> None:
-        del action
+    def step(self, action: Any = None, *, update_policy: bool = True) -> None:
+        if action is not None:
+            if not self.robot_scene:
+                raise ValueError("external actions require a robot scene")
+            raw = np.asarray(action, dtype=np.float64)
+            if raw.shape != (29,) or not np.isfinite(raw).all():
+                raise ValueError("external action must be finite with shape (29,)")
+            if self.policy_values is None:
+                self.policy_values = deploy_joint_values(Path(__file__).parents[3] / "configs" / "bfm" / "motivo_newG1.yaml")
+            self._external_control = True
+            self.raw_action = raw.copy()
+            candidate = np.clip(raw, -1., 1.)
+            self.robot_history.last_action[:] = float(self.policy_values["action_rescale"]) * candidate
+            self._action_queue.append(candidate.copy())
+            delay = int(self.parameters["control_delay_steps"])
+            self.policy_action = self._action_queue.pop(0) if len(self._action_queue) > delay else np.zeros(29)
+            self.q_target = np.clip(self.policy_values["default"] + self.policy_values["action_rescale"] * self.policy_action * self.policy_values["action_scale"],
+                                    self.policy_values["joint_pos_lower_limit"], self.policy_values["joint_pos_upper_limit"])
+            self.policy_counter += 1
+        external = getattr(self, "_external_control", False)
+        record_command = self._replay_command(update_policy) if getattr(self, "recorder", None) else None
+        if record_command is not None:
+            record_command.update(external_control=external, external_action_update=action is not None)
+        record_inputs = getattr(self, "_record_inputs", [])
+        self._record_inputs = []
         q_before = self._robot_q() if self.robot_scene else None
-        if self.robot_scene and self.controller == "policy" and self.physics_step_counter % self.config.substeps == 0:
+        if not external and update_policy and self.robot_scene and self.controller == "policy" and self.physics_step_counter % self.config.substeps == 0:
             import time as _time
             base = self.model.body("pelvis").id
             q = self._robot_q().astype(np.float32)
             dq = self._robot_dq().astype(np.float32)
-            context = self.policy_z[self.policy_context_index] if self.policy_task == "tracking" else self.policy_z
-            t0 = _time.perf_counter()
-            obs = build_official_actor_input(q, dq, self.data.xquat[base], self.data.cvel[base, :3],
-                                             self.policy_action, self.robot_history, context)
-            noise_std = self.parameters["observation_noise_std"]
-            if noise_std > 0:
-                obs = obs + self.rng.normal(0.0, noise_std, size=obs.shape).astype(np.float32)
+            context = tracking_context(self.policy_z, self.policy_context_index) if self.policy_task == "tracking" else self.policy_z
+            obs = build_official_actor_input(q, dq, self.data.xquat[base],
+                                             self.data.xmat[base].reshape(3, 3).T @ self.data.cvel[base, :3],
+                                             self.robot_history.last_action, self.robot_history, context,
+                                             sensor_noise_std=self.parameters["observation_noise_std"], rng=self.rng)
             self.last_obs = obs.copy()
+            t0 = _time.perf_counter()
             raw = np.asarray(self.policy(obs), dtype=np.float64)
             self.inference_time_ms = (_time.perf_counter() - t0) * 1000.0
             if raw.shape != (29,) or not np.isfinite(raw).all():
                 raise RuntimeError(f"BFM action contract failed: shape={raw.shape} finite={np.isfinite(raw).all()}")
             self.raw_action = raw.copy()
             candidate_action = np.clip(raw, -1.0, 1.0)
+            self.robot_history.last_action[:] = float(self.policy_values["action_rescale"]) * candidate_action
             self._action_queue.append(candidate_action.copy())
             delay = int(self.parameters["control_delay_steps"])
             self.policy_action = (self._action_queue.pop(0)
@@ -355,14 +475,15 @@ class MujocoBackend(Backend):
                 self.policy_action * self.policy_values["action_scale"],
                 self.policy_values["joint_pos_lower_limit"], self.policy_values["joint_pos_upper_limit"])
             if self.policy_task == "tracking":
-                self.policy_context_index = (self.policy_context_index + 1) % len(self.policy_z)
+                self.policy_context_index, self.policy_tracking_active = next_tracking_cursor(
+                    self.policy_context_index, self.policy_tracking_active, len(self.policy_z))
             self.policy_counter += 1
             self._save_policy_debug(obs)
-        elif self.robot_scene and self.controller == "pose":
+        elif not external and self.robot_scene and self.controller in ("pose", "joint"):
             self.q_target = np.clip(self.pose_target, self.policy_values["joint_pos_lower_limit"],
                                     self.policy_values["joint_pos_upper_limit"])
         robot_torques = []
-        if self.robot_scene and self.controller in ("policy", "pose"):
+        if self.robot_scene and (external or self.controller in ("policy", "pose", "joint")):
             q = self._robot_q()
             dq = self._robot_dq()
             tau = (self.policy_values["kp"] * self.parameters["pd_kp_scale"] * (self.q_target - q)
@@ -385,15 +506,15 @@ class MujocoBackend(Backend):
                         torque_at_com_Nm=self.data.xfrc_applied[bid,3:].copy().tolist(),
                         active=bool(pert.active | pert.active2))
         self.mouse_force[:] = self.data.xfrc_applied[self._body_id, :3]
-        self.data.xfrc_applied[self._body_id, :3] += self.force
+        self.data.xfrc_applied[self._force_body_id, :3] += self.force
         if self.contact_scene:
             # Positive load is a commanded downward clamp force in the UI.
             self.data.xfrc_applied[self._body_id, 2] -= self.normal_load
             self.data.xfrc_applied[self._body_id, 0] += self.pull_force
             self.data.xfrc_applied[self._body_id, 3] += self.twist_torque
         if self.force_point is not None:
-            self.data.xfrc_applied[self._body_id, 3:] += np.cross(
-                self.force_point-self.data.xipos[self._body_id], self.force)
+            self.data.xfrc_applied[self._force_body_id, 3:] += np.cross(
+                self.force_point-self.data.xipos[self._force_body_id], self.force)
         if self.fixture and not self.rider_scene:
             rotation = self.data.xmat[self._body_id].reshape(3,3)
             roll = np.arctan2(rotation[2,1],rotation[2,2])
@@ -405,7 +526,7 @@ class MujocoBackend(Backend):
             # Use one indexed write so the MuJoCo ndarray is not repeatedly
             # traversed through scalar numpy views.
             self.data.qfrc_applied[self.robot_dof_adr] = self.last_tau
-        if self.robot_scene and self.controller in ("policy", "pose"):
+        if self.robot_scene and (external or self.controller in ("policy", "pose", "joint")):
             self.last_qfrc_applied = self.data.qfrc_applied[self.robot_dof_adr].copy()
             self.torque_injection_error = float(np.max(np.abs(self.last_qfrc_applied - self.last_tau)))
             if self.controller == "policy" and np.linalg.norm(self.policy_action) > 1e-7 and np.linalg.norm(self.last_qfrc_applied) < 1e-9:
@@ -418,10 +539,26 @@ class MujocoBackend(Backend):
                 for side in ("left", "right"):
                     adr = self.model.joint(f"{prefix}_{side}_spin").dofadr[0]
                     self.data.qfrc_applied[adr] = -self.dynamics["bearing_torque"] * np.tanh(self.data.qvel[adr]/.1)
+        for body_id, wrench in list(self._wrenches.items()):
+            self.data.xfrc_applied[body_id] += wrench["value"]
+        if getattr(self, "_recorded_xfrc", None) is not None:
+            self.data.xfrc_applied[:] = self._recorded_xfrc
+        if record_command is not None:
+            record_command["xfrc_applied"] = self.data.xfrc_applied.copy()
         power_before = self._external_power()
+        if self.gripper_command:
+            from ..models.gripper import command_grippers
+            command_grippers(self.model, self.data, self.gripper_command)
         mujoco.mj_step(self.model, self.data)
         mujoco.mj_forward(self.model, self.data)
         self.physics_step_counter += 1
+        if self.rider_scene:
+            distance = np.linalg.norm(self.data.xpos[self.model.body("pelvis").id,:2] - self.data.xpos[self.model.body("deck").id,:2])
+            self._rider_seen_near_board |= distance <= .5
+            if external:
+                info = self._rider_contact_info()
+                self._external_terminated |= self._rider_termination(info)["terminated"]
+                self._external_terminated |= not (np.isfinite(self.data.qpos).all() and np.isfinite(self.data.qvel).all())
         if self.robot_scene:
             q_after = self._robot_q()
             self._last_q_change = float(np.linalg.norm(q_after - q_before))
@@ -438,6 +575,113 @@ class MujocoBackend(Backend):
                 self.force[:] = 0
                 self.data.xfrc_applied[:] = 0
                 print("[bench] pulse finished; force=0 N", flush=True)
+
+        for body_id, wrench in list(self._wrenches.items()):
+            if wrench["steps"] is not None:
+                wrench["steps"] -= 1
+                if wrench["steps"] == 0:
+                    del self._wrenches[body_id]
+        if record_command is not None:
+            visual_state = dict(self.get_state(), xfrc_applied=self.data.xfrc_applied.copy())
+            self.recorder.tick(visual_state, action=self.raw_action.copy() if self.robot_scene else None,
+                               action_source="external" if external else self.controller, command=record_command, inputs=record_inputs)
+
+    def set_gripper_command(self, command: float, *, side: str = "right") -> None:
+        """Official Robotiq tendon actuator command0..255, separate from29 body."""
+        if side not in self.gripper_command:
+            raise ValueError(f"No Robotiq2F-85 on {side}")
+        if not np.isfinite(command) or not 0 <= command <= 255:
+            raise ValueError("Robotiq raw command must be finite in [0,255]")
+        self.gripper_command[side] = float(command)
+
+    def control_step(self, action) -> None:
+        """Advance one control interval; sample action/delay once, PD each tick."""
+        self.step(action, update_policy=False)
+        for _ in range(self.config.substeps - 1):
+            self.step(update_policy=False)
+
+    def _replay_command(self, update_policy=True):
+        return {"gripper_command": self.gripper_command.copy(), "update_policy": update_policy, "controller": self.controller,
+                "pose_target": getattr(self, "pose_target", np.zeros(29)).copy(),
+                "force": self.force.copy(), "force_body_id": self._force_body_id,
+                "force_point": self.force_point, "pulse_steps": self._pulse_steps,
+                "fixture": self.fixture, "eq_active": self.data.eq_active.copy(),
+                "wrenches": {str(k): {"value":v["value"].copy(), "steps":v["steps"]} for k,v in self._wrenches.items()},
+                "normal_load": self.normal_load, "pull_force": self.pull_force,
+                "twist_torque": self.twist_torque}
+
+    def export_replay_state(self):
+        from dataclasses import asdict
+        specification = mujoco.mjtState.mjSTATE_INTEGRATION
+        integration = np.empty(mujoco.mj_stateSize(self.model, specification))
+        mujoco.mj_getState(self.model, self.data, integration, specification)
+        names = ("controller", "physics_step_counter", "policy_counter", "policy_context_index",
+                 "policy_tracking_active", "q_target", "pose_target", "policy_action", "raw_action",
+                 "last_tau", "last_qfrc_applied", "last_q", "last_dq", "last_obs", "_action_queue",
+                 "force", "force_point", "_force_body_id", "_pulse_steps", "fixture", "external_work",
+                 "normal_load", "pull_force", "twist_torque", "_parameter_reset_count",
+                 "_rider_origin", "_episode_start_time", "_rider_seen_near_board", "_wrenches", "_external_control", "_external_terminated", "gripper_command")
+        return {"integration": integration, "runtime": {n: getattr(self, n) for n in names if hasattr(self,n)},
+                "history": asdict(self.robot_history), "rng": self.rng.bit_generator.state}
+
+    def import_replay_state(self, state):
+        mujoco.mj_setState(self.model, self.data, np.asarray(state["integration"]), mujoco.mjtState.mjSTATE_INTEGRATION)
+        for name, value in state["runtime"].items():
+            if name == "_action_queue":
+                value = [np.asarray(v,dtype=float) for v in value]
+            elif isinstance(getattr(self,name,None), np.ndarray):
+                value = np.asarray(value,dtype=getattr(self,name).dtype)
+            elif name == "force_point" and value is not None:
+                value = np.asarray(value,dtype=float)
+            if name == "_wrenches":
+                value = {int(k): {"value": np.asarray(v["value"]), "steps": v["steps"]} for k,v in value.items()}
+            if name == "_rider_origin":
+                value = {k: np.asarray(v) for k,v in value.items()}
+            setattr(self,name,value)
+        for name, value in state["history"].items():
+            setattr(self.robot_history,name,np.asarray(value,dtype=np.float32) if name == "last_action"
+                    else [np.asarray(v,dtype=np.float32) for v in value])
+        self.rng.bit_generator.state = state["rng"]
+        mujoco.mj_forward(self.model,self.data)
+
+    def step_recorded(self, action, command, inputs):
+        if not command:
+            raise ValueError("native replay requires recorded physics inputs")
+        has_reset = any(event.get("event") == "reset" for event in inputs)
+        for event in inputs:
+            if event.get("event") == "reset":
+                self.reset(event.get("seed"), env_ids=event.get("env_ids"))
+            elif event.get("event") == "key" and not (has_reset and int(event["key"]) == self.KEY_R):
+                self._handle_key(int(event["key"]))
+        self.controller = command["controller"]
+        for side, value in command.get("gripper_command", {}).items():
+            self.set_gripper_command(value, side=side)
+        if self.robot_scene:
+            self.pose_target = np.asarray(command["pose_target"],dtype=float)
+        self.force[:] = command["force"]
+        self._force_body_id = int(command["force_body_id"])
+        self.force_point = None if command["force_point"] is None else np.asarray(command["force_point"])
+        self._pulse_steps = int(command["pulse_steps"])
+        self.fixture = bool(command["fixture"])
+        self.data.eq_active[:] = command["eq_active"]
+        for name in ("normal_load", "pull_force", "twist_torque"):
+            setattr(self,name,command[name])
+        self._wrenches = {int(k): {"value":np.asarray(v["value"]), "steps":v["steps"]} for k,v in command.get("wrenches",{}).items()}
+        self._recorded_xfrc = np.asarray(command["xfrc_applied"])
+        policy = self.policy
+        if self.controller == "policy":
+            self.policy = lambda obs: np.asarray(action,dtype=float)
+        try:
+            if command.get("external_control"):
+                self._external_control = True
+                self.step(action if command.get("external_action_update") else None, update_policy=False)
+            else:
+                self._external_control = False
+                self._external_terminated = False
+                self.step(update_policy=command["update_policy"])
+        finally:
+            self.policy = policy
+            self._recorded_xfrc = None
 
     def _robot_q(self) -> np.ndarray:
         return np.asarray(self.data.qpos[self.robot_qpos_adr], dtype=np.float64).copy()
@@ -538,7 +782,16 @@ class MujocoBackend(Backend):
             lower = self.policy_values["joint_pos_lower_limit"] if self.policy_values is not None else np.asarray([self.model.jnt_range[j, 0] for j in self.robot_joint_ids])
             upper = self.policy_values["joint_pos_upper_limit"] if self.policy_values is not None else np.asarray([self.model.jnt_range[j, 1] for j in self.robot_joint_ids])
             if np.any(q < lower) or np.any(q > upper): reason = "joint_limit"
-        return {"terminated": reason is not None, "truncated": False, "termination_reason": reason}
+        if reason is None and self.out_of_bounds_distance is not None:
+            if any(np.linalg.norm(self.data.xpos[self.model.body(name).id] - origin) > self.out_of_bounds_distance
+                   for name, origin in self._rider_origin.items()):
+                reason = "out_of_bounds"
+        if reason is None and self.offboard_distance is not None and self._rider_seen_near_board:
+            if info["pelvis_deck_horizontal_distance"] > self.offboard_distance:
+                reason = "offboard"
+        timeout = self.episode_time_limit is not None and self.data.time - self._episode_start_time >= self.episode_time_limit
+        return {"terminated": reason is not None, "truncated": bool(timeout), "termination_reason": reason,
+                "truncation_reason": "time_limit" if timeout else None}
 
     def _save_policy_debug(self, obs: np.ndarray) -> None:
         if self._first_policy_debug:
@@ -571,7 +824,11 @@ class MujocoBackend(Backend):
         (out / "mapping.json").write_text(json.dumps(mapping, indent=2))
         self._first_policy_debug = True
 
-    def get_state(self) -> dict[str, Any]:
+    def _validate_env_ids(self, env_ids):
+        validate_env_ids(env_ids, 1)
+
+    def get_state(self, env_ids=None) -> dict[str, Any]:
+        self._validate_env_ids(env_ids)
         return {"qpos": self.data.qpos.copy(), "qvel": self.data.qvel.copy(), "time": float(self.data.time)}
 
     def _external_power(self):
@@ -582,30 +839,72 @@ class MujocoBackend(Backend):
             power += self.data.xfrc_applied[bid,:3] @ velocity[3:] + self.data.xfrc_applied[bid,3:] @ velocity[:3]
         return float(power)
 
-    def set_state(self, state: dict[str, Any]) -> None:
+    def set_state(self, state: dict[str, Any], env_ids=None) -> None:
+        self._validate_env_ids(env_ids)
         self.data.qpos[:] = state["qpos"]
         self.data.qvel[:] = state["qvel"]
         self.data.time = state["time"]
         mujoco.mj_forward(self.model, self.data)
 
-    def apply_wrench(self, body: str, force: tuple[float, float, float], point: tuple[float, float, float] | None = None) -> None:
-        """World force at a world point; None means body COM. Persists until release."""
-        expected = {"cube"} if self.scene == "bench" else {"deck"}
-        if self.rider_scene:
-            expected = {"deck", "pelvis"}
-        if body not in expected:
-            raise ValueError(f"unknown body {body!r}; available: {', '.join(sorted(expected))}")
-        self.force[:] = force
-        self.force_point = None if point is None else np.asarray(point, dtype=float).copy()
+    def set_visual_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Restore display state without integrating or retaining a previous frame's wrench."""
+        force = np.asarray(state.get("xfrc_applied", np.zeros_like(self.data.xfrc_applied)), dtype=float)
+        if force.shape != (self.model.nbody, 6) or not np.isfinite(force).all():
+            raise ValueError(f"xfrc_applied requires finite shape {(self.model.nbody, 6)}")
+        force = force.copy()
+        self.set_state(state)
+        self.data.xfrc_applied[:] = force
+        mujoco.mj_forward(self.model, self.data)
+        return dict(self.get_state(), xfrc_applied=self.data.xfrc_applied.copy())
+
+    def apply_wrench(self, body: str, force, point=None, *, env_ids=None,
+                     frame="world", duration_steps=None) -> None:
+        """Finite force/point in world or body coordinates; duration counts physics ticks."""
+        self._validate_env_ids(env_ids)
+        if frame not in ("world", "body"):
+            raise ValueError("frame must be world or body")
+        if duration_steps is not None and (not isinstance(duration_steps,int) or isinstance(duration_steps,bool) or duration_steps < 1):
+            raise ValueError("duration_steps must be a positive integer or None")
+        try:
+            body_id = int(self.model.body(body).id)
+        except KeyError as exc:
+            raise ValueError(f"unknown body {body!r}") from exc
+        if body_id == 0:
+            raise ValueError("wrench requires a dynamic body")
+        force = np.asarray(force,dtype=float)
+        point = None if point is None else np.asarray(point,dtype=float)
+        if force.shape == (1,3): force = force[0]
+        if point is not None and point.shape == (1,3): point = point[0]
+        if force.shape != (3,) or not np.isfinite(force).all():
+            raise ValueError("force requires a finite 3-vector")
+        if point is not None and (point.shape != (3,) or not np.isfinite(point).all()):
+            raise ValueError("point requires a finite 3-vector")
+        if frame == "body":
+            rotation = self.data.xmat[body_id].reshape(3,3)
+            force = rotation @ force
+            if point is not None: point = self.data.xpos[body_id] + rotation @ point
+        value = np.zeros(6)
+        value[:3] = force
+        if point is not None: value[3:] = np.cross(point-self.data.xipos[body_id],force)
+        self._wrenches[body_id] = {"value": value,"steps":duration_steps}
+        self._force_body_id = body_id
+
+    def clear_wrenches(self, env_ids=None):
+        self._validate_env_ids(env_ids)
+        self._wrenches.clear()
+        self.force[:] = 0
+        self.force_point = None
         self._pulse_steps = 0
+        self.data.xfrc_applied[:] = 0
 
     def diagnostics(self) -> dict[str, Any]:
-        body_name = "cube" if self.scene == "bench" else ("foot" if self.contact_scene else "pelvis" if self.robot_scene else "deck")
-        body_id = self.model.body(body_name).id
+        body_id = self._body_id
+        body_name = self.model.body(body_id).name
         result = {"backend": self.name, "version": mujoco.__version__, "sim_time": float(self.data.time),
                 "object": body_name, "object_pos": self.data.xpos[body_id].tolist(),
                 "object_vel": self.data.cvel[body_id, 3:].tolist(),
-                "force_world_N": (self.mouse_force + self.force).tolist(),
+                "force_world_N": (self.mouse_force + self.force + sum((v["value"][:3] for v in self._wrenches.values()), np.zeros(3))).tolist(),
+                "external_wrenches": {self.model.body(k).name: {"world_wrench":v["value"].tolist(), "remaining_physics_steps":v["steps"]} for k,v in self._wrenches.items()},
                 "keyboard_force_N": self.force.tolist(), "mouse_force_N": self.mouse_force.tolist(),
                 "mouse_body": mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, self._body_id),
                 "contacts": int(self.data.ncon),
@@ -644,7 +943,18 @@ class MujocoBackend(Backend):
             dq = self._robot_dq()
             tau = self.last_tau
             action = self.policy_action
-            result.update({"controller": self.controller, "policy_task": self.policy_task,
+            rotation = self.data.xmat[self.model.body("pelvis").id].reshape(3, 3)
+            base_velocity = np.zeros(6)
+            mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_BODY,
+                                    self.model.body("pelvis").id, base_velocity, 1)
+            result.update({"projected_gravity": (rotation.T @ np.array([0., 0., -1.])).tolist(),
+                           "body_angular_velocity": (rotation.T @ self.data.cvel[self.model.body("pelvis").id, :3]).tolist(),
+                           "asset_sha256": self.asset_hash,
+                           "checkpoint_sha256": self.checkpoint_hash,
+                           "selected_joint": self.robot_joint_names[self.selected_joint],
+                           "joint_targets": self.q_target.tolist(),
+                           "inspection_fixture_active": bool(self.inspection_fixture and self.data.eq_active[self.model.equality("inspection_base").id]),
+                           "controller": self.controller, "policy_task": self.policy_task,
                            "latent_name": getattr(self, "policy_context_name", None),
                            "obs_shape": [721] if self.controller == "policy" else None,
                            "obs_norm": float(getattr(self, "last_obs", np.zeros(1)).dot(getattr(self, "last_obs", np.zeros(1)))) ** .5 if hasattr(self, "last_obs") else 0.0,
@@ -670,11 +980,15 @@ class MujocoBackend(Backend):
         if self.rider_scene:
             result["rider_init"] = self.rider_initial_state()
             result["termination"] = result["rider_init"]["termination"]
+            result["guard_thresholds"] = {"episode_time_limit_s": self.episode_time_limit,
+                                           "out_of_bounds_distance_m": self.out_of_bounds_distance,
+                                           "offboard_distance_m": self.offboard_distance,
+                                           "offboard_activation_distance_m": .5}
             result["board_velocity"] = result["rider_init"]["board_linear_velocity"]
             result["left_foot_contact"] = result["rider_init"]["left_foot_deck_contact_count"] + result["rider_init"]["left_foot_ground_contact_count"]
             result["right_foot_contact"] = result["rider_init"]["right_foot_deck_contact_count"] + result["rider_init"]["right_foot_ground_contact_count"]
             result["support_force_N"] = 0.0
-            result["has_support_fixture"] = False
+            result["has_support_fixture"] = self.component_root_fixture is not None
         return result
 
     def render(self) -> bool:
@@ -713,24 +1027,87 @@ class MujocoBackend(Backend):
             self.viewer.set_texts((mujoco.mjtFontScale.mjFONTSCALE_100,mujoco.mjtGridPos.mjGRID_TOPLEFT,
                 'skate-sim | '+d['model']+' | '+str(self.experiment)+'\n'+('EXTERNAL ROLL FIXTURE' if self.fixture else 'FREE')+'\nTime / roll / steer F,R\nEnergy / external work\nF push; +/- amplitude; [ ] duration\nA/D lean; E release; R reset',
                 f"\n{'PAUSED' if self.paused else 'RUNNING'}\n{self.data.time:.3f}s / {d['deck_roll_rad']:.3f} / {d['steer_rad']['front']:.3f},{d['steer_rad']['rear']:.3f}\n{d['mechanical_energy_J']:.4f}J / {self.external_work:.4f}J\n{self.push_force:.1f}N / {self.push_duration:.2f}s\nSelected: {self.mouse_selection['body'] + ' ' + str(np.round(self.mouse_selection['local_point_m'],3)) if self.mouse_selection else 'double-click a surface point'}"))
+        if self.robot_scene:
+            d = self.diagnostics()
+            i = self.selected_joint
+            fixed = self.inspection_fixture and bool(self.data.eq_active[self.model.equality("inspection_base").id])
+            self.viewer.set_texts((mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPLEFT,
+                "skate-sim | official G1 29DoF\nMode / base\nJoint [ ] select; +/- target\nTarget / q / dq / tau\nGravity body / omega body\nPhysics / policy updates\nAsset / checkpoint SHA256\nSpace pause; N substep; M control; R reset\nP pose; O policy; F pelvis push; E release",
+                f"{self.data.time:.3f}s {'PAUSED' if self.paused else 'RUNNING'}\n{self.controller} / {'FIXED BASE INSPECTION FIXTURE' if fixed else 'FREE BASE'}\n{i+1}/29 {self.robot_joint_names[i]}\n{self.q_target[i]:.3f} / {self._robot_q()[i]:.3f} / {self._robot_dq()[i]:.3f} / {self.last_tau[i]:.3f}\n{np.round(d['projected_gravity'],3)} / {np.round(d['body_angular_velocity'],3)}\n{self.physics_step_counter} / {self.policy_counter}\n{self.asset_hash[:8]} / {self.checkpoint_hash[:12]} ({self.policy_task})\n"))
         self.viewer.sync()
         return not self.viewer.is_running()
+
+    def adjust_joint_target(self, index: int, increment: float) -> None:
+        if self.controller != "joint":
+            raise ValueError("joint targets require joint controller")
+        if not 0 <= index < 29 or not np.isfinite(increment):
+            raise ValueError("invalid joint index or increment")
+        self.pose_target[index] = np.clip(self.pose_target[index] + increment,
+            self.policy_values["joint_pos_lower_limit"][index],
+            self.policy_values["joint_pos_upper_limit"][index])
+        self.q_target[:] = self.pose_target
+
+    def switch_controller(self, controller: str) -> bool:
+        """Switch sources without replaying the preceding policy's history/actions."""
+        if controller not in ("pose", "policy") or not self.robot_scene:
+            return False
+        if controller == "policy" and self.policy is None:
+            print("Policy switch unavailable: start play.py with --checkpoint to enable O", flush=True)
+            return False
+        if self.policy_values is None:
+            self.policy_values = deploy_joint_values(Path(__file__).parents[3]/"configs"/"bfm"/"motivo_newG1.yaml")
+        if self.inspection_fixture:
+            self.data.eq_active[self.model.equality("inspection_base").id] = 0
+        self.controller = controller
+        self.robot_history.reset()
+        self._action_queue.clear()
+        self._external_control = False
+        self._external_terminated = False
+        self.policy_action[:] = 0
+        self.raw_action[:] = 0
+        self.last_tau[:] = 0
+        self.last_qfrc_applied[:] = 0
+        self.policy_counter = 0
+        self.policy_context_index = 0
+        self.policy_tracking_active = True
+        self.physics_step_counter = 0
+        self.inference_time_ms = 0
+        self.last_obs[:] = 0
+        self.pose_target = np.clip(self._robot_q(), self.policy_values["joint_pos_lower_limit"],
+                                   self.policy_values["joint_pos_upper_limit"])
+        self.q_target[:] = self.pose_target
+        self.data.qfrc_applied[:] = 0
+        self.clear_wrenches()
+        self._pulse_steps = 0
+        return True
 
     def _key_callback(self, key: int) -> None:
         self.events.put(key)
 
     def _handle_key(self, key: int) -> None:
+        if getattr(self, "visual_replay", False) and key != 256:
+            return
+        if getattr(self, "recorder", None) and key not in (self.KEY_SPACE, self.KEY_N, self.KEY_M, self.KEY_R):
+            if not hasattr(self, "_record_inputs"):
+                self._record_inputs = []
+            self._record_inputs.append({"event": "key", "key": key})
         if key == self.KEY_SPACE:
             self.paused = not self.paused
         elif key == self.KEY_N:
             if self.paused:
-                self.step()
+                self.step(update_policy=False)
         elif key == self.KEY_M:
             if self.paused:
                 for _ in range(self.config.substeps):
                     self.step()
         elif key == self.KEY_R:
             self.reset()
+        elif self.robot_scene and key in (80, 79):  # P pose, O policy
+            self.switch_controller("pose" if key == 80 else "policy")
+        elif self.controller == "joint" and key in (91, 93):
+            self.selected_joint = (self.selected_joint + (1 if key == 93 else -1)) % 29
+        elif self.controller == "joint" and key in (61, 45):
+            self.adjust_joint_target(self.selected_joint, self.joint_increment * (1 if key == 61 else -1))
         elif self.contact_scene and key == 65:
             self.pull_force += 1.0
         elif self.contact_scene and key == 68:
@@ -740,13 +1117,15 @@ class MujocoBackend(Backend):
         elif self.contact_scene and key == 89:
             self.twist_torque -= .1
         elif key == self.KEY_F:
-            body = "cube" if self.scene == "bench" else "deck"
-            self.apply_wrench(body, (self.push_force, 0.0, 0.0))
-            self._pulse_steps = round(self.push_duration / self.config.physics_dt)
+            body = self.model.body(self._body_id).name
+            self.apply_wrench(body, (self.push_force, 0.0, 0.0), duration_steps=round(self.push_duration / self.config.physics_dt))
             print(f"[bench] F received: {body} +X 20 N for 0.2 sim seconds; paused={self.paused}", flush=True)
         elif key == self.KEY_E:
+            self.clear_wrenches()
             self.force_point = None
             self.fixture = False
+            if self.inspection_fixture:
+                self.data.eq_active[self.model.equality("inspection_base").id] = 0
             if self.viewer:
                 with self.viewer.lock():
                     self.viewer.perturb.active=0

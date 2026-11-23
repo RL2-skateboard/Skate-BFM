@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
+import tempfile
 from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
@@ -118,6 +122,15 @@ def _mujoco_check(stage: str, checkpoint: str | None) -> dict[str, Any]:
             backend.close()
 
     elif stage == "05":
+        from .validation.observation05 import numeric_oracle, native_contract_probe, test_noise_preserves_actions_and_context, tracking_reference_probe
+        details["independent_721_oracle"] = numeric_oracle()
+        details["native_128_oracle"] = numeric_oracle(backend_entry=True)
+        details["tracking_reference"] = tracking_reference_probe()
+        details["native_contract"] = native_contract_probe()
+        test_noise_preserves_actions_and_context()
+        checks["independent_721_oracle"] = True
+        checks["native_contract"] = True
+        checks["sensor_noise_preserves_latent_and_actions"] = True
         backend = MujocoBackend(scene="robot", controller="pose")
         try:
             for _ in range(20):
@@ -131,46 +144,23 @@ def _mujoco_check(stage: str, checkpoint: str | None) -> dict[str, Any]:
         finally:
             backend.close()
         if checkpoint:
-            backend = MujocoBackend(scene="robot", controller="policy", checkpoint=checkpoint)
-            try:
-                for _ in range(20):
-                    backend.step()
-                diagnostics = backend.diagnostics()
-                checks["bfm_checkpoint"] = diagnostics["obs_shape"] == [721]
-                checks["bfm_nonzero_action"] = diagnostics["raw_action_norm"] > 1e-8
-                checks["bfm_torque_injected"] = diagnostics["qfrc_applied_norm"] > 1e-8
-                details["policy"] = {"obs_shape": diagnostics["obs_shape"],
-                                      "policy_counter": diagnostics["policy_counter"]}
-            finally:
-                backend.close()
+            from .validation.observation05 import policy_rollout
+            rollout = policy_rollout(checkpoint)
+            checks["bfm_30s_1500_inferences"] = rollout["inferences"] == 1500
+            checks["bfm_finite"] = rollout["finite"]
+            details["policy"] = rollout
         else:
             return {"status": "BLOCKED", "stage": stage, "backend": "mujoco",
                     "checks": checks, "details": details,
                     "reason": "stage 05 policy check requires --checkpoint"}
 
     elif stage == "06":
-        for preset in ("separate", "push_start", "steer_start"):
-            backend = MujocoBackend(scene="rider", controller="pose", preset=preset)
-            try:
-                info = backend.rider_initial_state()
-                for _ in range(10):
-                    backend.step()
-                checks[f"{preset}_finite"] = bool(np.isfinite(backend.data.qpos).all())
-                checks[f"{preset}_penetration"] = info["penetration_min_m"] >= -0.001
-                details[preset] = {"penetration_min_m": info["penetration_min_m"],
-                                   "left_deck": info["left_foot_deck_contact_count"],
-                                   "right_deck": info["right_foot_deck_contact_count"]}
-            finally:
-                backend.close()
-        if checkpoint:
-            backend = MujocoBackend(scene="rider", controller="policy", checkpoint=checkpoint,
-                                    preset="steer_start")
-            try:
-                for _ in range(20):
-                    backend.step()
-                checks["rider_policy"] = backend.diagnostics()["policy_counter"] > 0
-            finally:
-                backend.close()
+        if not checkpoint:
+            return {"status": "BLOCKED", "stage": stage, "backend": "mujoco",
+                    "reason": "stage 06 actual policy replay requires --checkpoint"}
+        from .validation.noncontact06 import run
+        details = run(checkpoint)
+        checks = details["checks"]
 
     else:
         return {"status": "INCOMPLETE", "stage": stage, "backend": "mujoco",
@@ -185,6 +175,25 @@ def _mjlab_check(stage: str, num_envs: int, checkpoint: str | None) -> dict[str,
     import numpy as np
     from .backends.mjlab import MjlabBackend
 
+    if stage in ("05", "06", "07"):
+        if not checkpoint:
+            return {"status": "BLOCKED", "stage": stage, "backend": "mjlab",
+                    "reason": "actual policy checkpoint required"}
+        from .validation.gpu_contract import run as gpu_contract
+        details = gpu_contract(checkpoint, num_envs=max(64, num_envs) if stage == "07" else max(1, num_envs),
+                               duration=30., scene="robot" if stage == "05" else "rider")
+        checks = {key: bool(details[key]) for key in ("finite", "subset_atomic_validation",
+                  "partial_reset_isolation", "substep_pd", "wrench_isolation_duration")}
+        checks.update(cuda_physics=str(details["physics_device"]).startswith("cuda"),
+                      nonzero_policy=details["peak_raw_action"] > 0,
+                      nonzero_torque=details["peak_tau"] > 0)
+        if stage == "05":
+            from .validation.observation05 import numeric_oracle
+            details["shared_observation_oracle"] = numeric_oracle()
+            checks["shared_observation_oracle"] = True
+        return {"status": _status(checks), "stage": stage, "backend": "mjlab",
+                "checks": checks, "details": details, "submatrix": "noncontact_batch_control_contract",
+                "disclosure": "Noncontact automatic contract only; contact model acceptance and manual UI confirmation remain outstanding."}
     if stage == "01":
         backend = MjlabBackend(scene="bench", num_envs=max(1, num_envs))
         try:
@@ -199,9 +208,9 @@ def _mjlab_check(stage: str, num_envs: int, checkpoint: str | None) -> dict[str,
             reset = backend.get_state()
             checks = {
                 "cuda_physics": backend.diagnostics()["physics_owner"] == "mjlab.mujoco_warp",
-                "step_advances_time": bool(after_step["time"] > start["time"]),
+                "step_advances_time": bool(np.all(after_step["time"] > start["time"])),
                 "wrench_changes_position": bool(after_force["qpos"][backend.view_env, 0] > start["qpos"][backend.view_env, 0]),
-                "reset_restores_time": bool(abs(reset["time"]) < 1e-12),
+                "reset_restores_time": bool(np.all(abs(reset["time"]) < 1e-12)),
                 "finite_state": bool(np.isfinite(reset["qpos"]).all() and np.isfinite(reset["qvel"]).all()),
             }
             details = {"num_envs": num_envs, "device": backend.diagnostics()["device"]}
@@ -209,69 +218,8 @@ def _mjlab_check(stage: str, num_envs: int, checkpoint: str | None) -> dict[str,
             backend.close()
         return {"status": _status(checks), "stage": stage, "backend": "mjlab",
                 "checks": checks, "details": details}
-    if stage != "07":
-        return {"status": "NOT_APPLICABLE", "stage": stage, "backend": "mjlab",
-                "reason": "active mjlab acceptance is stage 07"}
-    checks: dict[str, Any] = {}
-    details: dict[str, Any] = {}
-    backend = MjlabBackend(scene="board", num_envs=num_envs)
-    try:
-        before = backend.get_state()
-        backend.apply_wrench("deck", (10.0, 0.0, 0.0))
-        for _ in range(10):
-            backend.step()
-        before_reset = backend.get_state()
-        backend.step()
-        after_step = backend.get_state()
-        ids = list(range(0, num_envs, 2))
-        backend.reset(env_ids=ids)
-        after_reset = backend.get_state()
-        untouched = [index for index in range(num_envs) if index not in ids]
-        checks["cuda_physics"] = backend.diagnostics()["physics_owner"] == "mjlab.mujoco_warp"
-        checks["step_advances_time"] = after_step["time"] > 0.0
-        checks["partial_reset_untouched"] = bool(np.allclose(
-            after_reset["qpos"][untouched], after_step["qpos"][untouched], atol=1e-4, rtol=1e-5)) if untouched else True
-        checks["partial_reset_target_restored"] = bool(np.allclose(
-            after_reset["qpos"][ids], backend._nominal_qpos[ids].cpu().numpy(), atol=1e-4, rtol=1e-5)) if ids else True
-        checks["finite_state"] = bool(np.isfinite(after_reset["qpos"]).all() and np.isfinite(after_reset["qvel"]).all())
-        details.update({"num_envs": num_envs, "device": backend.diagnostics()["device"],
-                        "step_time": after_step["time"], "pre_reset_time": before_reset["time"]})
-    finally:
-        backend.close()
-    pose = MjlabBackend(scene="rider", controller="pose", preset="steer_start", num_envs=max(1, min(num_envs, 8)))
-    try:
-        pose.reset()
-        pose_before = pose.get_state()["qpos"].copy()
-        for _ in range(3):
-            pose.step()
-        pose_diag = pose.diagnostics()
-        checks["rider_pose"] = bool(
-            pose_diag["controller"] == "pose" and pose_diag["qfrc_applied_norm"] > 0 and
-            np.isfinite(pose.get_state()["qpos"]).all())
-        details["rider_pose"] = {"qfrc_applied_norm": pose_diag["qfrc_applied_norm"],
-                                  "state_change": float(np.linalg.norm(pose.get_state()["qpos"] - pose_before))}
-    finally:
-        pose.close()
-    if checkpoint:
-        policy = MjlabBackend(scene="rider", controller="policy", checkpoint=checkpoint,
-                              preset="steer_start", num_envs=max(1, min(num_envs, 8)))
-        try:
-            for _ in range(policy.config.substeps + 1):
-                policy.step()
-            policy_diag = policy.diagnostics()
-            checks["rider_policy"] = bool(
-                policy_diag["policy_counter"] > 0 and policy_diag["obs_shape"] == [721] and
-                policy_diag["qfrc_applied_norm"] > 0 and np.isfinite(policy.get_state()["qpos"]).all())
-            details["rider_policy"] = {"policy_counter": policy_diag["policy_counter"],
-                                       "raw_action_norm": policy_diag["raw_action_norm"],
-                                       "qfrc_applied_norm": policy_diag["qfrc_applied_norm"]}
-        finally:
-            policy.close()
-    else:
-        checks["rider_policy"] = False
-        details["rider_policy"] = "not checked: supply --checkpoint for policy acceptance"
-    return {"status": _status(checks), "stage": stage,
-            "backend": "mjlab", "checks": checks, "details": details}
+    return {"status": "INCOMPLETE", "stage": stage, "backend": "mjlab",
+            "reason": "dedicated acceptance matrix not implemented for this backend/stage"}
 
 
 def _stage09_native_parameter_effects() -> dict[str, bool]:
@@ -442,7 +390,7 @@ def _stage09_mujoco_check(checkpoint: str | None = None) -> dict[str, Any]:
         details["policy_parameter_effects"] = policy_effects
     else:
         details["policy_parameter_effects"] = "not checked: supply --checkpoint"
-    return {"status": _status(checks), "stage": "09", "backend": "mujoco",
+    return {"status": _status(checks, blocked=not checkpoint), "stage": "09", "backend": "mujoco",
             "checks": checks, "details": details,
             "disclosure": "synthetic calibration only; no real-data sim2real claim"}
 
@@ -507,28 +455,106 @@ def _stage09_mjlab_check(num_envs: int) -> dict[str, Any]:
             "disclosure": "mjlab randomized drag/loss terms are explicit runtime forces; no real-data claim"}
 
 
-def _run_check(stage: str, backend: str, num_envs: int, checkpoint: str | None) -> dict[str, Any]:
+def _run_check(stage: str, backend: str, num_envs: int, checkpoint: str | None, scope: str = "full") -> dict[str, Any]:
+    if backend == "all":
+        children = [_backend_process("check", name, stage=stage, num_envs=num_envs,
+                                     checkpoint=checkpoint, scope=scope)
+                    for name in ("mujoco", "mjlab")]
+        results = [item for child in children for item in child.get("result", {}).get("results", [])]
+        statuses = {child.get("result", {}).get("status", "FAIL") for child in children}
+        overall = "PASS" if statuses == {"PASS"} and all(c["exit_code"] == 0 for c in children) else "FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses else "INCOMPLETE"
+        return {"status": overall, "stage": stage, "backend": backend, "scope": scope,
+                "results": results, "processes": children, "scope_status": overall,
+                "stage_acceptance_status": "INCOMPLETE", "automatic_checks_status": overall,
+                "overall_project_status": "INCOMPLETE"}
     stages = [stage] if stage != "all" else ["01", "02", "03", "04", "05", "06", "07", "09"]
     results = []
     for current in stages:
+        if current == "04":
+            results.append({"status": "DEFERRED", "stage": current, "backend": backend,
+                            "reason": "contact model and contact learning frozen pending user discussion"})
+            continue
+        if backend == "mjlab" and current not in ("01", "05", "06", "07", "09"):
+            results.append({"status": "INCOMPLETE", "stage": current, "backend": backend,
+                            "reason": "dedicated acceptance matrix not implemented for this backend/stage"})
+            continue
         if current == "09" and backend in ("mujoco", "all"):
             results.append(_stage09_mujoco_check(checkpoint))
         elif backend in ("mujoco", "all") and current != "07":
             results.append(_mujoco_check(current, checkpoint))
         if current == "09" and backend in ("mjlab", "all"):
             results.append(_stage09_mjlab_check(num_envs))
-        elif backend in ("mjlab", "all") and current in ("01", "07"):
+        elif backend in ("mjlab", "all") and current in ("01", "05", "06", "07"):
             results.append(_mjlab_check(current, num_envs, checkpoint))
+            if current in ("06", "07"):
+                results.append({"status": "NOT_RUN", "stage": current, "backend": "mjlab",
+                                "submatrix": "strict_dynamics_replay", "acceptance_gate": True,
+                                "reason": "batch control contracts do not certify initial-state/action/event replay; a dedicated strict replay check is required"})
+                results.append({"status": "NOT_RUN", "stage": current, "backend": "mjlab",
+                                "submatrix": "manual_ui_confirmation", "acceptance_gate": True,
+                                "reason": "manual window acceptance is not provided by automatic batch checks"})
+        if current == "09":
+            results.append({"status": "DEFERRED", "stage": "09", "backend": backend,
+                            "scope": "contact_learning", "reason": "contact learning frozen pending user discussion; noncontact parameter checks executed separately"})
         if backend == "mujoco" and current == "07":
             results.append({"status": "NOT_APPLICABLE", "stage": current, "backend": backend,
                             "reason": "stage 07 is the mjlab GPU batch stage"})
-    statuses = {item["status"] for item in results}
-    overall = "PASS" if statuses == {"PASS"} else "BLOCKED" if "BLOCKED" in statuses else "INCOMPLETE" if "INCOMPLETE" in statuses or "NOT_APPLICABLE" in statuses else "FAIL"
-    return {"status": overall, "stage": stage, "backend": backend, "results": results}
+    evaluated = [item for item in results if item["status"] != "NOT_APPLICABLE"
+                 and not (scope == "noncontact" and (item["status"] == "DEFERRED" or item.get("acceptance_gate")))]
+    statuses = {item["status"] for item in evaluated}
+    overall = "PASS" if statuses == {"PASS"} else "BLOCKED" if "BLOCKED" in statuses else "FAIL" if "FAIL" in statuses else "INCOMPLETE"
+    # This command certifies automatic checks, never user stage sign-off.
+    stage_acceptance = "INCOMPLETE"
+    return {"status": overall, "scope_status": overall, "automatic_checks_status": overall, "stage_acceptance_status": stage_acceptance,
+            "overall_project_status": "INCOMPLETE",
+            "stage": stage, "backend": backend, "scope": scope, "results": results}
 
 
-def _doctor(backend: str) -> tuple[dict[str, Any], int]:
-    names = ("mujoco", "mjlab") if backend == "all" else (backend,)
+def _backend_process(command: str, backend: str, *, stage=None, num_envs=1,
+                     checkpoint=None, scope="full", display=False) -> dict[str, Any]:
+    """Each backend owns a fresh interpreter; children never dispatch all again."""
+    with tempfile.TemporaryDirectory(prefix="skate-check-") as directory:
+        target = Path(directory) / "result.json"
+        argv = [sys.executable, "-m", "skate_sim", command, "--backend", backend]
+        if command == "check":
+            argv += ["--stage", stage, "--num-envs", str(num_envs), "--scope", scope,
+                     "--output", str(target)]
+        if checkpoint:
+            argv += ["--checkpoint", checkpoint]
+        if display:
+            argv += ["--display"]
+        try:
+            child = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+            if target.exists():
+                result = json.loads(target.read_text())
+            else:
+                try:
+                    # Engines may print initialization diagnostics before final JSON.
+                    result = None
+                    for index, character in enumerate(child.stdout):
+                        if character == "{":
+                            try:
+                                result = json.loads(child.stdout[index:])
+                                break
+                            except ValueError:
+                                pass
+                    if result is None:
+                        raise ValueError("no terminal JSON result")
+                except ValueError:
+                    result = {"status": "FAIL", "error": "child produced no machine-readable result"}
+            return {"backend": backend, "command": argv, "exit_code": child.returncode,
+                    "result": result, "stderr": child.stderr[-16000:],
+                    "stdout_tail": child.stdout[-4000:]}
+        except Exception as exc:
+            return {"backend": backend, "command": argv, "exit_code": -1,
+                    "result": {"status": "FAIL"}, "exception": repr(exc)}
+
+
+def _doctor(backend: str, checkpoint: str | None = None, display: bool = False) -> tuple[dict[str, Any], int]:
+    if backend == "all":
+        children = [_backend_process("doctor", name, checkpoint=checkpoint, display=display) for name in ("mujoco", "mjlab")]
+        return {"processes": children}, 0 if all(c["exit_code"] == 0 for c in children) else 2
+    names = (backend,)
     result: dict[str, Any] = {}
     exit_code = 0
     for name in names:
@@ -536,13 +562,39 @@ def _doctor(backend: str) -> tuple[dict[str, Any], int]:
             if name == "mujoco":
                 from .backends.mujoco import MujocoBackend
                 instance = MujocoBackend()
-                result[name] = {"status": "AVAILABLE", **instance.diagnostics()}
-                instance.close()
+                try:
+                    instance.step()
+                    result[name] = {"status": "AVAILABLE", **instance.diagnostics()}
+                finally:
+                    instance.close()
             else:
-                result[name] = {"status": "AVAILABLE", "mjlab": version("mjlab"),
-                                "mujoco_warp": version("mujoco-warp")}
+                from .backends.mjlab import MjlabBackend
+                instance = MjlabBackend(scene="bench", num_envs=1)
+                try:
+                    instance.step()
+                    result[name] = {"status": "AVAILABLE", "mjlab": version("mjlab"),
+                                    "mujoco_warp": version("mujoco-warp"), **instance.diagnostics()}
+                finally:
+                    instance.close()
         except Exception as exc:
             result[name] = {"status": "ERROR", "error": str(exc)}
+            exit_code = 2
+    if checkpoint:
+        from .record import checkpoint_manifest
+        try:
+            files = checkpoint_manifest(checkpoint)
+            if not files:
+                raise ValueError("no actual ONNX input found")
+            result["checkpoint"] = {"status": "AVAILABLE", "files": files}
+        except Exception as exc:
+            result["checkpoint"] = {"status": "ERROR", "error": str(exc)}
+            exit_code = 2
+    if display:
+        address = os.environ.get("DISPLAY")
+        available = bool(address and (not address.startswith(":") or Path("/tmp/.X11-unix/X" + address[1:].split(".")[0]).exists()))
+        result["display"] = {"status": "AVAILABLE" if available else "ERROR", "DISPLAY": address,
+                             "scope": "display endpoint presence only; visual confirmation uses play.py"}
+        if not available:
             exit_code = 2
     return result, exit_code
 
@@ -562,7 +614,10 @@ def _write_report(run: str, output: str) -> Path:
     lines = ["# skate-sim acceptance report", "",
              f"- Overall status: **{result.get('status', 'UNKNOWN')}**",
              f"- Requested stage: `{result.get('stage', 'unknown')}`",
-             f"- Requested backend: `{result.get('backend', 'unknown')}`", ""]
+             f"- Requested backend: `{result.get('backend', 'unknown')}`",
+             f"- Requested scope: `{result.get('scope', 'unknown')}`",
+             f"- Stage acceptance: **{result.get('stage_acceptance_status', 'UNKNOWN')}**",
+             f"- Project acceptance: **{result.get('overall_project_status', 'INCOMPLETE')}**", ""]
     rows = result.get("results", [result])
     for item in rows:
         lines.extend([f"## Stage {item.get('stage')} / {item.get('backend')}", "",
@@ -574,12 +629,17 @@ def _write_report(run: str, output: str) -> Path:
             lines.extend(f"| `{name}` | {'PASS' if bool(value) else 'FAIL'} |"
                          for name, value in checks.items())
             lines.append("")
+        if item.get("reason"):
+            lines.extend([f"Reason: {item['reason']}", ""])
         disclosure = item.get("disclosure")
         if disclosure:
             lines.extend([f"Disclosure: {disclosure}", ""])
         details = item.get("details")
         if details:
             lines.extend(["```json", json.dumps(details, indent=2, default=_json_default), "```", ""])
+    if result.get("processes"):
+        lines.extend(["## Backend process evidence", "", "```json",
+                      json.dumps(result["processes"], indent=2, default=_json_default), "```", ""])
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return target
 
@@ -603,6 +663,7 @@ def main(argv=None) -> int:
     check.add_argument("--num-envs", type=int, default=1)
     check.add_argument("--checkpoint")
     check.add_argument("--output")
+    check.add_argument("--scope", choices=["full", "noncontact"], default="full")
 
     calibrate = sub.add_parser("calibrate")
     calibrate.add_argument("--experiment", choices=["release", "coast"], default="release")
@@ -629,7 +690,7 @@ def main(argv=None) -> int:
         print(json.dumps(manifest, indent=2, default=_json_default))
         return 0
     if args.command == "doctor":
-        result, code = _doctor(args.backend)
+        result, code = _doctor(args.backend, args.checkpoint, args.display)
         print(json.dumps(result, indent=2, default=_json_default))
         return code
     if args.command == "calibrate":
@@ -642,12 +703,19 @@ def main(argv=None) -> int:
     if args.command == "report":
         try:
             path = _write_report(args.run, args.output)
-            print(json.dumps({"status": "PASS", "report": str(path)}, indent=2))
-            return 0
+            source = Path(args.run)
+            acceptance = json.loads((source if source.is_file() else source / "result.json").read_text()).get("status", "UNKNOWN")
+            print(json.dumps({"generation_status": "PASS", "acceptance_status": acceptance,
+                              "report": str(path)}, indent=2))
+            return 0 if acceptance == "PASS" else 3
         except Exception as exc:
             print(json.dumps({"status": "FAIL", "error": str(exc)}, indent=2))
             return 1
-    result = _run_check(args.stage, args.backend, args.num_envs, args.checkpoint)
+    try:
+        result = _run_check(args.stage, args.backend, args.num_envs, args.checkpoint, args.scope)
+    except Exception as exc:
+        result = {"status": "FAIL", "stage": args.stage, "backend": args.backend,
+                  "scope": args.scope, "exception": repr(exc)}
     _write_result(args.output, result)
     print(json.dumps(result, indent=2, default=_json_default))
     return {"PASS": 0, "FAIL": 1, "BLOCKED": 2, "INCOMPLETE": 3, "NOT_APPLICABLE": 3}.get(result["status"], 3)
